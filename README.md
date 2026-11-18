@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-881%20API%20%2B%2063%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-911%20API%20%2B%2065%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -83,16 +83,18 @@
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
 | **Work on lists** | Most action nodes can run once for every element of a list ("Run once for each item", up to 200 items), so one HTTP, Code, Set or message node handles a whole list and returns a list of results |
 | **Import from n8n** | The Import button on the Overview page and in the editor also accepts an n8n workflow export. Triggers, Set/Edit Fields, IF, Switch, Filter, HTTP Request, Merge, Wait, Respond to Webhook, Sort, Limit, Remove Duplicates, Split Out, Summarize, Date and Time, Crypto, Slack, Telegram, GitHub, Email, RSS and Google Sheets nodes are converted, and `$json` expressions are translated. Everything else becomes a Pass Through node, and a report lists what needs attention (credentials are never exported by n8n, JavaScript code and cross-node references cannot be converted, loops must be rebuilt). It is best effort: always read the report and test before activating |
+| **File uploads on webhooks** | A webhook can accept multipart file uploads, either from any sender (switch "Accept file uploads" on) or through its public form (a field of type `file`). Limits: 5 files, 5 MB each, 10 MB in total. Files are stored under `uploads/` in the files folder with safe names, described to the workflow as `{{body.files.0.filename}}`, `size`, `content_type` and `path` (the Files node can read the path), and deleted with the run-history cleanup. Without the switch, a multipart request is refused. Anyone who has the webhook address can upload, so keep it private |
+| **AI Agent node** | A model that can call tools before it answers: a calculator (the same safe expression engine), the current time, a "read this web page" tool (public HTTPS only), and up to five workflows you choose. It makes at most 6 tool rounds, stops after 150 seconds, and returns the answer plus the list of tool calls it made. It needs a model that supports tool calling and the same credential format as the AI Prompt node, and it is tested only with a scripted stand-in for the model, not a real one. A web page can contain text that tries to steer the model, so do not combine the web page tool with workflows that send messages or change data |
 | **Variables** | Shared, non-secret values (a website address, a rate) managed in Settings by admins and owners, and used anywhere as `{{vars.NAME}}`, including inside expressions. Everyone can read them, so secrets still belong on the Credentials page |
 | **App Action node** | Eighteen services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab, ntfy (free push notifications), and Google Calendar and Google Drive (which use a connected Google account). These are tested against simulated servers only, so try each one with a test account before relying on it |
 | **Data tools** | Sort, Limit, Remove Duplicates, Split Out, Summarize (count, sum, average, min, max, collect), Rename Keys, Date and Time (add, subtract, compare, format) and Crypto and Encoding (SHA, MD5, HMAC signatures, base64, random IDs) |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
 | **Activity log** | The owner sees who changed what (every successful change, plus sign-ins and failed sign-ins by account name). Passwords and bodies are never recorded. The latest 5000 entries are kept |
-| **Twenty-five templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
+| **Twenty-seven templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
 | **First-run tour** | A four-step walkthrough shown once, and again from the Tour link in the sidebar |
 | **Export runs to CSV** | The Executions page exports the run history (all, or only the failed or successful ones). Cells that could be read as spreadsheet formulas are neutralised |
-| **Forty-five node types** | Manual, Schedule, Webhook, Email and New Items triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
+| **Forty-six node types** | Manual, Schedule, Webhook, Email and New Items triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt, AI Agent; Sticky Note, Result Output, Respond to Webhook |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
@@ -274,7 +276,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (881 tests, use a temporary database and key):
+**API, engine, security and connector tests** (911 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -366,12 +368,12 @@ Everything works with no configuration. These optional environment variables cha
 
 ## <img src="https://img.shields.io/badge/-Limits%20to%20know-FB7185?style=flat-square" alt="Limits"/>
 
-- **Single user, local use.** There is one owner account and sessions run over plain HTTP on localhost. It is not hardened for the public internet: do not expose port 8000 or forward it on your router.
+- **Local use, with accounts.** There is an owner plus admin, editor and viewer accounts, and sessions use a cookie that is marked secure when served over HTTPS. FlowPilot is still built for one team on one computer or server, not for the open internet: if you expose it, put an HTTPS reverse proxy in front, keep strong passwords, and read the Configuration section.
 - **Code node is restricted, not a sandbox.** It blocks imports, file access, dunder attribute tricks and runs in its own process with a time limit, but treat it as a convenience for the owner's own workflows, not as protection against hostile code.
 - **Database credentials:** `sqlite:///shop.db` (a file inside `backend/data`) or `postgresql://user:password@host:5432/database?sslmode=require`. Postgres hosts on private networks are blocked unless `FLOWPILOT_ALLOW_PRIVATE_HOSTS=1`. Use a database user with only the rights the workflow needs.
 - **Long waits:** a Wait over 60 seconds pauses the run and stores it in the database. It resumes only while the API is running, so a run due while the API was off continues at the next start. It is not allowed inside a loop or a sub-workflow, and a run can have one long wait. A run interrupted mid-resume is closed as failed rather than repeated.
 - **OAuth connections:** open Credentials, choose Connect an account, create a free OAuth client with the service, add the shown redirect URL (set `FLOWPILOT_PUBLIC_URL` if you serve FlowPilot on another address), paste the client ID and secret and approve access. Google apps in testing mode need you added as a test user, and their refresh tokens can expire after 7 days until the app is published.
-- **Everyone shares the same workflows.** Roles limit what people can do, but there are no separate per-user projects yet.
+- **Projects control visibility, not secrets.** Members only see the workflows of their projects, but credentials and variables are shared by name with everyone who may use them.
 - **AI nodes:** local models use plain http, so start the API with `FLOWPILOT_ALLOW_PRIVATE_HOSTS=1` for them (this never applies to the HTTP node). A reply can take up to 90 seconds.
 - **Forms are public** to anyone who has the webhook URL, and are rate limited like any webhook. Do not put secrets in them.
 - **Backups:** the workflow file holds no credentials. The database copy includes password hashes and encrypted credentials, so keep it private and keep `backend/flowpilot.key` with it.
@@ -382,17 +384,15 @@ Everything works with no configuration. These optional environment variables cha
 - **Webhook rate limit:** 60 calls per minute per URL by default. Raise it with `FLOWPILOT_WEBHOOK_RATE`.
 - **Backups:** because of WAL mode, copying `flowpilot.db` alone while the API runs can miss recent changes. Use the Backup page in Settings, which makes a consistent copy.
 - **Parallel branches:** only network, database, AI, code and file nodes run in parallel, so loops and branch logic stay predictable. If one parallel branch fails, the others in that group still finish.
-- **Files** live in `backend/data/files` (override with `FLOWPILOT_FILES_DIR`). Binary data is passed around as base64 inside JSON, and webhooks do not accept file uploads yet.
+- **Files** live in `backend/data/files` (override with `FLOWPILOT_FILES_DIR`). Binary data is passed around as base64 inside JSON. Webhook uploads are stored under `uploads/` there.
 - **New Items trigger:** checks run while FlowPilot is running, and items that appear and disappear between two checks are missed. An API list without a stable identifier field is matched by its whole content, so an item that changes counts as new.
 - **Email trigger:** a message is marked read when picked up, so a failed run is not retried (the failed run keeps the message). Gmail needs an app password.
-- **Projects control visibility, not secrets:** credentials are still shared by name with everyone who can build workflows.
-- **Not yet:** SSO, webhook file uploads, and a Postgres option for FlowPilot's own storage (the Database Query node can already talk to Postgres). The OAuth flow was tested with simulated providers, not against live Google.
+- **Not yet:** SSO and a Postgres option for FlowPilot's own storage (the Database Query node can already talk to Postgres). The OAuth flow was tested with simulated providers, not against live Google.
 - **Triggers need the API running.** Schedules and webhooks only work while the API window is open, and you should run a single API process (two would run each schedule twice). Cron expressions, signed webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md).
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
-- **One incoming connection per node.** Branches cannot merge back together yet, and cycles are rejected. One node may fan out to several.
+- **One incoming connection per node, except Merge.** Branches come back together through a Merge node, and cycles are rejected (use Loop Over Items or Repeat Until). One node may fan out to several.
 - **HTTP checks are an MVP safeguard.** Public-HTTPS-only, private-address blocking and no redirects are not a hardened defence for untrusted multi-tenant use. Only run workflows you trust. Use the Credentials page for secrets instead of typing them into a node.
-- **Run history can hold sensitive data.** Use sample data for now.
-- **Backups:** stop the API, then copy `backend/flowpilot.db`.
+- **Run history can hold sensitive data.** Credentials are hidden from results, but data that passes through a workflow is stored. Use the retention settings, and the "keep only failed runs" workflow setting, to limit what is kept.
 
 ---
 

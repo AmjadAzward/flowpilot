@@ -294,6 +294,27 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
     }
     case 'sticky':
       return <label>Note<textarea rows={6} value={v('text')} onChange={text('text')} /><span className="hint">A note for you and your team. It is not connected to anything and never runs.</span></label>;
+    case 'agent': {
+      const picked = (k: string) => v(k).split(',').map(x => x.trim()).filter(Boolean);
+      const toggle = (k: string, item: string) => { const cur = picked(k); update(k, (cur.includes(item) ? cur.filter(x => x !== item) : [...cur, item]).join(',')); };
+      const tools = [['calculator', 'Calculator'], ['current_datetime', 'Current date and time'], ['fetch_url', 'Read a web page (public HTTPS)']] as const;
+      const others = flows.filter(f => f.id !== currentFlowId);
+      return (
+        <>
+          {credSelect('credential', 'AI credential')}
+          <label>Instructions (optional)<textarea rows={2} spellCheck={false} value={v('system')} onChange={text('system')} /></label>
+          <label>Task<textarea rows={4} spellCheck={false} value={v('prompt')} onChange={text('prompt')} /></label>
+          <fieldset className="check-group"><legend>Tools it may use</legend>
+            {tools.map(([id, label]) => <label key={id} className="check"><input type="checkbox" checked={picked('tools').includes(id)} onChange={() => toggle('tools', id)} />{label}</label>)}
+          </fieldset>
+          <fieldset className="check-group"><legend>Workflows it may run (up to 5)</legend>
+            {others.length ? others.map(f => <label key={f.id} className="check"><input type="checkbox" checked={picked('workflows').includes(f.id)} onChange={() => toggle('workflows', f.id)} />{f.name}</label>) : <span className="hint">No other workflows yet.</span>}
+          </fieldset>
+          <label>Most tool rounds (1 to 6)<input type="number" min={1} max={6} value={v('max_steps', '4')} onChange={text('max_steps')} /></label>
+          <span className="hint">The model decides which tools to call, then answers. The result has the answer and a list of the tool calls it made. It needs a model that supports tool calling (many Ollama models do, for example llama3.1). Use the same credential format as the AI Prompt node. Careful: a web page can contain instructions that try to steer the model, so avoid giving an agent both a web page tool and workflows that send messages or change data.</span>
+        </>
+      );
+    }
     case 'ai':
       return (
         <>
@@ -423,7 +444,9 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">Send a POST or GET request to this URL. The URL is the secret, so anyone who has it can run this workflow. {isActive ? 'This workflow is active and listening.' : 'Activate the workflow for the URL to respond.'} It is reachable from this computer only unless you expose it yourself.</span>
           <button type="button" className="ghost" onClick={onRotateWebhook}><RefreshCcw size={14} />Generate new URL</button>
           <label>Public form fields (optional JSON)<textarea rows={4} spellCheck={false} value={v('form_fields')} onChange={text('form_fields')} placeholder={'[{"name":"email","label":"Your email","type":"email"}]'} /></label>
-          <span className="hint">Fill this in and opening the webhook URL in a browser shows a small form (types: text, email, number, textarea). Anyone with the URL can submit it. Values arrive as {'{{body.email}}'}.</span>
+          <span className="hint">Fill this in and opening the webhook URL in a browser shows a small form (types: text, email, number, textarea, file). Anyone with the URL can submit it. Values arrive as {'{{body.email}}'}.</span>
+          <label>Accept file uploads<select value={v('accept_files', 'false')} onChange={text('accept_files')}><option value="false">No (a form with a file field still accepts files)</option><option value="true">Yes: multipart uploads from any sender</option></select></label>
+          <span className="hint">Uploads are limited to 5 files, 5 MB each and 10 MB in total, and are stored in the files folder under uploads/. They arrive as {'{{body.files.0.filename}}'}, {'{{body.files.0.size}}'} and {'{{body.files.0.path}}'}; the Files node can read the path. Old uploads are deleted with the run-history cleanup. Anyone with the URL can upload, so keep the address private.</span>
           <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={v('sample')} onChange={text('sample')} /></label>
           <span className="hint">Later nodes can read {'{{body.field}}'}, {'{{query.name}}'} and {'{{method}}'}.</span>
         </>

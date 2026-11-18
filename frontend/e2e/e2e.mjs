@@ -799,15 +799,15 @@ await check('every template can be created, and the offline ones produce the exp
   const built = await build({ entryPoints: ['src/catalog.ts'], bundle: true, format: 'esm', platform: 'node', write: false, external: ['@xyflow/react'] });
   const mod = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
   const templates = mod.templates;
-  if (templates.length < 25) throw new Error('expected at least 25 templates, found ' + templates.length);
-  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert', 'ntfy-alert']);
+  if (templates.length < 27) throw new Error('expected at least 27 templates, found ' + templates.length);
+  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert', 'ntfy-alert', 'ai-agent']);
   const expected = {
     greeting: 'Hello Ada from London!', 'order-triage': 'PRIORITY: order A-1042 (250)', 'webhook-receiver': 'New message from Ada: Hello from a webhook',
     'top-n': ['Ada: 91', 'Di: 85', 'Cy: 77'], 'clean-contacts': [{ mail: 'a@x.com', name: 'Ada' }, { mail: 'b@x.com', name: 'Bob' }], 'sales-summary': 'Paid total: 200.5',
     'due-date': 'Friday 14 February 2025', 'hash-email': createHash('sha256').update('ada@example.com').digest('hex'),
     'add-field': [{ item: 'Pen', price: 10, price_with_tax: 12 }, { item: 'Book', price: 24.5, price_with_tax: 29.4 }], 'unwrap-list': [{ id: 1 }, { id: 2 }],
     'route-tickets': 'Page the on-call: T-77', 'webhook-reply': { greeting: 'Hello Ada' }, 'error-alert': 'ALERT: Nightly import failed at HTTP Request: Database timed out',
-    'python-stats': { count: 3, average: 72, best: 'Ada' }, 'new-posts': 'New post: Sample item https://example.com/sample', 'combine-sources': { name: 'Ada', plan: 'pro' },
+    'python-stats': { count: 3, average: 72, best: 'Ada' }, 'new-posts': 'New post: Sample item https://example.com/sample', 'file-upload': 'Ada sent cv.pdf (1234 bytes), saved as uploads/20260101/ab12cd34-cv.pdf', 'combine-sources': { name: 'Ada', plan: 'pro' },
   };
   const results = await page.evaluate(async ({ templates, online }) => {
     const out = {};
@@ -1012,6 +1012,52 @@ await check('Google Calendar and Drive use a connection, not a pasted credential
   await page.getByLabel('Google Drive connection').waitFor();
   await page.getByLabel('Service').selectOption('slack');
   await page.getByLabel('Slack credential').waitFor();
+});
+
+await check('the AI Agent node and the webhook upload switch expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-ai-agent').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'AI agent with a calculator');
+  await node('AI Agent').click();
+  await page.getByLabel('AI credential').waitFor();
+  const calc = page.getByLabel('Calculator');
+  if (!(await calc.isChecked())) throw new Error('the calculator should be on by default');
+  await page.getByLabel('Read a web page (public HTTPS)').check();
+  await page.getByLabel('Calculator').uncheck();
+  await page.getByLabel(/^Most tool rounds/).fill('3');
+  await expectText(page.locator('.react-flow__node', { hasText: 'AI Agent' }), /Work out/);
+  await shot('36-agent');
+  await goOverview();
+  await page.getByTestId('template-file-upload').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'File upload form');
+  await node('Webhook Trigger').click();
+  await page.getByLabel('Accept file uploads').selectOption('true');
+  await expectText(page.locator('.inspector'), /5 files, 5 MB each/);
+});
+
+await check('a visitor uploads a file through a public form and the workflow receives it', async () => {
+  const made = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const fields = JSON.stringify([{ name: 'who', label: 'Your name', type: 'text' }, { name: 'doc', label: 'Your document', type: 'file' }]);
+    const body = { name: 'Upload form', description: 'Send us a file', nodes: [node('w', 'webhook', { form_fields: fields }), node('m', 'template', { template: '{{body.who}} uploaded {{body.files.0.filename}} ({{body.files.0.size}} bytes)' }), node('o', 'output')], edges: [{ id: 'a', source: 'w', target: 'm' }, { id: 'b', source: 'm', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/active`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true }) });
+    return { token: (await (await fetch(`/api/workflows/${created.id}`)).json()).webhook_token, id: created.id };
+  });
+  const ctx = await browser.newContext({ viewport: { width: 900, height: 700 } });
+  const v = await ctx.newPage();
+  try {
+    await v.goto(BASE + '/api/hooks/' + made.token);
+    await v.getByLabel('Your name').fill('Grace');
+    await v.getByLabel('Your document').setInputFiles({ name: 'report final.txt', mimeType: 'text/plain', buffer: Buffer.from('hello from a browser upload') });
+    if (SHOTS) await v.screenshot({ path: `${SHOTS}/37-upload-form.png` });
+    await v.getByRole('button', { name: 'Submit' }).click();
+    await v.getByText('Thank you').waitFor();
+  } finally { await ctx.close(); }
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.locator('summary', { hasText: 'Upload form' }).first().click();
+  await expectText(page.locator('.history-details').first(), /Grace uploaded report final\.txt \(27 bytes\)/);
+  await page.evaluate(async id => { await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); }, made.id);
 });
 
 await check('projects limit what a member can see', async () => {

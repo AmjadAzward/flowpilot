@@ -5,7 +5,7 @@ export type FlowDoc = { settings?: { timeout_seconds?: number; save_runs?: strin
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -48,6 +48,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
+  { type: 'agent', label: 'AI Agent', desc: 'A model that can use tools and run workflows', category: 'Network', color: '#7c3aed', icon: 'Sparkles' },
   { type: 'ai', label: 'AI Prompt', desc: 'Ask a local or hosted language model', category: 'Network', color: '#8b5cf6', icon: 'Bot' },
   { type: 'email', label: 'Send Email', desc: 'Send over SMTP', category: 'Network', color: '#d946ef', icon: 'Mail' },
   { type: 'note', label: 'Pass Through', desc: 'Forward data unchanged', category: 'Logic', color: '#94a3b8', icon: 'ArrowRight' },
@@ -58,11 +59,11 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in', 'poll_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
+export const pinnableTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
 /** Nodes that can run once for every element of a list. */
-export const eachItemTypes: string[] = ['datetime', 'crypto', 'app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
-export const errorTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
+export const eachItemTypes: string[] = ['agent', 'datetime', 'crypto', 'app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
+export const errorTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
 
 type AppOp = { label: string; example: string; hint: string };
 export const appServices: Record<string, { label: string; credential: string; oauth?: boolean; operations: Record<string, AppOp> }> = {
@@ -187,6 +188,7 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
     case 'respond': return { status: '200', body: '{"ok": true}' };
     case 'sticky': return { text: 'Write a note here' };
+    case 'agent': return { credential: '', system: 'You are a careful assistant. Use the tools when they help, and answer briefly.', prompt: 'Work out what {{topic}} would cost with 20% tax on 49.90.', tools: 'calculator', workflows: '', max_steps: '4' };
     case 'ai': return { credential: '', prompt: 'Summarise this in one sentence: {{}}', system: '', temperature: '0.2', json_output: 'false' };
     case 'poll_in': return { source: 'rss', url: 'https://hnrss.org/newest', minutes: '15', repo: '', state: 'open', credential: '', items_path: '', id_path: '', order: 'newest_first' };
     case 'email_in': return { credential: '', minutes: '5', from_filter: '', subject_filter: '' };
@@ -371,6 +373,18 @@ export const templates: { id: string; name: string; description: string; tag: st
     edges: [e('p', 'm'), e('m', 'o')],
   },
   {
+    id: 'file-upload', name: 'File upload form', tag: 'Webhook',
+    description: 'A public form with a file field. Activate it, open its URL, and each upload is stored and described to the workflow. Run workflow tries it with a sample file.',
+    nodes: [n('w', 'webhook', 20, 150, { accept_files: 'true', form_fields: '[{"name":"name","label":"Your name","type":"text"},{"name":"document","label":"Your document","type":"file"}]', sample: '{"name":"Ada","files":[{"field":"document","filename":"cv.pdf","content_type":"application/pdf","size":1234,"path":"uploads/20260101/ab12cd34-cv.pdf"}]}' }), n('m', 'template', 330, 150, { template: '{{body.name}} sent {{body.files.0.filename}} ({{body.files.0.size}} bytes), saved as {{body.files.0.path}}' }), n('o', 'output', 640, 150)],
+    edges: [e('w', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'ai-agent', name: 'AI agent with a calculator', tag: 'AI',
+    description: 'A model that decides when to use a calculator and the clock before it answers. Needs an AI credential (a local model with Ollama is free).',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"topic":"a 49.90 order"}' }), n('a', 'agent', 440, 150, { credential: '', system: 'You are a careful assistant. Use the tools when they help, and answer briefly.', prompt: 'Work out what {{topic}} would cost with 20% tax added.', tools: 'calculator,current_datetime', workflows: '', max_steps: '4' }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'i'), e('i', 'a'), e('a', 'o')],
+  },
+  {
     id: 'ntfy-alert', name: 'Phone alert with ntfy', tag: 'Apps',
     description: 'Send a free push notification to your phone with the ntfy app. Pick a long random topic name and subscribe to it in the app. Needs internet.',
     nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"message":"Backup finished"}' }), n('a', 'app', 440, 150, { service: 'ntfy', operation: 'publish', credential: '', fields: '{"topic": "change-me-to-a-long-random-name", "message": "{{message}}", "title": "FlowPilot", "priority": "3"}' }), n('o', 'output', 700, 150)],
@@ -383,7 +397,7 @@ const groupById: Record<string, (typeof templateGroups)[number]> = {
   greeting: 'Getting started', 'order-triage': 'Getting started', 'route-tickets': 'Getting started',
   'loop-list': 'Lists and data', 'csv-report': 'Lists and data', 'top-n': 'Lists and data', 'clean-contacts': 'Lists and data', 'sales-summary': 'Lists and data', 'due-date': 'Lists and data',
   'hash-email': 'Lists and data', 'add-field': 'Lists and data', 'unwrap-list': 'Lists and data', 'python-stats': 'Lists and data', 'combine-sources': 'Lists and data',
-  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs', 'new-posts': 'Webhooks and APIs', 'ntfy-alert': 'Apps',
+  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs', 'new-posts': 'Webhooks and APIs', 'ntfy-alert': 'Apps', 'ai-agent': 'Apps', 'file-upload': 'Webhooks and APIs',
   'resilient-call': 'Reliability', 'error-alert': 'Reliability', 'slack-alert': 'Apps',
 };
 export const templateGroup = (id: string) => groupById[id] ?? 'Getting started';

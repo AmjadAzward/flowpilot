@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.17
+- Webhook file uploads (multipart, public form file fields, stored with safe names, cleaned up with run history)
+- AI Agent node (tool calling with a calculator, the clock, a web page reader and chosen workflows)
+- 911 API tests and a 65-check browser suite
+
 ### v0.16
 - Import n8n workflow exports (best effort, with a report of what needs attention)
 - Variables: shared non-secret values used as {{vars.NAME}}

@@ -15,6 +15,7 @@ import json
 import os
 import logging
 import secrets
+import shutil
 import threading
 import re
 import time
@@ -35,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from email import message_from_bytes, policy as email_policy
+from email.parser import BytesParser
 from email.message import EmailMessage
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
@@ -76,7 +78,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.16.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.17.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -197,7 +199,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -310,6 +312,10 @@ def check_subflow_access(actor: dict | None, nodes: list[dict]) -> None:
         target = str((n.get("data") or {}).get("workflow_id") or "").strip() if n.get("type") == "subflow" else ""
         if target and not can_see_workflow(actor, target):
             raise HTTPException(403, "You do not have access to the workflow chosen in a Run Workflow node")
+        if n.get("type") == "agent":
+            for wid in str((n.get("data") or {}).get("workflows") or "").split(","):
+                if wid.strip() and not can_see_workflow(actor, wid.strip()):
+                    raise HTTPException(403, "You do not have access to a workflow chosen in an AI Agent node")
 
 
 ROLES = ("owner", "admin", "editor", "viewer")
@@ -634,7 +640,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.16.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.17.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -1234,9 +1240,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
+PINNABLE = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
+ERROR_SETTINGS = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -2096,7 +2102,8 @@ def send_gmail(d: dict, previous: Any) -> dict:
 # ---------------------------------------------------------------------------
 # AI node: any OpenAI-compatible chat endpoint (Ollama and LM Studio run free on your own computer)
 # ---------------------------------------------------------------------------
-def run_ai(d: dict, previous: Any) -> Any:
+def ai_connection(d: dict) -> tuple[str, str, str]:
+    """The chat endpoint, model and key from an AI credential."""
     cred = urlparse(lookup_secret(str(d.get("credential") or "").strip()))
     hint = "The AI credential must look like https://host/v1?model=NAME&key=TOKEN (for a local model: http://127.0.0.1:11434/v1?model=llama3.2)"
     if cred.scheme not in ("http", "https") or not cred.hostname: raise ValueError(hint)
@@ -2106,6 +2113,11 @@ def run_ai(d: dict, previous: Any) -> Any:
     if cred.scheme == "http" and os.getenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS") != "1":
         raise ValueError("Local models use http, which needs FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 when you start the API. This switch never applies to the HTTP node.")
     assert_public_host(cred.hostname.lower(), relaxed=True)
+    return f"{cred.scheme}://{cred.hostname}{':' + str(cred.port) if cred.port else ''}{cred.path.rstrip('/')}", model, key
+
+
+def run_ai(d: dict, previous: Any) -> Any:
+    base, model, key = ai_connection(d)
     prompt = render_template(str(d.get("prompt", "")), previous)
     system = render_template(str(d.get("system", "")), previous)
     if not prompt.strip(): raise ValueError("Write a prompt")
@@ -2113,7 +2125,6 @@ def run_ai(d: dict, previous: Any) -> Any:
     try: temperature = max(0.0, min(float(d.get("temperature") or 0.2), 2.0))
     except (TypeError, ValueError): raise ValueError("Temperature must be a number")
     messages = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": prompt}]
-    base = f"{cred.scheme}://{cred.hostname}{':' + str(cred.port) if cred.port else ''}{cred.path.rstrip('/')}"
     res = do_request("POST", base + "/chat/completions", {"Authorization": f"Bearer {key}"} if key else {},
                      json={"model": model, "messages": messages, "temperature": temperature, "stream": False}, timeout=90.0)
     try: text = str(res["choices"][0]["message"]["content"])
@@ -2124,6 +2135,98 @@ def run_ai(d: dict, previous: Any) -> Any:
         try: return json.loads(cleaned)
         except ValueError: raise ValueError("The AI reply was not valid JSON. Ask for JSON only in the prompt.")
     return {"text": text, "model": model}
+
+
+# ---------------------------------------------------------------------------
+# AI Agent: a model that can call a short list of safe tools (and chosen workflows) before it answers
+# ---------------------------------------------------------------------------
+AGENT_TOOL_NAMES = ("calculator", "current_datetime", "fetch_url")
+AGENT_MAX_STEPS = 6
+AGENT_DEADLINE_SECONDS = 150
+AGENT_TOOL_RESULT_LIMIT = 4000
+
+
+def agent_workflows(d: dict) -> dict[str, str]:
+    """Tool names (workflow_1 ...) for the workflows the agent may run, mapped to workflow ids."""
+    ids = [w.strip() for w in str(d.get("workflows") or "").split(",") if w.strip()]
+    if len(ids) > 5: raise ValueError("An agent can run at most 5 workflows")
+    return {f"workflow_{i + 1}": wid for i, wid in enumerate(ids)}
+
+
+def agent_specs(enabled: set[str], flows: dict[str, str]) -> list[dict]:
+    def fn(name: str, desc: str, props: dict, required: list[str]) -> dict:
+        return {"type": "function", "function": {"name": name, "description": desc, "parameters": {"type": "object", "properties": props, "required": required}}}
+    specs = []
+    if "calculator" in enabled: specs.append(fn("calculator", "Evaluate an arithmetic or text expression such as round(12.5 * 3, 2) or 'abc'.upper(). Use it for any calculation.", {"expression": {"type": "string"}}, ["expression"]))
+    if "current_datetime" in enabled: specs.append(fn("current_datetime", "Get the current date and time in UTC.", {}, []))
+    if "fetch_url" in enabled: specs.append(fn("fetch_url", "Download a public web page or JSON API (HTTPS only) and return its text, shortened.", {"url": {"type": "string"}}, ["url"]))
+    for tool, wid in flows.items():
+        try: wf = get_workflow(wid)
+        except HTTPException: raise ValueError("A workflow chosen for the agent no longer exists")
+        specs.append(fn(tool, f"Run the workflow '{wf['name']}'. {str(wf.get('description') or '')[:200]}".strip(), {"input": {"description": "Data to give the workflow (any JSON value)"}}, []))
+    return specs
+
+
+def agent_tool(name: str, args: Any, enabled: set[str], flows: dict[str, str]) -> str:
+    if not isinstance(args, dict): args = {}
+    if name == "calculator" and "calculator" in enabled: return json.dumps(eval_expression(str(args.get("expression", "")), {}), default=str)
+    if name == "current_datetime" and "current_datetime" in enabled: return now()
+    if name == "fetch_url" and "fetch_url" in enabled:
+        res = do_request("GET", safe_url(str(args.get("url", ""))), {"Accept": "text/html,application/json,text/plain"})
+        text = res if isinstance(res, str) else json.dumps(res, default=str)
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()[:AGENT_TOOL_RESULT_LIMIT]
+    if name in flows:
+        _shown, passed, _branch = step_action({"type": "subflow", "data": {"workflow_id": flows[name]}}, args.get("input"))
+        return json.dumps(passed, default=str)[:AGENT_TOOL_RESULT_LIMIT]
+    raise ValueError(f"The tool {name!r} is not available")
+
+
+def run_agent(d: dict, previous: Any) -> Any:
+    base, model, key = ai_connection(d)
+    task = render_template(str(d.get("prompt", "")), previous)
+    system = render_template(str(d.get("system", "")), previous)
+    if not task.strip(): raise ValueError("Write the task for the agent")
+    if len(task) > 50_000 or len(system) > 10_000: raise ValueError("The prompt is too long")
+    enabled = {t.strip() for t in str(d.get("tools") or "").split(",") if t.strip()}
+    unknown = enabled - set(AGENT_TOOL_NAMES)
+    if unknown: raise ValueError(f"Unknown tool: {sorted(unknown)[0]}")
+    flows = agent_workflows(d)
+    specs = agent_specs(enabled, flows)
+    try: limit = max(1, min(int(float(d.get("max_steps") or 4)), AGENT_MAX_STEPS))
+    except (TypeError, ValueError): raise ValueError("Maximum steps must be a number")
+    messages: list[dict] = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": task}]
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    started, steps = time.time(), []
+
+    def ask(with_tools: bool) -> dict:
+        if time.time() - started > AGENT_DEADLINE_SECONDS: raise ValueError(f"The agent ran longer than {AGENT_DEADLINE_SECONDS} seconds and was stopped")
+        payload: dict[str, Any] = {"model": model, "messages": messages, "temperature": 0.2, "stream": False}
+        if with_tools and specs: payload.update(tools=specs, tool_choice="auto")
+        res = do_request("POST", base + "/chat/completions", headers, json=payload, timeout=60.0)
+        try: return res["choices"][0]["message"]
+        except (TypeError, KeyError, IndexError): raise ValueError("The AI service returned an unexpected reply")
+
+    for _ in range(limit):
+        msg = ask(True)
+        calls = [c for c in (msg.get("tool_calls") or []) if isinstance(c, dict)][:4]
+        if not calls:
+            text = str(msg.get("content") or "")
+            if len(text) > 200_000: raise ValueError("The AI reply is too large")
+            return {"answer": text, "steps": steps, "model": model}
+        messages.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+        for c in calls:
+            fn = c.get("function") or {}
+            name = str(fn.get("name") or "")
+            try: args = json.loads(fn.get("arguments") or "{}")
+            except ValueError: args = {}
+            try: result = agent_tool(name, args, enabled, flows)
+            except Exception as exc: result = f"Error: {str(exc)[:300]}"
+            steps.append({"tool": name, "arguments": args if isinstance(args, dict) else {}, "result": result[:1000]})
+            messages.append({"role": "tool", "tool_call_id": str(c.get("id") or name), "content": result[:AGENT_TOOL_RESULT_LIMIT]})
+    messages.append({"role": "user", "content": "You have used all your tool calls. Give your best final answer now."})
+    text = str(ask(False).get("content") or "")
+    return {"answer": text[:200_000], "steps": steps, "model": model, "note": f"Stopped after {limit} steps"}
 
 
 # ---------------------------------------------------------------------------
@@ -2519,6 +2622,9 @@ def step_action(node: dict, previous: Any):
     if typ in ITEM_TOOLS:
         value = ITEM_TOOLS[typ](d, previous)
         return value, value, None
+    if typ == "agent":
+        value = run_agent(d, previous)
+        return value, value, None
     if typ == "app":
         value = app_action(d, previous)
         return value, value, None
@@ -2700,7 +2806,7 @@ def run_repeat(g: Graph, nid: str, node: dict, value: Any):
     return {"attempts": attempts, "condition_met": met}, current
 
 
-EACH_ITEM_TYPES = {"datetime", "crypto", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
+EACH_ITEM_TYPES = {"agent", "datetime", "crypto", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
 MAX_EACH_ITEMS = 200
 
 
@@ -3282,8 +3388,63 @@ def form_fields(node: dict | None) -> list[dict]:
         name = str(it.get("name") or "")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", name): continue
         kind = str(it.get("type") or "text")
-        out.append({"name": name, "label": str(it.get("label") or name)[:100], "type": kind if kind in ("text", "email", "number", "textarea") else "text"})
+        out.append({"name": name, "label": str(it.get("label") or name)[:100], "type": kind if kind in ("text", "email", "number", "textarea", "file") else "text"})
     return out[:20]
+
+
+UPLOAD_MAX_TOTAL = 10_000_000
+UPLOAD_MAX_FILES = 5
+
+
+def accepts_files(node: dict | None) -> bool:
+    return str(((node or {}).get("data") or {}).get("accept_files") or "false") == "true" or any(f["type"] == "file" for f in form_fields(node))
+
+
+def parse_multipart(raw: bytes, ctype: str) -> tuple[dict, list[tuple[str, str, str, bytes]]]:
+    """Split a multipart/form-data body into text fields and files (field, filename, content type, bytes)."""
+    msg = BytesParser(policy=email_policy.HTTP).parsebytes(b"Content-Type: " + ctype.encode("latin-1", "ignore") + b"\r\nMIME-Version: 1.0\r\n\r\n" + raw)
+    if not msg.is_multipart(): raise ValueError("This is not a valid multipart body")
+    fields: dict[str, str] = {}
+    files: list[tuple[str, str, str, bytes]] = []
+    for part in msg.iter_parts():
+        if len(fields) + len(files) >= 40: raise ValueError("Too many form parts")
+        if part.get_content_disposition() != "form-data": continue
+        name = str(part.get_param("name", header="content-disposition") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", name): continue
+        data = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        if filename is None: fields[name] = data.decode("utf-8", errors="replace")[:5000]
+        elif filename or data: files.append((name, str(filename), part.get_content_type(), data))  # an empty file input (no file chosen) is ignored
+    return fields, files
+
+
+def safe_upload_name(name: str) -> str:
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return (re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._") or "file")[-100:]
+
+
+def save_uploads(files: list[tuple[str, str, str, bytes]]) -> list[dict]:
+    """Store uploaded files under files/uploads/<date>/ and describe them. The Files node can read them back by path."""
+    folder = files_dir() / "uploads" / datetime.now(timezone.utc).strftime("%Y%m%d")
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for field, filename, content_type, data in files:
+        stored = f"{uuid.uuid4().hex[:8]}-{safe_upload_name(filename)}"
+        (folder / stored).write_bytes(data)
+        saved.append({"field": field, "filename": filename[:200], "content_type": content_type[:100], "size": len(data), "path": f"uploads/{folder.name}/{stored}"})
+    return saved
+
+
+def prune_uploads(days: int) -> int:
+    """Delete upload folders older than the retention period. Returns how many folders were removed."""
+    root, removed = files_dir() / "uploads", 0
+    if not root.is_dir(): return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+    for d in root.iterdir():
+        if d.is_dir() and re.fullmatch(r"\d{8}", d.name) and d.name < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 def page(title: str, inner: str) -> HTMLResponse:
@@ -3298,7 +3459,8 @@ def render_form(doc: dict, fields: list[dict]) -> HTMLResponse:
         control = f"<textarea id='{n}' name='{n}' rows=4></textarea>" if f["type"] == "textarea" else f"<input id='{n}' name='{n}' type='{f['type']}'>"
         rows.append(f"<label for='{n}'>{label}</label>{control}")
     desc = html_lib.escape(doc.get("description") or "")
-    return page(doc.get("name", "Form"), f"<h1>{html_lib.escape(doc.get('name', 'Form'))}</h1><p>{desc}</p><form method=post action=''>{''.join(rows)}<button type=submit>Submit</button></form>")
+    enctype = " enctype='multipart/form-data'" if any(f["type"] == "file" for f in fields) else ""
+    return page(doc.get("name", "Form"), f"<h1>{html_lib.escape(doc.get('name', 'Form'))}</h1><p>{desc}</p><form method=post action=''{enctype}>{''.join(rows)}<button type=submit>Submit</button></form>")
 
 
 def form_done_page(doc: dict, ok: bool) -> HTMLResponse:
@@ -3319,12 +3481,29 @@ async def receive_webhook(token: str, request: Request):
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
     fields = form_fields(start_node(doc))
     if request.method == "GET" and fields: return render_form(doc, fields)
-    if int(request.headers.get("content-length") or 0) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
-    raw = await request.body()
-    if len(raw) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
     ctype = request.headers.get("content-type", "")
+    kind = ctype.split(";")[0].strip().lower()
+    upload = kind == "multipart/form-data"
+    if upload and not accepts_files(start_node(doc)): raise HTTPException(415, "File uploads are not enabled for this webhook")
+    limit = UPLOAD_MAX_TOTAL if upload else WEBHOOK_MAX_BODY
+    try: declared = int(request.headers.get("content-length") or 0)
+    except ValueError: declared = 0
+    if declared > limit: raise HTTPException(413, "Payload too large")
+    chunks, size = [], 0
+    async for chunk in request.stream():  # read in pieces so an oversized body is refused without holding it all in memory
+        size += len(chunk)
+        if size > limit: raise HTTPException(413, "Payload too large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     body: Any = None
-    if raw:
+    if upload and raw:
+        try: sent, found = await run_in_threadpool(parse_multipart, raw, ctype)
+        except ValueError as exc: raise HTTPException(400, str(exc))
+        if len(found) > UPLOAD_MAX_FILES: raise HTTPException(413, f"At most {UPLOAD_MAX_FILES} files per request")
+        if any(len(f[3]) > FILE_MAX for f in found): raise HTTPException(413, "A file is larger than 5 MB")
+        body = {f["name"]: sent.get(f["name"], "") for f in fields if f["type"] != "file"} if fields else sent
+        body["files"] = await run_in_threadpool(save_uploads, found)
+    elif raw:
         text = raw.decode("utf-8", errors="replace")
         if ctype.split(";")[0].strip() == "application/x-www-form-urlencoded":
             sent = {k: v[0][:5000] for k, v in parse_qs(text, keep_blank_values=True).items()}
@@ -3332,7 +3511,7 @@ async def receive_webhook(token: str, request: Request):
         else:
             try: body = json.loads(text)
             except ValueError: body = text
-    is_form = ctype.split(";")[0].strip() == "application/x-www-form-urlencoded" and "text/html" in request.headers.get("accept", "")
+    is_form = kind in ("application/x-www-form-urlencoded", "multipart/form-data") and "text/html" in request.headers.get("accept", "")
     payload = webhook_payload(request.method, dict(request.query_params), body, ctype.split(";")[0].strip())
     if queue_mode():
         job_id = await run_in_threadpool(enqueue, doc, "webhook", payload)
@@ -3377,6 +3556,8 @@ def prune_executions() -> int:
         if cfg["retention_days"] > 0:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=cfg["retention_days"])).isoformat()
             removed += db.execute("DELETE FROM executions WHERE status != 'waiting' AND started_at < ?", (cutoff,)).rowcount
+            try: prune_uploads(cfg["retention_days"])
+            except OSError: log.exception("Pruning uploaded files failed")
         if cfg["max_executions"] > 0:
             removed += db.execute("DELETE FROM executions WHERE status != 'waiting' AND id NOT IN (SELECT id FROM executions WHERE status != 'waiting' ORDER BY started_at DESC LIMIT ?)", (cfg["max_executions"],)).rowcount
         db.execute("DELETE FROM waits WHERE execution_id NOT IN (SELECT id FROM executions)")
