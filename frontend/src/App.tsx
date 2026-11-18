@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, type Connection, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
-  History as HistoryIcon, KeyRound, LayoutDashboard, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
+  History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
 import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
@@ -82,6 +82,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [newProject, setNewProject] = useState('');
   const [page, setPage] = useState<Page>('dashboard');
   const [showHistory, setShowHistory] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const canEdit = role !== 'viewer';
   const canCreds = role === 'owner' || role === 'admin';
   const isOwner = role === 'owner';
@@ -422,7 +423,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <aside className={'sidebar ' + (navOpen ? 'open' : '')} onClick={() => setNavOpen(false)}>
         <div className="brand">
           <div className="brand-mark"><Workflow size={18} strokeWidth={2.4} /></div>
           <span className="brand-name">FlowPilot</span>
@@ -437,12 +438,14 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.10</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.11</span>
         </div>
       </aside>
 
+      <div className={'nav-overlay ' + (navOpen ? 'open' : '')} onClick={() => setNavOpen(false)} aria-hidden="true" />
       <main className="main">
         <header className="topbar">
+          <button className="icon-button menu-btn" aria-label="Open menu" onClick={() => setNavOpen(true)}><Menu size={19} /></button>
           <div className="crumb"><span>Personal</span><ChevronRight size={14} /><strong>{crumb}</strong></div>
           <div className="top-actions">
             <button className="icon-button" aria-label="Toggle theme" title="Switch light or dark theme" onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}>
@@ -593,7 +596,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 <div className="canvas-label"><span className="dot on" />{nodes.length} nodes · {edges.length} connections</div>
               </div>
 
-              <aside className="inspector">
+              <aside className={'inspector ' + (currentNode ? 'has-node' : '')}>
                 <div className="mini-heading">{currentNode ? 'Node settings' : 'Inspector'}<Settings2 size={15} /></div>
                 {currentNode ? (
                   <div className="inspect-body" data-testid="inspector">

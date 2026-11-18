@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.11
+- Responsive layout for phones and tablets (slide-out menu, stacked tables, bottom-sheet inspector)
+- Security hardening: security headers, request size limits, Secure cookies behind HTTPS, richer health check
+- Credential key rotation (`rotate_key.py`), inbox checks off the scheduler thread, interface crash screen
+- 721 API tests and a 49-check browser suite
+
 ### v0.10
 - Expressions in every {{ }}: arithmetic, comparisons, conditionals, indexing and safe text and list helpers, evaluated without running code
 - 707 API tests and a 48-check browser suite

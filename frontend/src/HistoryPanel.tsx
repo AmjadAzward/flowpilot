@@ -42,7 +42,7 @@ export function HistoryPanel({ workflowId, canRestore, dirty, onClose, onRestore
       {versions === null && <div className="empty">Loading…</div>}
       {versions?.length === 0 && <div className="empty">No earlier versions yet. Save a change to start the history.</div>}
       {versions?.map(v => (
-        <div className="history-row" key={v.id} data-testid="history-row">
+        <div className="version-row" key={v.id} data-testid="history-row">
           <div>
             <strong>{new Date(v.saved_at).toLocaleString()}</strong>
             <span className="muted">{v.name} · {v.nodes} nodes{v.saved_by ? ` · replaced by ${v.saved_by}` : ''}</span>

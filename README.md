@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-707%20API%20%2B%2048%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-721%20API%20%2B%2049%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -249,7 +249,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (707 tests, use a temporary database and key):
+**API, engine, security and connector tests** (721 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -286,6 +286,8 @@ flowpilot/
   start-mac-linux.sh         launcher for macOS and Linux
   backend/
     app/main.py              API, login, credentials vault, scheduler, webhooks and the execution engine
+    app/worker.py            queue worker (python -m app.worker)
+    rotate_key.py            rotate the credential encryption key
     reset_password.py        removes the owner account so you can set a new one
     tests/                   pytest suite
     requirements.txt
@@ -305,6 +307,31 @@ flowpilot/
 ```
 
 ---
+
+## <img src="https://img.shields.io/badge/-Configuration-0EA5E9?style=flat-square" alt="Configuration"/>
+
+Everything works with no configuration. These optional environment variables change behaviour (set them before starting the API):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `FLOWPILOT_DB` | `backend/flowpilot.db` | Where the database file lives |
+| `FLOWPILOT_KEY_FILE` | next to the database | The credential encryption key file |
+| `FLOWPILOT_SCHEDULER` | `1` | Set `0` to turn off schedules, email triggers and waiting-run resumption in this process |
+| `FLOWPILOT_QUEUE` | off | Set `1` for queue mode (see Limits to know) |
+| `FLOWPILOT_WEBHOOK_RATE` | `60` | Webhook calls allowed per minute per URL |
+| `FLOWPILOT_PUBLIC_URL` | `http://127.0.0.1:5173` | Address used for the OAuth redirect URL |
+| `FLOWPILOT_ALLOW_PRIVATE_HOSTS` | off | Set `1` to allow SMTP, IMAP, Postgres and AI endpoints on private networks or `http` (never applies to the HTTP node) |
+| `FLOWPILOT_FILES_DIR` | `backend/data/files` | The folder the Files node can use |
+| `FLOWPILOT_SQLITE_DIR` | `backend/data` | The folder for SQLite databases used by Database Query |
+| `FLOWPILOT_INBOX_ASYNC` | `1` | Set `0` to check inboxes inside the scheduler instead of in the background |
+
+**Health check:** `GET /api/health` (no sign-in needed) returns the version, whether the database answers, whether the scheduler thread is alive and whether queue mode is on. Use it for uptime monitoring.
+
+**Rotating the credential key:** stop the API, back up `flowpilot.db` and `flowpilot.key`, then run `python rotate_key.py` inside `backend` (use the virtual environment). It adds a new key and re-encrypts every credential, keeping the old key as a fallback so a crash part way loses nothing. Once you have checked that workflows still run, run it again with `--drop-old` to remove the old keys.
+
+**Behind a reverse proxy with HTTPS:** the sign-in cookie gets the `Secure` flag when the request is HTTPS or the proxy sends `X-Forwarded-Proto: https`. Responses carry `nosniff`, `no-referrer`, `DENY` framing and `no-store` headers, and API requests over 5 MB are refused (backup restore allows 25 MB). FlowPilot is still designed for your own computer, not the open internet.
+
+**Phones and tablets:** the interface adapts below 900 pixels wide, with a slide-out menu, stacked tables and a bottom-sheet node inspector. Building on a phone works but a larger screen is much easier.
 
 ## <img src="https://img.shields.io/badge/-Limits%20to%20know-FB7185?style=flat-square" alt="Limits"/>
 

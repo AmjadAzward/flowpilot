@@ -39,7 +39,7 @@ from email.message import EmailMessage
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -59,17 +59,22 @@ WEBHOOK_RATE_PER_MINUTE = int(os.getenv("FLOWPILOT_WEBHOOK_RATE", "60"))  # per 
 log = logging.getLogger("flowpilot")
 
 
+_scheduler_thread: threading.Thread | None = None
+
+
 @asynccontextmanager
 async def lifespan(_app):
+    global _scheduler_thread
     stop = threading.Event()
     recover_waits()
     if SCHEDULER_ENABLED:
-        threading.Thread(target=scheduler_loop, args=(stop,), daemon=True, name="flowpilot-scheduler").start()
+        _scheduler_thread = threading.Thread(target=scheduler_loop, args=(stop,), daemon=True, name="flowpilot-scheduler")
+        _scheduler_thread.start()
     yield
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.10.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.11.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -225,14 +230,18 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create_session(user_id: str, response: Response) -> None:
+def is_https(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https"
+
+
+def create_session(user_id: str, response: Response, secure: bool = False) -> None:
     token = secrets.token_urlsafe(32)
     created = datetime.now(timezone.utc)
     expires = created.timestamp() + SESSION_DAYS * 86400
     with conn() as db:
         db.execute("DELETE FROM sessions WHERE expires_at < ?", (created.isoformat(),))
         db.execute("INSERT INTO sessions VALUES (?,?,?,?)", (token_hash(token), user_id, created.isoformat(), datetime.fromtimestamp(expires, timezone.utc).isoformat()))
-    response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="strict", path="/")
+    response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="strict", path="/", secure=secure)
 
 
 def session_user(token: str | None) -> dict | None:
@@ -330,6 +339,28 @@ async def require_login(request: Request, call_next):
     return await call_next(request)
 
 
+MAX_BODY = 5 * 1024 * 1024
+MAX_RESTORE_BODY = 25 * 1024 * 1024
+
+
+@app.middleware("http")
+async def harden(request: Request, call_next):
+    """Cap request sizes and add basic security headers to every response."""
+    path = request.url.path
+    is_api = path.startswith("/api/")
+    if is_api and request.method in ("POST", "PUT", "PATCH") and not path.startswith("/api/hooks/"):
+        try: length = int(request.headers.get("content-length") or 0)
+        except ValueError: length = 0
+        if length > (MAX_RESTORE_BODY if path == "/api/backup/restore" else MAX_BODY):
+            return JSONResponse({"detail": "Request too large"}, status_code=413)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    if is_api and not path.startswith("/api/hooks/"): response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 @app.get("/api/auth/status")
 def auth_status(request: Request):
     with conn() as db:
@@ -345,14 +376,14 @@ def auth_status(request: Request):
 
 
 @app.post("/api/auth/setup", status_code=201)
-def auth_setup(body: SetupIn, response: Response):
+def auth_setup(body: SetupIn, request: Request, response: Response):
     """Create the owner account. Only possible while no account exists."""
     user_id = str(uuid.uuid4())
     with conn() as db:
         if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             raise HTTPException(409, "An account already exists. Please sign in.")
         db.execute("INSERT INTO users (id,username,password_hash,created_at,role) VALUES (?,?,?,?,?)", (user_id, body.username.lower(), hash_password(body.password), now(), "owner"))
-    create_session(user_id, response)
+    create_session(user_id, response, is_https(request))
     return {"username": body.username.lower(), "role": "owner"}
 
 
@@ -370,7 +401,7 @@ def auth_login(body: LoginIn, request: Request, response: Response):
         _failed_logins[key].append(time.time())
         raise HTTPException(401, "Incorrect username or password")
     _failed_logins.pop(key, None)
-    create_session(row["id"], response)
+    create_session(row["id"], response, is_https(request))
     return {"username": body.username.strip().lower(), "role": row["role"]}
 
 
@@ -543,7 +574,13 @@ def delete_project(project_id: str):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.10.0", "mode":"local"}
+def health():
+    try:
+        with conn() as db: db.execute("SELECT 1").fetchone()
+        db_ok = True
+    except Exception: db_ok = False
+    scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
+    return {"status": "ok" if db_ok else "degraded", "version": "0.11.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -741,20 +778,47 @@ _secrets_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_secrets"
 _stack_var: contextvars.ContextVar[tuple] = contextvars.ContextVar("fp_call_stack", default=())
 
 
+def key_path() -> Path:
+    return Path(os.getenv("FLOWPILOT_KEY_FILE", str(DB_PATH.parent / "flowpilot.key")))
+
+
+def write_key_file(path: Path, keys: list[bytes]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_bytes(b"\n".join(keys) + b"\n")
+    try: os.chmod(tmp, 0o600)
+    except OSError: pass  # best effort on Windows
+    os.replace(tmp, path)
+
+
 def fernet() -> Fernet:
-    path = Path(os.getenv("FLOWPILOT_KEY_FILE", str(DB_PATH.parent / "flowpilot.key")))
+    """The encryption key file holds one key per line: the first encrypts, every key can decrypt (which makes rotation crash-safe)."""
+    path = key_path()
     cached = _fernets.get(str(path))
     if cached is None:
-        if path.exists():
-            key = path.read_bytes().strip()
+        if path.exists(): keys = [k for k in path.read_bytes().split() if k]
         else:
-            key = Fernet.generate_key()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(key)
-            try: os.chmod(path, 0o600)
-            except OSError: pass  # best effort on Windows
-        cached = _fernets[str(path)] = Fernet(key)
+            keys = [Fernet.generate_key()]
+            write_key_file(path, keys)
+        cached = _fernets[str(path)] = MultiFernet([Fernet(k) for k in keys])
     return cached
+
+
+def rotate_encryption_key(drop_old: bool = False) -> int:
+    """Create a new key, re-encrypt every credential with it, and optionally forget the old keys. Returns how many credentials were re-encrypted."""
+    fernet()  # makes sure a key file exists
+    path = key_path()
+    old_keys = [k for k in path.read_bytes().split() if k]
+    write_key_file(path, [Fernet.generate_key()] + old_keys)  # new key first; old keys still decrypt, so a crash here loses nothing
+    _fernets.pop(str(path), None)
+    f = fernet()
+    with conn() as db:
+        rows = db.execute("SELECT name, value_enc FROM credentials").fetchall()
+        for r in rows: db.execute("UPDATE credentials SET value_enc=? WHERE name=?", (f.rotate(r["value_enc"].encode()).decode(), r["name"]))
+    if drop_old:
+        write_key_file(path, [path.read_bytes().split()[0]])
+        _fernets.pop(str(path), None)
+    return len(rows)
 
 
 def load_secrets() -> dict[str, str | None]:
@@ -1689,6 +1753,28 @@ def fetch_unseen(d: dict) -> list[dict]:
     return out
 
 
+INBOX_ASYNC = os.getenv("FLOWPILOT_INBOX_ASYNC", "1") != "0"
+_inbox_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="flowpilot-inbox")
+_inbox_busy: set[str] = set()
+_inbox_lock = threading.Lock()
+
+
+def submit_inbox_poll(doc: dict, node: dict) -> None:
+    """Check an inbox in the background, so a slow mail server never delays other schedules. One check per workflow at a time."""
+    with _inbox_lock:
+        if doc["id"] in _inbox_busy: return
+        _inbox_busy.add(doc["id"])
+
+    def work() -> None:
+        try: poll_inbox(doc, node)
+        except Exception: log.exception("Inbox check failed for %s", doc["id"])
+        finally:
+            with _inbox_lock: _inbox_busy.discard(doc["id"])
+
+    if INBOX_ASYNC: _inbox_pool.submit(work)
+    else: work()
+
+
 def poll_inbox(doc: dict, node: dict) -> None:
     secrets_ = load_secrets()
     token = _secrets_var.set(secrets_)
@@ -2460,7 +2546,7 @@ def scheduler_tick(at: datetime | None = None) -> int:
             if node["type"] == "email_in":
                 upcoming = (moment + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
                 with conn() as db: db.execute("UPDATE workflows SET next_run_at=? WHERE id=?", (upcoming, row["id"]))
-                poll_inbox(doc, node)
+                submit_inbox_poll(doc, node)
                 started += 1
                 continue
             # Advance first: if the server was off, a missed run happens once and then the normal rhythm resumes.

@@ -6,6 +6,7 @@ from pathlib import Path
 _tmp = tempfile.mkdtemp(prefix="flowpilot-test-")
 os.environ["FLOWPILOT_DB"] = str(Path(_tmp) / "test.db")
 os.environ["FLOWPILOT_SCHEDULER"] = "0"  # tests drive scheduler_tick() directly
+os.environ["FLOWPILOT_INBOX_ASYNC"] = "0"  # inbox checks run inline in tests
 
 import httpx
 import pytest

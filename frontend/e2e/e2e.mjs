@@ -776,6 +776,37 @@ await check('expressions calculate inside a text template', async () => {
   await expectText(runPanel(), /Expression error[\s\S]*division by zero/);
 });
 
+await check('phone-width layout: no sideways scrolling, menu works, tables stack, inspector is a bottom sheet', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, storageState: await page.context().storageState() });
+  const m = await ctx.newPage();
+  try {
+    await m.goto(BASE);
+    await m.getByRole('button', { name: 'Open menu' }).waitFor();
+    const overflow = async where => {
+      const o = await m.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth, wide: [...document.querySelectorAll('.content, .editor-bar, .topbar')].some(e => e.scrollWidth > e.clientWidth + 2) }));
+      if (o.scroll > o.inner + 1 || o.wide) throw new Error(`sideways overflow on ${where}: ${JSON.stringify(o)}`);
+    };
+    await overflow('dashboard');
+    if (await m.getByRole('button', { name: /^Credentials/ }).isVisible()) throw new Error('the menu should start closed');
+    for (const name of ['Credentials', 'Executions', 'Settings', 'Users']) {
+      await m.getByRole('button', { name: 'Open menu' }).click();
+      await m.getByRole('button', { name: new RegExp('^' + name) }).click();
+      await m.waitForTimeout(250);
+      await overflow(name);
+      if (await m.getByRole('button', { name: /^Credentials/ }).isVisible()) throw new Error('the menu should close after choosing a page');
+    }
+    await m.getByRole('button', { name: 'Open menu' }).click();
+    await m.getByRole('button', { name: /^Overview/ }).click();
+    await m.getByTestId('template-greeting').click();
+    await m.locator('.react-flow__node').first().waitFor();
+    await overflow('editor');
+    await m.locator('.react-flow__node', { hasText: 'Text Template' }).click();
+    const box = await m.locator('.inspector.has-node').boundingBox();
+    if (!box || box.y < 300 || box.width < 380) throw new Error('the inspector should be a bottom sheet: ' + JSON.stringify(box));
+    if (SHOTS) await m.screenshot({ path: `${SHOTS}/28-phone-editor.png` });
+  } finally { await ctx.close(); }
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();
