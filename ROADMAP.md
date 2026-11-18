@@ -27,17 +27,25 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.4
+- Credentials vault: Fernet-encrypted at rest, never returned by the API, redacted from run results
+- Engine rebuilt: Loop Over Items, Merge (fan-in), Run Workflow (sub-workflows), pinned node data
+- Set Fields, Filter List, Parse CSV, Send Email (SMTP), Send Message (Slack, Discord)
+- HTTP authentication (Bearer, Basic, API-key header) and cron schedules
+- Editor: undo/redo, copy/paste, duplicate, tidy layout, per-node input and output panel
+- 245 API tests and a 34-check browser suite
+
 ## Phase 2: True automation engine
 - Worker queue (Redis or database-backed)
 - Cron expressions, time zones per workflow and durable job queue for schedules
 - Signed webhook payloads and replay protection
 - Pause/resume, job retry rules, idempotency
-- Merge nodes (fan-in), subflows, loops and bounded parallel execution
+- Bounded parallel execution, retries with backoff and error-handler workflows
 - Node-level error handling and execution versioning
 
 ## Phase 3: Integrations and credentials
 - API connector SDK and connector manifest schema
-- Credential store with encryption at rest and key rotation
+- Credential key rotation
 - OAuth integrations (Google, Microsoft, Slack, etc.)
 - Email and chat notification action nodes
 - CSV, JSON, database, Google Sheets actions

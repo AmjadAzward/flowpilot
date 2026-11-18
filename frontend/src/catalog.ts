@@ -2,10 +2,10 @@ import type { Edge, Node } from '@xyflow/react';
 
 export type TriggerKind = 'manual' | 'schedule' | 'webhook';
 export type FlowDoc = { id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
-export type Step = { node_id: string; label: string; type?: string; status: string; output?: unknown; error?: string; branch?: string | null; duration_ms?: number };
+export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean };
 export type Run = { id: string; trigger?: TriggerKind; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'condition' | 'http' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -15,14 +15,24 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'input', label: 'JSON Input', desc: 'Provide structured data', category: 'Data', color: '#38bdf8', icon: 'Braces' },
   { type: 'transform', label: 'Extract Field', desc: 'Read a nested JSON path', category: 'Data', color: '#2dd4bf', icon: 'ListTree' },
   { type: 'template', label: 'Text Template', desc: 'Build text with {{placeholders}}', category: 'Data', color: '#a78bfa', icon: 'Type' },
+  { type: 'set', label: 'Set Fields', desc: 'Build a JSON object', category: 'Data', color: '#06b6d4', icon: 'PenLine' },
+  { type: 'filter', label: 'Filter List', desc: 'Keep matching items', category: 'Data', color: '#84cc16', icon: 'Filter' },
+  { type: 'csv', label: 'Parse CSV', desc: 'Turn CSV text into rows', category: 'Data', color: '#22c55e', icon: 'Table' },
+  { type: 'loop', label: 'Loop Over Items', desc: 'Run steps once per list item', category: 'Logic', color: '#0ea5e9', icon: 'Repeat' },
+  { type: 'merge', label: 'Merge', desc: 'Combine several branches', category: 'Logic', color: '#14b8a6', icon: 'GitMerge' },
+  { type: 'subflow', label: 'Run Workflow', desc: 'Call another workflow', category: 'Logic', color: '#64748b', icon: 'Workflow' },
   { type: 'condition', label: 'Compare Value', desc: 'Branch into true and false paths', category: 'Logic', color: '#f472b6', icon: 'GitBranch' },
   { type: 'delay', label: 'Delay', desc: 'Wait up to 5 seconds', category: 'Logic', color: '#fb923c', icon: 'Timer' },
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
+  { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
+  { type: 'email', label: 'Send Email', desc: 'Send over SMTP', category: 'Network', color: '#d946ef', icon: 'Mail' },
   { type: 'note', label: 'Pass Through', desc: 'Forward data unchanged', category: 'Logic', color: '#94a3b8', icon: 'ArrowRight' },
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook'];
+/** Nodes whose output can be pinned so the node is skipped while you build the rest. */
+export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow'];
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -42,7 +52,15 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'condition': return { path: 'status', op: 'equals', equals: 'active' };
     case 'delay': return { seconds: '1' };
     case 'http': return { url: 'https://jsonplaceholder.typicode.com/todos/1', method: 'GET', headers: '', body: '' };
-    case 'schedule': return { mode: 'interval', minutes: '15', time: '09:00' };
+    case 'schedule': return { mode: 'interval', minutes: '15', time: '09:00', cron: '0 9 * * 1-5' };
+    case 'set': return { json: '{"greeting":"Hello {{name}}"}' };
+    case 'filter': return { path: 'score', op: 'gt', equals: '50' };
+    case 'csv': return { path: '', header: 'true' };
+    case 'loop': return { path: '' };
+    case 'merge': return { mode: 'append' };
+    case 'subflow': return { workflow_id: '' };
+    case 'notify': return { service: 'slack', url: '{{cred.SLACK_URL}}', message: 'Hello from FlowPilot' };
+    case 'email': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };
     case 'webhook': return { sample: '{"name":"Ada","message":"Hello from a webhook"}' };
     default: return {};
   }
@@ -98,5 +116,17 @@ export const templates: { id: string; name: string; description: string; tag: st
     description: 'Build a JSON body from your data, POST it to an API and read a field from the response.',
     nodes: [n('t', 'trigger', 30, 160), n('i', 'input', 250, 160, { json: '{"title":"Hello","body":"From FlowPilot","userId":1}' }), n('h', 'http', 480, 160, { url: 'https://jsonplaceholder.typicode.com/posts', method: 'POST', headers: '{"X-Source":"flowpilot"}', body: '{{}}' }), n('x', 'transform', 740, 160, { path: 'id' }), n('o', 'output', 980, 160)],
     edges: [e('t', 'i'), e('i', 'h'), e('h', 'x'), e('x', 'o')],
+  },
+  {
+    id: 'loop-list', name: 'Process a list', tag: 'Loop',
+    description: 'Run steps once for every item in a list, then collect the results. Great for orders, rows or users.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 240, 150, { json: '[{"name":"Ada","score":91},{"name":"Bob","score":48},{"name":"Cy","score":77}]' }), n('l', 'loop', 480, 150), n('m', 'template', 740, 40, { template: '{{name}} scored {{score}}' }), n('o', 'output', 740, 260)],
+    edges: [e('t', 'i'), e('i', 'l'), e('l', 'm', 'each'), e('l', 'o', 'done')],
+  },
+  {
+    id: 'csv-report', name: 'CSV to filtered report', tag: 'Data',
+    description: 'Parse CSV text, keep rows above a score, then build one line per row with a loop.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '"name,score\\nAda,90\\nBob,40\\nCy,75"' }), n('c', 'csv', 440, 150), n('f', 'filter', 650, 150, { path: 'score', op: 'gt', equals: '50' }), n('l', 'loop', 860, 150), n('m', 'template', 1100, 40, { template: '{{name}}: {{score}}' }), n('o', 'output', 1100, 260)],
+    edges: [e('t', 'i'), e('i', 'c'), e('c', 'f'), e('f', 'l'), e('l', 'm', 'each'), e('l', 'o', 'done')],
   },
 ];

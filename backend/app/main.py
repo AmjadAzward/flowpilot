@@ -1,6 +1,9 @@
 """FlowPilot: small self-hosted visual automation API. SQLite, no cloud required."""
 from __future__ import annotations
+import base64
+import contextvars
 import copy
+import csv
 import hashlib
 import hmac
 import json
@@ -12,15 +15,20 @@ import re
 import time
 import sqlite3
 import socket
+import io
 import ipaddress
+import smtplib
+import ssl
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from email.message import EmailMessage
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -48,7 +56,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.3.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.4.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -98,6 +106,7 @@ def initialize():
             db.execute("ALTER TABLE executions ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'")
         for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
+        db.execute("CREATE TABLE IF NOT EXISTS credentials (name TEXT PRIMARY KEY, value_enc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
@@ -119,7 +128,8 @@ def validate_flow(body: WorkflowIn):
     ids = [n.get("id") for n in body.nodes]
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
-    valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay"}
+    valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -259,7 +269,7 @@ def auth_logout(request: Request, response: Response):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.3.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.4.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows():
@@ -354,6 +364,13 @@ def safe_url(value: str):
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None,443):
         raise ValueError("HTTP node requires a public HTTPS URL on port 443")
     hostname = parsed.hostname.lower().rstrip(".")
+    assert_public_host(hostname)
+    return value
+
+
+def assert_public_host(hostname: str, relaxed: bool = False) -> None:
+    """Block localhost, private and cloud-metadata addresses. `relaxed` callers (email) may opt out with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1."""
+    if relaxed and os.getenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS") == "1": return
     if hostname in {"localhost", "metadata.google.internal"} or hostname.endswith((".localhost", ".local", ".internal")):
         raise ValueError("Local/private addresses are blocked")
     try:
@@ -361,7 +378,6 @@ def safe_url(value: str):
         if not answers or any(not ipaddress.ip_address(item[4][0]).is_global for item in answers):
             raise ValueError("Only public IP addresses are allowed")
     except socket.gaierror as exc: raise ValueError("Cannot resolve destination host") from exc
-    return value
 
 
 def compare(actual: Any, op: str, expected: str) -> bool:
@@ -379,17 +395,109 @@ def compare(actual: Any, op: str, expected: str) -> bool:
     raise ValueError(f"Unknown comparison operator: {op}")
 
 
-def render_template(text: str, data: Any) -> str:
-    """Replace {{path}} placeholders using the incoming data."""
+# ---------------------------------------------------------------------------
+# Credentials vault: Fernet-encrypted at rest, decrypted only while a run is in progress
+# ---------------------------------------------------------------------------
+NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+MAX_CREDENTIALS = 100
+_fernets: dict[str, Fernet] = {}
+_secrets_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_secrets", default={})
+_stack_var: contextvars.ContextVar[tuple] = contextvars.ContextVar("fp_call_stack", default=())
+
+
+def fernet() -> Fernet:
+    path = Path(os.getenv("FLOWPILOT_KEY_FILE", str(DB_PATH.parent / "flowpilot.key")))
+    cached = _fernets.get(str(path))
+    if cached is None:
+        if path.exists():
+            key = path.read_bytes().strip()
+        else:
+            key = Fernet.generate_key()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(key)
+            try: os.chmod(path, 0o600)
+            except OSError: pass  # best effort on Windows
+        cached = _fernets[str(path)] = Fernet(key)
+    return cached
+
+
+def load_secrets() -> dict[str, str | None]:
+    with conn() as db:
+        rows = db.execute("SELECT name, value_enc FROM credentials").fetchall()
+    if not rows: return {}
+    f, out = fernet(), {}
+    for r in rows:
+        try: out[r["name"]] = f.decrypt(r["value_enc"].encode()).decode()
+        except InvalidToken: out[r["name"]] = None  # key file was replaced; reported when used
+    return out
+
+
+def lookup_secret(name: str) -> str:
+    secrets_ = _secrets_var.get()
+    if name not in secrets_: raise ValueError(f"Unknown credential: {name or '(none chosen)'}")
+    value = secrets_[name]
+    if value is None: raise ValueError(f"Credential {name} cannot be decrypted. Was the key file replaced?")
+    return value
+
+
+def redact(result: dict, secrets_: dict) -> dict:
+    """Hide every credential value anywhere in a run result (outputs, inputs, errors)."""
+    values = sorted({v for v in secrets_.values() if v and len(v) >= 4}, key=len, reverse=True)
+    if not values: return result
+    text = json.dumps(result, default=str)
+    for v in values:
+        for variant in {v, json.dumps(v)[1:-1]}:
+            text = text.replace(variant, "[hidden]")
+    return json.loads(text)
+
+
+class CredentialIn(BaseModel):
+    value: str = Field(min_length=4, max_length=4000)
+
+
+@app.get("/api/credentials")
+def list_credentials():
+    """Names only. Values are never returned by any endpoint."""
+    with conn() as db:
+        rows = db.execute("SELECT name, created_at, updated_at FROM credentials ORDER BY name").fetchall()
+    return [{"name": r["name"], "created_at": r["created_at"], "updated_at": r["updated_at"]} for r in rows]
+
+
+@app.put("/api/credentials/{name}")
+def save_credential(name: str, body: CredentialIn):
+    if not NAME_RE.fullmatch(name): raise HTTPException(400, "Name must start with a letter and use only letters, numbers, _ and - (max 40)")
+    if "\r" in body.value or "\n" in body.value: raise HTTPException(400, "Credential values cannot contain line breaks")
+    encrypted = fernet().encrypt(body.value.encode()).decode()
+    with conn() as db:
+        exists = db.execute("SELECT 1 FROM credentials WHERE name=?", (name,)).fetchone()
+        if not exists and db.execute("SELECT COUNT(*) AS n FROM credentials").fetchone()["n"] >= MAX_CREDENTIALS:
+            raise HTTPException(400, f"At most {MAX_CREDENTIALS} credentials are allowed")
+        ts = now()
+        if exists: db.execute("UPDATE credentials SET value_enc=?, updated_at=? WHERE name=?", (encrypted, ts, name))
+        else: db.execute("INSERT INTO credentials (name,value_enc,created_at,updated_at) VALUES (?,?,?,?)", (name, encrypted, ts, ts))
+    return {"name": name, "saved": True}
+
+
+@app.delete("/api/credentials/{name}", status_code=204)
+def delete_credential(name: str):
+    with conn() as db:
+        db.execute("DELETE FROM credentials WHERE name=?", (name,))
+
+
+def render_template(text: str, data: Any, json_escape: bool = False) -> str:
+    """Replace {{path}} with values from the incoming data and {{cred.NAME}} with a stored credential."""
     def repl(match):
-        value = get_path(data, match.group(1).strip())
+        path = match.group(1).strip()
+        value = lookup_secret(path[5:]) if path.startswith("cred.") else get_path(data, path)
         if value is None: return ""
-        return value if isinstance(value, str) else json.dumps(value)
+        if isinstance(value, str): return json.dumps(value)[1:-1] if json_escape else value
+        return json.dumps(value)
     return re.sub(r"\{\{(.*?)\}\}", repl, text)
 
 
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 BLOCKED_HEADERS = {"host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection"}
+HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
 def parse_headers(text: str) -> dict[str, str]:
@@ -401,7 +509,7 @@ def parse_headers(text: str) -> dict[str, str]:
     out = {}
     for key, value in raw.items():
         name = str(key).strip()
-        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", name): raise ValueError(f"Invalid header name: {name!r}")
+        if not HEADER_NAME_RE.fullmatch(name): raise ValueError(f"Invalid header name: {name!r}")
         if name.lower() in BLOCKED_HEADERS: raise ValueError(f"Header not allowed: {name}")
         if isinstance(value, (dict, list)) or value is None: raise ValueError(f"Header {name} must be text or a number")
         text_value = str(value)
@@ -410,10 +518,99 @@ def parse_headers(text: str) -> dict[str, str]:
     return out
 
 
+def apply_auth(headers: dict, d: dict) -> None:
+    """Add an Authorization (or custom) header from a stored credential, when the node asks for one."""
+    kind = str(d.get("auth_type") or "none")
+    if kind == "none": return
+    secret = lookup_secret(str(d.get("auth_credential") or "").strip())
+    if kind == "bearer": headers["Authorization"] = f"Bearer {secret}"
+    elif kind == "basic": headers["Authorization"] = "Basic " + base64.b64encode(secret.encode()).decode()
+    elif kind == "header":
+        name = str(d.get("auth_header") or "").strip()
+        if not HEADER_NAME_RE.fullmatch(name) or name.lower() in BLOCKED_HEADERS: raise ValueError(f"Invalid authentication header name: {name!r}")
+        headers[name] = secret
+    else: raise ValueError(f"Unknown authentication type: {kind}")
+
+
+def do_request(method: str, url: str, headers: dict, **kwargs) -> Any:
+    # Never follow redirects, so a public URL cannot bounce to an internal address.
+    with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=False) as client:
+        response = client.request(method, url, headers=headers, **kwargs)
+        response.raise_for_status()
+        if len(response.content) > 1_000_000: raise ValueError("HTTP response exceeds 1 MB")
+        try: return response.json()
+        except ValueError: return response.text
+
+
+EMAIL_RE = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+
+
+def send_email(d: dict, previous: Any) -> dict:
+    cred = urlparse(lookup_secret(str(d.get("credential") or "").strip()))
+    if cred.scheme not in ("smtp", "smtps") or not cred.hostname:
+        raise ValueError("The SMTP credential must look like smtp://user:password@host:587?from=you@example.com (URL-encode special characters)")
+    query = parse_qs(cred.query)
+    sender = (query.get("from", [unquote(cred.username or "")])[0]).strip()
+    security = query.get("security", ["ssl" if cred.scheme == "smtps" else "starttls"])[0].lower()
+    if security not in ("ssl", "starttls", "none"): raise ValueError("security must be ssl, starttls or none")
+    port = cred.port or {"ssl": 465, "starttls": 587, "none": 25}[security]
+    if not EMAIL_RE.fullmatch(sender): raise ValueError("The SMTP credential needs a valid from= address")
+    assert_public_host(cred.hostname.lower(), relaxed=True)
+    recipients = [x.strip() for x in render_template(str(d.get("to", "")), previous).split(",") if x.strip()]
+    if not 1 <= len(recipients) <= 10: raise ValueError("Provide between 1 and 10 recipients")
+    for r in recipients:
+        if not EMAIL_RE.fullmatch(r): raise ValueError(f"Invalid recipient address: {r!r}")
+    subject = render_template(str(d.get("subject", "")), previous)
+    if "\r" in subject or "\n" in subject or len(subject) > 200: raise ValueError("Subject must be one line of at most 200 characters")
+    body = render_template(str(d.get("body", "")), previous)
+    if len(body) > 100_000: raise ValueError("Email body is too large")
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = sender, ", ".join(recipients), subject
+    msg.set_content(body)
+    smtp_cls = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
+    with smtp_cls(cred.hostname, port, timeout=10) as smtp:
+        if security == "starttls": smtp.starttls(context=ssl.create_default_context())
+        if cred.username: smtp.login(unquote(cred.username), unquote(cred.password or ""))
+        smtp.send_message(msg)
+    return {"sent_to": recipients, "subject": subject}
+
+
+def send_notify(d: dict, previous: Any) -> dict:
+    service = str(d.get("service") or "slack").lower()
+    if service not in ("slack", "discord", "generic"): raise ValueError(f"Unknown service: {service}")
+    url = safe_url(render_template(str(d.get("url", "")), previous))
+    message = render_template(str(d.get("message", "")), previous)
+    if not message.strip(): raise ValueError("The message is empty")
+    if len(message) > 4000: raise ValueError("The message is longer than 4000 characters")
+    payload = {"content": message} if service == "discord" else {"text": message}
+    do_request("POST", url, {}, json=payload)
+    return {"sent": True, "service": service}
+
+
+def parse_csv_text(d: dict, previous: Any) -> list:
+    path = str(d.get("path") or "").strip()
+    text = get_path(previous, path) if path else previous
+    if not isinstance(text, str): raise ValueError("Parse CSV needs text as input. Use 'Text field' to point at it.")
+    if len(text) > 1_000_000: raise ValueError("CSV text exceeds 1 MB")
+    rows = list(csv.reader(io.StringIO(text)))
+    if len(rows) > 10_001: raise ValueError("CSV has more than 10000 rows")
+    if str(d.get("header", "true")).lower() == "false": return rows
+    if not rows: return []
+    keys = [k.strip() for k in rows[0]]
+    return [dict(zip(keys, row)) for row in rows[1:]]
+
+
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow"}
+MAX_STEPS = 500
+MAX_LOOP_ITEMS = 100
+MAX_SUBFLOW_DEPTH = 3
+PREVIEW_LIMIT = 20_000
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
-    d = node.get("data", {})
+    d = node.get("data", {}) or {}
     if typ in START_TYPES or typ in ("note", "output"): return previous, previous, None
     if typ == "input":
         value = read_json(d.get("json", "{}"))
@@ -423,6 +620,29 @@ def step_action(node: dict, previous: Any):
         return value, value, None
     if typ == "template":
         value = render_template(str(d.get("template", "")), previous)
+        return value, value, None
+    if typ == "set":
+        rendered = render_template(str(d.get("json", "{}")), previous, json_escape=True)
+        value = read_json(rendered)
+        return value, value, None
+    if typ == "filter":
+        if not isinstance(previous, list): raise ValueError("Filter List needs a list as input")
+        path, op, expected = str(d.get("path") or "").strip(), str(d.get("op", "equals")), str(d.get("equals", ""))
+        value = [item for item in previous if compare(get_path(item, path) if path else item, op, expected)]
+        return value, value, None
+    if typ == "csv":
+        value = parse_csv_text(d, previous)
+        return value, value, None
+    if typ == "merge":
+        mode = str(d.get("mode") or "append")
+        if mode == "append": value = list(previous)
+        elif mode == "first": value = previous[0]
+        elif mode == "combine":
+            value = {}
+            for part in previous:
+                if not isinstance(part, dict): raise ValueError("Merge in 'combine' mode needs every input to be an object")
+                value.update(part)
+        else: raise ValueError(f"Unknown merge mode: {mode}")
         return value, value, None
     if typ == "delay":
         try: seconds = float(d.get("seconds", 1))
@@ -439,60 +659,198 @@ def step_action(node: dict, previous: Any):
         if method not in HTTP_METHODS: raise ValueError(f"Unsupported HTTP method: {method}")
         url = safe_url(render_template(str(d.get("url", "")), previous))
         headers = {k: render_template(v, previous) for k, v in parse_headers(str(d.get("headers", ""))).items()}
+        apply_auth(headers, d)
         kwargs: dict[str, Any] = {}
-        body_text = render_template(str(d.get("body", "")), previous) if method in ("POST", "PUT", "PATCH") else ""
-        if body_text.strip():
-            if len(body_text) > 1_000_000: raise ValueError("Request body exceeds 1 MB")
-            try: kwargs["json"] = json.loads(body_text)
+        raw_body = str(d.get("body", "")) if method in ("POST", "PUT", "PATCH") else ""
+        if raw_body.strip():
+            as_json = render_template(raw_body, previous, json_escape=True)  # values are escaped so quotes cannot break the JSON
+            if len(as_json) > 1_000_000: raise ValueError("Request body exceeds 1 MB")
+            try: kwargs["json"] = json.loads(as_json)
             except ValueError:
-                kwargs["content"] = body_text.encode()
+                kwargs["content"] = render_template(raw_body, previous).encode()
                 if not any(k.lower() == "content-type" for k in headers): headers["Content-Type"] = "text/plain; charset=utf-8"
-        # Never follow redirects, so a public URL cannot bounce to an internal address.
-        with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=False) as client:
-            response = client.request(method, url, headers=headers, **kwargs)
-            response.raise_for_status()
-            if len(response.content) > 1_000_000: raise ValueError("HTTP response exceeds 1 MB")
-            try: value = response.json()
-            except ValueError: value = response.text
-            return value, value, None
+        value = do_request(method, url, headers, **kwargs)
+        return value, value, None
+    if typ == "notify": return send_notify(d, previous), previous, None
+    if typ == "email": return send_email(d, previous), previous, None
+    if typ == "subflow":
+        wid = str(d.get("workflow_id") or "").strip()
+        if not wid: raise ValueError("Choose a workflow to run")
+        stack = _stack_var.get()
+        if wid in stack: raise ValueError("A workflow cannot call itself, directly or indirectly")
+        if len(stack) > MAX_SUBFLOW_DEPTH: raise ValueError("Sub-workflows are nested too deeply")
+        try: sub = get_workflow(wid)
+        except HTTPException: raise ValueError("Sub-workflow not found")
+        token = _stack_var.set(stack + (wid,))
+        try: res = _execute(sub, previous)
+        finally: _stack_var.reset(token)
+        if res["status"] != "success": raise ValueError(f"Sub-workflow '{sub['name']}' failed: {res['error']}")
+        return res["output"], res["output"], None
     raise ValueError(f"Unsupported node: {typ}")
 
 
-def run_flow(doc: dict, initial: Any = None):
-    nodes = {n["id"]: n for n in doc["nodes"]}
-    if not nodes: raise ValueError("Workflow has no nodes")
-    incoming = {i: [] for i in nodes}
-    outgoing = {i: [] for i in nodes}
-    for e in doc["edges"]:
-        if e["source"] in nodes and e["target"] in nodes:
-            incoming[e["target"]].append(e["source"])
-            outgoing[e["source"]].append(e)
-    triggers = [nid for nid, n in nodes.items() if n["type"] in START_TYPES]
-    if len(triggers) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
-    if incoming[triggers[0]]: raise ValueError("A trigger cannot have incoming connections")
-    if any(len(incoming[n]) > 1 for n in nodes): raise ValueError("Engine supports only one incoming connection per node")
-    visited, steps = set(), []
-    final = {"value": None}
-    stack = [(triggers[0], initial)]
+# ---------------------------------------------------------------------------
+# Execution engine: nodes run when all their live inputs have arrived. Condition branches that are
+# not taken deliver "dead" inputs, so a Merge node never waits for a path that will not run.
+# ---------------------------------------------------------------------------
+class StepFailure(Exception):
+    """A node failed; its error step has already been recorded."""
+
+
+class Graph:
+    def __init__(self, doc: dict):
+        self.nodes = {n["id"]: n for n in doc["nodes"]}
+        if not self.nodes: raise ValueError("Workflow has no nodes")
+        self.out: dict[str, list] = {i: [] for i in self.nodes}
+        self.inc: dict[str, list] = {i: [] for i in self.nodes}
+        for e in doc["edges"]:
+            if e["source"] in self.nodes and e["target"] in self.nodes:
+                self.out[e["source"]].append(e)
+                self.inc[e["target"]].append(e)
+        self.steps: list[dict] = []
+        self.iter: list[int] = []
+
+    def reach(self, starts) -> set:
+        seen, queue = set(), list(starts)
+        while queue:
+            n = queue.pop()
+            if n in seen: continue
+            seen.add(n)
+            queue.extend(e["target"] for e in self.out[n])
+        return seen
+
+    def body_of(self, loop_id: str) -> set:
+        return self.reach([e["target"] for e in self.out[loop_id] if e.get("sourceHandle") == "each"])
+
+    def has_cycle(self, nodes: set) -> bool:
+        indeg = {n: 0 for n in nodes}
+        for n in nodes:
+            for e in self.out[n]:
+                if e["target"] in indeg: indeg[e["target"]] += 1
+        queue, seen = [n for n, d in indeg.items() if d == 0], 0
+        while queue:
+            n = queue.pop()
+            seen += 1
+            for e in self.out[n]:
+                t = e["target"]
+                if t in indeg:
+                    indeg[t] -= 1
+                    if indeg[t] == 0: queue.append(t)
+        return seen != len(nodes)
+
+
+def preview(value: Any) -> Any:
+    try: text = json.dumps(value, default=str)
+    except (TypeError, ValueError): return str(value)[:2000]
+    return {"truncated": True, "preview": text[:2000]} if len(text) > PREVIEW_LIMIT else value
+
+
+def run_loop(g: Graph, nid: str, node: dict, value: Any):
+    data = node.get("data", {}) or {}
+    path = str(data.get("path") or "").strip()
+    items = get_path(value, path) if path else value
+    if not isinstance(items, list): raise ValueError("Loop Over Items needs a list. Use 'List field' to point at one inside the data.")
+    if len(items) > MAX_LOOP_ITEMS: raise ValueError(f"A loop is limited to {MAX_LOOP_ITEMS} items")
+    outs = g.out[nid]
+    if any(e.get("sourceHandle") not in ("each", "done") for e in outs): raise ValueError("Connect the loop's outputs from its 'each' or 'done' handle")
+    each = [e for e in outs if e.get("sourceHandle") == "each"]
+    done = [e for e in outs if e.get("sourceHandle") == "done"]
+    body = g.body_of(nid)
+    if body & g.reach([e["target"] for e in done]): raise ValueError("The loop's 'each' and 'done' paths cannot join")
+    results = []
+    for i, item in enumerate(items):
+        g.iter.append(i)
+        try: results.append(run_graph(g, body, [(e, item) for e in each]) if each else item)
+        finally: g.iter.pop()
+    return {"items": len(items)}, results
+
+
+def run_graph(g: Graph, allowed: set, seeds: list):
+    """Run the nodes in `allowed`. `seeds` are (edge, value) pairs that feed the entry nodes. Returns the last value produced."""
+    allowed = set(allowed)
+    inner = set()
+    for nid in allowed:
+        if g.nodes[nid]["type"] == "loop": inner |= g.body_of(nid)
+    allowed -= inner
+    pending = {n: sum(1 for e in g.inc[n] if e["source"] in allowed) for n in allowed}
+    for edge, _ in seeds: pending[edge["target"]] += 1
+    got: dict[str, list] = {n: [] for n in allowed}
+    stack: list[str] = []
+    final: Any = None
+
+    def deliver(target: str, value: Any, dead: bool) -> None:
+        if target not in allowed: return
+        pending[target] -= 1
+        if not dead: got[target].append(value)
+        if pending[target] == 0:
+            if got[target]: stack.append(target)
+            else:
+                for e in g.out[target]: deliver(e["target"], None, True)
+
+    for edge, value in seeds: deliver(edge["target"], value, False)
     while stack:
-        cursor, previous = stack.pop()
-        if cursor in visited: raise ValueError("Cycles are not supported in this release")
-        visited.add(cursor)
-        if len(steps) >= MAX_NODES: raise ValueError("Maximum execution steps exceeded")
-        node = nodes[cursor]
-        label = node.get("data", {}).get("label", node["type"])
-        t0 = time.perf_counter()
+        nid = stack.pop()
+        node = g.nodes[nid]
+        typ = node["type"]
+        data = node.get("data", {}) or {}
+        value = got[nid] if typ == "merge" else got[nid][0]
+        if len(g.steps) >= MAX_STEPS: raise StepFailure("Maximum execution steps exceeded")
+        step = {"node_id": nid, "label": data.get("label", typ), "type": typ, "input": preview(value)}
+        if g.iter: step["iteration"] = list(g.iter)
+        g.steps.append(step)
+        t0, branch = time.perf_counter(), None
         try:
-            shown, passed, branch = step_action(node, previous)
+            pin = str(data.get("pin") or "").strip()
+            if pin and typ in PINNABLE:
+                shown = read_json(pin)
+                passed = shown
+                step["pinned"] = True
+            elif typ == "loop": shown, passed = run_loop(g, nid, node, value)
+            else: shown, passed, branch = step_action(node, value)
+        except StepFailure as exc:
+            step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
+            raise
         except Exception as exc:
-            steps.append({"node_id": cursor, "label": label, "type": node["type"], "status": "error", "error": str(exc), "duration_ms": round((time.perf_counter() - t0) * 1000, 1)})
-            return {"status": "failed", "output": None, "steps": steps, "error": str(exc)}
-        steps.append({"node_id": cursor, "label": label, "type": node["type"], "status": "success", "output": shown, "branch": branch, "duration_ms": round((time.perf_counter() - t0) * 1000, 1)})
-        final["value"] = passed if node["type"] == "condition" else shown
-        # Condition nodes only follow the matching branch; edges without a handle always follow.
-        followed = [e for e in outgoing[cursor] if branch is None or e.get("sourceHandle") in (None, branch)]
-        for e in reversed(followed): stack.append((e["target"], passed))
-    return {"status": "success", "output": final["value"], "steps": steps, "error": None}
+            step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
+            raise StepFailure(str(exc)) from exc
+        step.update(status="success", output=shown, branch=branch, duration_ms=round((time.perf_counter() - t0) * 1000, 1))
+        final = passed if typ in ("condition", "loop") else shown
+        # Condition: only the matching branch is live. Loop: only 'done' continues here ('each' runs inside run_loop).
+        live, dead = [], []
+        for e in g.out[nid]:
+            handle = e.get("sourceHandle")
+            follows = handle in (None, branch) if typ == "condition" else handle == "done" if typ == "loop" else True
+            (live if follows else dead).append(e)
+        for e in dead: deliver(e["target"], None, True)
+        for e in reversed(live): deliver(e["target"], passed, False)
+    return final
+
+
+def _execute(doc: dict, initial: Any = None) -> dict:
+    g = Graph(doc)
+    starts = [nid for nid, n in g.nodes.items() if n["type"] in START_TYPES]
+    if len(starts) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
+    if g.inc[starts[0]]: raise ValueError("A trigger cannot have incoming connections")
+    if any(len(g.inc[n]) > 1 and g.nodes[n]["type"] != "merge" for n in g.nodes):
+        raise ValueError("Only a Merge node can have more than one incoming connection")
+    reachable = g.reach([starts[0]])
+    if g.has_cycle(reachable): raise ValueError("Cycles are not supported in this release")
+    try: final = run_graph(g, reachable, [({"target": starts[0]}, initial)])
+    except StepFailure as exc:
+        return {"status": "failed", "output": None, "steps": g.steps, "error": str(exc)}
+    return {"status": "success", "output": final, "steps": g.steps, "error": None}
+
+
+def run_flow(doc: dict, initial: Any = None) -> dict:
+    """Run a workflow with credentials available, and hide their values from the result."""
+    secrets_ = load_secrets()
+    t1, t2 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),))
+    try: result = _execute(doc, initial)
+    finally:
+        _secrets_var.reset(t1)
+        _stack_var.reset(t2)
+    return redact(result, secrets_)
+
 
 def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
     """Run a workflow and store the execution. `initial` may be a callable so input errors are recorded as failed runs."""
@@ -538,6 +896,59 @@ def run_workflow(workflow_id: str, body: RunIn | None = None):
 # ---------------------------------------------------------------------------
 # Activation, schedules and webhooks
 # ---------------------------------------------------------------------------
+def parse_cron_field(text: str, low: int, high: int, name: str) -> set[int]:
+    """One cron field: *, numbers, ranges (a-b), lists (a,b) and steps (*/n, a-b/n)."""
+    values: set[int] = set()
+    for part in text.split(","):
+        base, _, step_text = part.partition("/")
+        try: step = int(step_text) if step_text else 1
+        except ValueError: raise ValueError(f"Invalid step in cron {name}: {part!r}")
+        if step < 1: raise ValueError(f"Step must be at least 1 in cron {name}")
+        if base == "*": start, end = low, high
+        elif "-" in base:
+            a, _, b = base.partition("-")
+            try: start, end = int(a), int(b)
+            except ValueError: raise ValueError(f"Invalid range in cron {name}: {part!r}")
+        else:
+            try: start = int(base)
+            except ValueError: raise ValueError(f"Invalid value in cron {name}: {part!r}")
+            end = high if step_text else start
+        if not (low <= start <= high and low <= end <= high and start <= end): raise ValueError(f"Cron {name} must be between {low} and {high}: {part!r}")
+        values.update(range(start, end + 1, step))
+    return values
+
+
+def parse_cron(expr: str) -> dict:
+    fields = expr.split()
+    if len(fields) != 5: raise ValueError("A cron expression has 5 fields: minute hour day-of-month month day-of-week")
+    minute, hour, dom, month, dow = fields
+    dow_values = {0 if v == 7 else v for v in parse_cron_field(dow, 0, 7, "day-of-week")}
+    return {"minutes": sorted(parse_cron_field(minute, 0, 59, "minute")), "hours": sorted(parse_cron_field(hour, 0, 23, "hour")),
+            "dom": parse_cron_field(dom, 1, 31, "day-of-month"), "months": parse_cron_field(month, 1, 12, "month"), "dow": dow_values,
+            "dom_any": dom == "*", "dow_any": dow == "*" or dow_values == set(range(7))}
+
+
+def cron_day_matches(c: dict, day) -> bool:
+    if day.month not in c["months"]: return False
+    in_dom, in_dow = day.day in c["dom"], ((day.weekday() + 1) % 7) in c["dow"]
+    if c["dom_any"] and c["dow_any"]: return True
+    if c["dom_any"]: return in_dow
+    if c["dow_any"]: return in_dom
+    return in_dom or in_dow  # standard cron: when both are restricted, either may match
+
+
+def cron_next(c: dict, after: datetime) -> datetime:
+    local = (after.astimezone() + timedelta(minutes=1)).replace(second=0, microsecond=0)
+    for offset in range(0, 1830):  # look up to five years ahead
+        day = (local + timedelta(days=offset)).date()
+        if not cron_day_matches(c, day): continue
+        for hour in c["hours"]:
+            for minute in c["minutes"]:
+                if offset == 0 and (hour, minute) < (local.hour, local.minute): continue
+                return datetime(day.year, day.month, day.day, hour, minute).astimezone().astimezone(timezone.utc)
+    raise ValueError("This cron expression never matches a real date")
+
+
 def validate_schedule(data: dict) -> dict:
     mode = str(data.get("mode", "interval"))
     if mode == "interval":
@@ -549,11 +960,16 @@ def validate_schedule(data: dict) -> dict:
         m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(data.get("time", "09:00")).strip())
         if not m: raise ValueError("Daily time must look like 09:30")
         return {"mode": "daily", "hour": int(m.group(1)), "minute": int(m.group(2))}
+    if mode == "cron":
+        cron = parse_cron(str(data.get("cron", "")).strip())
+        cron_next(cron, datetime.now(timezone.utc))  # proves it can fire
+        return {"mode": "cron", "cron": cron}
     raise ValueError(f"Unknown schedule mode: {mode}")
 
 
 def next_run_after(cfg: dict, after: datetime) -> datetime:
     if cfg["mode"] == "interval": return after + timedelta(minutes=cfg["minutes"])
+    if cfg["mode"] == "cron": return cron_next(cfg["cron"], after)
     local = after.astimezone()  # daily times are in the computer's local time zone
     candidate = local.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
     if candidate <= local: candidate += timedelta(days=1)

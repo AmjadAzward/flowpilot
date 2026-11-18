@@ -1,41 +1,7 @@
-import httpx
 import pytest
 
 from app import main
-from conftest import edge, make_flow, node
-
-
-class FakeResponse:
-    def __init__(self, status=200, payload=None, text=""):
-        self.status_code, self._payload, self.text = status, payload, text
-        self.content = (str(payload) if payload is not None else text).encode()
-
-    def json(self):
-        if self._payload is None:
-            raise ValueError("not json")
-        return self._payload
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(f"HTTP {self.status_code}", request=httpx.Request("GET", "https://x"), response=httpx.Response(self.status_code))
-
-
-@pytest.fixture()
-def fake_http(monkeypatch):
-    calls, inits = [], []
-    reply = {"response": FakeResponse(200, {"ok": True})}
-
-    class FakeClient:
-        def __init__(self, **kwargs): inits.append(kwargs)
-        def __enter__(self): return self
-        def __exit__(self, *exc): return False
-        def request(self, method, url, headers=None, **kwargs):
-            calls.append({"method": method, "url": url, "headers": headers, **kwargs})
-            return reply["response"]
-
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-    monkeypatch.setattr(main, "safe_url", lambda u: u)  # DNS is not needed here; safe_url has its own tests
-    return type("Fake", (), {"calls": calls, "inits": inits, "reply": reply})
+from conftest import FakeResponse, edge, make_flow, node
 
 
 def run_http(client, payload='{"name":"Ada","n":3,"id":42,"token":"s3cret"}', **http):

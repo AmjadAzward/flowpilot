@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, type Connection, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
-  LayoutDashboard, LogOut, Moon, Play, Plus, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Upload, Workflow, X, Zap, TrendingUp,
+  KeyRound, LayoutDashboard, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
-import { blankEdges, blankNodes, catalog, defaultData, operators, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
+import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
 import { MiniFlow } from './MiniFlow';
+import { NodeSettings } from './NodeSettings';
 import { Login } from './Login';
 
-type Page = 'dashboard' | 'editor' | 'executions' | 'settings';
+type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'settings';
+type CredentialRow = { name: string; created_at: string; updated_at: string };
 type Theme = 'dark' | 'light';
 
 const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
@@ -92,6 +94,11 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
   const [apiOnline, setApiOnline] = useState(true);
   const [webhookToken, setWebhookToken] = useState('');
   const [savedSnap, setSavedSnap] = useState('');
+  const hist = useRef<{ stack: string[]; idx: number }>({ stack: [], idx: -1 });
+  const clip = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
+  const [creds, setCreds] = useState<CredentialRow[]>([]);
+  const [credName, setCredName] = useState('');
+  const [credValue, setCredValue] = useState('');
   const toastTimer = useRef<number>();
   const flowRef = useRef<ReactFlowInstance | null>(null);
 
@@ -108,8 +115,8 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
 
   const refresh = useCallback(async () => {
     try {
-      const [f, r] = await Promise.all([api<FlowDoc[]>('/api/workflows'), api<Run[]>('/api/executions')]);
-      setFlows(f); setRuns(r); setApiOnline(true);
+      const [f, r, c] = await Promise.all([api<FlowDoc[]>('/api/workflows'), api<Run[]>('/api/executions'), api<CredentialRow[]>('/api/credentials')]);
+      setFlows(f); setRuns(r); setCreds(c); setApiOnline(true);
     } catch (e) { setApiOnline(false); notify(`API offline: ${(e as Error).message}`, 'error'); }
   }, [notify]);
   useEffect(() => { void refresh(); }, [refresh]);
@@ -124,6 +131,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
     setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
     setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, n: cleanNodes(ns), e: cleanEdges(es) }));
+    hist.current = { stack: [JSON.stringify({ n: cleanNodes(ns), e: cleanEdges(es) })], idx: 0 };
     setPage('editor');
   };
   const openFlow = async (id: string) => {
@@ -204,6 +212,10 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
     setSelectedNode(id);
   };
   const currentNode = useMemo(() => nodes.find(n => n.id === selectedNode), [nodes, selectedNode]);
+  const nodeSteps = useMemo(() => (lastRun && selectedNode ? lastRun.steps.filter(st => st.node_id === selectedNode) : []), [lastRun, selectedNode]);
+  const shownStep = nodeSteps[nodeSteps.length - 1];
+  const isPinned = !!String(currentNode?.data.pin ?? '').trim();
+  const canPin = !!shownStep && shownStep.status === 'success' && shownStep.output !== undefined && !shownStep.pinned;
   const updateData = (field: string, value: string) => setNodes(ns => ns.map(n => (n.id === selectedNode ? { ...n, data: { ...n.data, [field]: value } } : n)));
   const deleteNode = () => {
     setNodes(n => n.filter(x => x.id !== selectedNode));
@@ -223,13 +235,120 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
     } catch (e) { notify((e as Error).message, 'error'); }
   };
 
+  // ---- undo / redo ---------------------------------------------------------------------------
+  const graphSnap = useMemo(() => JSON.stringify({ n: cleanNodes(nodes), e: cleanEdges(edges) }), [nodes, edges]);
+  const graphRef = useRef(graphSnap);
+  graphRef.current = graphSnap;
+  const commitHistory = useCallback(() => {
+    const h = hist.current;
+    if (h.idx < 0 || h.stack[h.idx] === graphRef.current) return;
+    h.stack = h.stack.slice(0, h.idx + 1);
+    h.stack.push(graphRef.current);
+    if (h.stack.length > 100) h.stack.shift();
+    h.idx = h.stack.length - 1;
+  }, []);
+  useEffect(() => {
+    if (page !== 'editor') return;
+    const t = window.setTimeout(commitHistory, 450);
+    return () => window.clearTimeout(t);
+  }, [graphSnap, page, commitHistory]);
+  const applyGraph = (snap: string) => {
+    const g = JSON.parse(snap) as { n: Node[]; e: Edge[] };
+    setNodes(g.n); setEdges(g.e.map(e => ({ ...e, style: edgeStyle }))); setSelectedNode(null);
+  };
+  const undo = () => { commitHistory(); const h = hist.current; if (h.idx > 0) { h.idx -= 1; applyGraph(h.stack[h.idx]); } };
+  const redo = () => { const h = hist.current; if (h.idx < h.stack.length - 1) { h.idx += 1; applyGraph(h.stack[h.idx]); } };
+  const pendingChange = hist.current.idx >= 0 && hist.current.stack[hist.current.idx] !== graphSnap;
+  const canUndo = hist.current.idx > 0 || pendingChange;
+  const canRedo = hist.current.idx < hist.current.stack.length - 1 && !pendingChange;
+
+  // ---- copy, paste, duplicate, tidy ----------------------------------------------------------
+  const copyNodes = (only?: Node[]) => {
+    const picked = only ?? (nodes.some(n => n.selected) ? nodes.filter(n => n.selected) : currentNode ? [currentNode] : []);
+    if (!picked.length) return false;
+    const ids = new Set(picked.map(n => n.id));
+    clip.current = {
+      nodes: JSON.parse(JSON.stringify(cleanNodes(picked))) as Node[],
+      edges: JSON.parse(JSON.stringify(cleanEdges(edges.filter(e => ids.has(e.source) && ids.has(e.target))))) as Edge[],
+    };
+    return true;
+  };
+  const pasteNodes = () => {
+    const c = clip.current;
+    if (!c) return;
+    const hasStart = nodes.some(n => startTypes.includes(n.type ?? ''));
+    const idMap = new Map<string, string>();
+    const fresh: Node[] = [];
+    for (const n of c.nodes) {
+      if (hasStart && startTypes.includes(n.type ?? '')) continue;
+      const id = crypto.randomUUID();
+      idMap.set(n.id, id);
+      fresh.push({ ...n, id, position: { x: n.position.x + 40, y: n.position.y + 40 }, selected: true, data: { ...n.data } });
+    }
+    if (!fresh.length) { notify('A workflow can only have one trigger', 'error'); return; }
+    const freshEdges: Edge[] = c.edges.filter(e => idMap.has(e.source) && idMap.has(e.target))
+      .map(e => ({ ...e, id: crypto.randomUUID(), source: idMap.get(e.source)!, target: idMap.get(e.target)!, style: edgeStyle }));
+    setNodes(ns => [...ns.map(n => ({ ...n, selected: false })), ...fresh]);
+    setEdges(es => [...es, ...freshEdges]);
+    setSelectedNode(fresh[fresh.length - 1].id);
+    clip.current = { nodes: c.nodes.map(n => ({ ...n, position: { x: n.position.x + 40, y: n.position.y + 40 } })), edges: c.edges }; // next paste cascades
+  };
+  const duplicateNode = () => { if (currentNode && copyNodes([currentNode])) pasteNodes(); };
+  const tidy = () => {
+    if (!nodes.length) return;
+    const depth = new Map<string, number>(nodes.map(n => [n.id, 0]));
+    for (let pass = 0; pass < nodes.length; pass++) {
+      let changed = false;
+      for (const e of edges) {
+        const d = (depth.get(e.source) ?? 0) + 1;
+        if ((depth.get(e.target) ?? 0) < d) { depth.set(e.target, d); changed = true; }
+      }
+      if (!changed) break;
+    }
+    const layers = new Map<number, Node[]>();
+    for (const n of nodes) { const d = depth.get(n.id) ?? 0; layers.set(d, [...(layers.get(d) ?? []), n]); }
+    const tallest = Math.max(...[...layers.values()].map(l => l.length));
+    const pos = new Map<string, { x: number; y: number }>();
+    layers.forEach((layer, d) => {
+      const sorted = [...layer].sort((a, b) => a.position.y - b.position.y);
+      const offset = ((tallest - sorted.length) * 130) / 2;
+      sorted.forEach((n, i) => pos.set(n.id, { x: 60 + d * 290, y: 60 + offset + i * 130 }));
+    });
+    setNodes(ns => ns.map(n => ({ ...n, position: pos.get(n.id) ?? n.position })));
+    window.setTimeout(() => void flowRef.current?.fitView({ padding: 0.2, maxZoom: 1, duration: 250 }), 80);
+    notify('Layout tidied');
+  };
+
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's' && page === 'editor') { ev.preventDefault(); void saveFlow(); }
+      if (page !== 'editor') return;
+      const mod = ev.ctrlKey || ev.metaKey;
+      const key = ev.key.toLowerCase();
+      if (mod && key === 's') { ev.preventDefault(); void saveFlow(); return; }
+      const t = ev.target as HTMLElement | null;
+      if (t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable)) return;
+      if (mod && key === 'z' && !ev.shiftKey) { ev.preventDefault(); undo(); }
+      else if (mod && (key === 'y' || (key === 'z' && ev.shiftKey))) { ev.preventDefault(); redo(); }
+      else if (mod && key === 'c') { if (copyNodes()) notify('Copied. Press Ctrl+V to paste'); }
+      else if (mod && key === 'v') { ev.preventDefault(); pasteNodes(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [page, saveFlow]);
+  });
+
+  // ---- credentials ------------------------------------------------------------------------------
+  const saveCredential = async (ev: { preventDefault: () => void }) => {
+    ev.preventDefault();
+    try {
+      await api(`/api/credentials/${encodeURIComponent(credName.trim())}`, { method: 'PUT', body: JSON.stringify({ value: credValue }) });
+      setCredName(''); setCredValue(''); await refresh(); notify('Credential saved');
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const deleteCredential = async (name: string) => {
+    if (!window.confirm(`Delete credential ${name}? Workflows that use it will fail until you add it again.`)) return;
+    try { await api(`/api/credentials/${encodeURIComponent(name)}`, { method: 'DELETE' }); await refresh(); notify('Credential deleted'); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
 
   // The canvas resizes when the run panel or node library opens; re-centre the graph afterwards.
   useEffect(() => {
@@ -240,7 +359,8 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
 
   const runStates = useMemo(() => {
     if (!lastRun) return {};
-    const done = new Map(lastRun.steps.map(s => [s.node_id, s.status === 'success' ? 'success' : 'error'] as const));
+    const done = new Map<string, 'success' | 'error'>();
+    for (const s of lastRun.steps) done.set(s.node_id, s.status === 'error' || done.get(s.node_id) === 'error' ? 'error' : 'success');
     return Object.fromEntries(nodes.map(n => [n.id, done.get(n.id) ?? 'skipped'])) as Record<string, 'success' | 'error' | 'skipped'>;
   }, [lastRun, nodes]);
 
@@ -261,7 +381,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
   const shownRuns = runs.filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
-  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', settings: 'Settings' }[page];
+  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);
   const flowName_ = (id?: string) => flows.find(f => f.id === id)?.name || 'Deleted workflow';
 
@@ -277,10 +397,11 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
           <button className={'nav ' + (page === 'dashboard' ? 'active' : '')} onClick={() => setPage('dashboard')}><LayoutDashboard size={17} />Overview</button>
           <button className={'nav ' + (page === 'editor' ? 'active' : '')} onClick={() => (selectedId ? setPage('editor') : void createFlow())}><Workflow size={17} />Workflow Studio</button>
           <button className={'nav ' + (page === 'executions' ? 'active' : '')} onClick={() => { void refresh(); setPage('executions'); }}><Activity size={17} />Executions<span className="nav-count">{runs.length}</span></button>
+          <button className={'nav ' + (page === 'credentials' ? 'active' : '')} onClick={() => { void refresh(); setPage('credentials'); }}><KeyRound size={17} />Credentials<span className="nav-count">{creds.length}</span></button>
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.2</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.4</span>
         </div>
       </aside>
 
@@ -382,6 +503,11 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                 <button role="switch" aria-checked={isActive} aria-label="Workflow active" className={'switch-row ' + (isActive ? 'on' : '')} disabled={!canActivate || busy}
                   title={canActivate ? 'Run automatically when this workflow is active' : 'Add a Schedule or Webhook trigger to activate'} onClick={() => void setActive(selectedId, !isActive)}>
                   <span className="switch"><span /></span>{isActive ? 'Active' : 'Inactive'}</button>
+                <span className="tool-group">
+                  <button className="icon-button" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={undo}><Undo2 size={16} /></button>
+                  <button className="icon-button" aria-label="Redo" title="Redo (Ctrl+Y)" disabled={!canRedo} onClick={redo}><Redo2 size={16} /></button>
+                  <button className="icon-button" aria-label="Tidy up layout" title="Tidy up layout" onClick={tidy}><Network size={16} /></button>
+                </span>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy} title="Ctrl+S"><Save size={15} />Save</button>
@@ -430,47 +556,20 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                   <div className="inspect-body" data-testid="inspector">
                     <div className="inspect-type">{currentNode.type}</div>
                     <label>Display name<input value={String(currentNode.data.label || '')} onChange={e => updateData('label', e.target.value)} /></label>
-                    {currentNode.type === 'input' && <label>JSON value<textarea rows={7} spellCheck={false} value={String(currentNode.data.json || '')} onChange={e => updateData('json', e.target.value)} /></label>}
-                    {currentNode.type === 'transform' && <label>Field path (for example user.name)<input value={String(currentNode.data.path || '')} onChange={e => updateData('path', e.target.value)} /></label>}
-                    {currentNode.type === 'template' && <label>Template<textarea rows={5} spellCheck={false} value={String(currentNode.data.template || '')} onChange={e => updateData('template', e.target.value)} /><p className="hint">Use {'{{field}}'} to insert values from the incoming data.</p></label>}
-                    {currentNode.type === 'condition' && (
-                      <>
-                        <label>Field path<input value={String(currentNode.data.path || '')} onChange={e => updateData('path', e.target.value)} /></label>
-                        <label>Operator<select value={String(currentNode.data.op || 'equals')} onChange={e => updateData('op', e.target.value)}>{operators.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
-                        {!['exists', 'not_exists'].includes(String(currentNode.data.op)) && <label>Compare to<input value={String(currentNode.data.equals || '')} onChange={e => updateData('equals', e.target.value)} /></label>}
-                        <p className="hint">Connect the green <b>true</b> and red <b>false</b> handles to different nodes. Only the matching branch runs.</p>
-                      </>
+                    <NodeSettings node={currentNode} update={updateData} credentials={creds.map(c => c.name)} flows={flows} currentFlowId={selectedId}
+                      webhookUrl={webhookUrl} isActive={isActive} onCopyWebhook={() => void copyWebhook()} onRotateWebhook={() => void rotateWebhook()} />
+                    {lastRun && nodeSteps.length > 0 && shownStep && (
+                      <div className="data-panel" data-testid="data-panel">
+                        <div className="data-head"><span>Last run</span>{nodeSteps.length > 1 && <em className="iter">{nodeSteps.length} runs</em>}{shownStep.pinned && <em className="pin-chip">pinned</em>}</div>
+                        {shownStep.error && <p className="error">{shownStep.error}</p>}
+                        <div className="data-block"><span className="field-label">Input</span><pre>{pretty(shownStep.input)}</pre></div>
+                        {shownStep.status === 'success' && <div className="data-block"><span className="field-label">Output</span><pre>{pretty(shownStep.output)}</pre></div>}
+                      </div>
                     )}
-                    {currentNode.type === 'delay' && <label>Seconds (0 to 5)<input type="number" min={0} max={5} step={0.5} value={String(currentNode.data.seconds ?? '1')} onChange={e => updateData('seconds', e.target.value)} /></label>}
-                    {currentNode.type === 'http' && (
-                      <>
-                        <label>Method<select value={String(currentNode.data.method || 'GET')} onChange={e => updateData('method', e.target.value)}>{['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m}>{m}</option>)}</select></label>
-                        <label>Public HTTPS URL<input value={String(currentNode.data.url || '')} onChange={e => updateData('url', e.target.value)} /></label>
-                        <label>Headers (JSON object, optional)<textarea rows={3} spellCheck={false} placeholder={'{"Authorization": "Bearer ..."}'} value={String(currentNode.data.headers || '')} onChange={e => updateData('headers', e.target.value)} /></label>
-                        {['POST', 'PUT', 'PATCH'].includes(String(currentNode.data.method || 'GET')) && <label>Body (JSON or text)<textarea rows={5} spellCheck={false} placeholder={'{"name": "{{name}}"}'} value={String(currentNode.data.body || '')} onChange={e => updateData('body', e.target.value)} /></label>}
-                        <p className="hint">Use {'{{field}}'} in the URL, headers and body to insert incoming data. {'{{}}'} inserts all of it. Private addresses and redirects are blocked.</p>
-                      </>
-                    )}
-                    {currentNode.type === 'schedule' && (
-                      <>
-                        <label>Repeat<select value={String(currentNode.data.mode || 'interval')} onChange={e => updateData('mode', e.target.value)}><option value="interval">Every N minutes</option><option value="daily">Every day at a set time</option></select></label>
-                        {String(currentNode.data.mode) === 'daily'
-                          ? <label>Time (24-hour, this computer's time zone)<input type="time" value={String(currentNode.data.time || '09:00')} onChange={e => updateData('time', e.target.value)} /></label>
-                          : <label>Minutes between runs (1 to 10080)<input type="number" min={1} max={10080} value={String(currentNode.data.minutes ?? '15')} onChange={e => updateData('minutes', e.target.value)} /></label>}
-                        <p className="hint">Runs only while the FlowPilot API is running and this workflow is Active. Use Run workflow to test it with a sample event.</p>
-                      </>
-                    )}
-                    {currentNode.type === 'webhook' && (
-                      <>
-                        <div className="field"><span className="field-label">Webhook URL</span>
-                          <span className="url-box"><code data-testid="webhook-url">{webhookUrl}</code><button type="button" className="icon-button" aria-label="Copy webhook URL" onClick={() => void copyWebhook()}><Copy size={14} /></button></span>
-                        </div>
-                        <p className="hint">Send a POST or GET request to this URL. The URL is the secret, so anyone who has it can run this workflow. {isActive ? 'This workflow is active and listening.' : 'Activate the workflow for the URL to respond.'} It is reachable from this computer only unless you expose it yourself.</p>
-                        <button type="button" className="ghost" onClick={() => void rotateWebhook()}><RefreshCcw size={14} />Generate new URL</button>
-                        <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={String(currentNode.data.sample || '')} onChange={e => updateData('sample', e.target.value)} /></label>
-                        <p className="hint">Later nodes can read {'{{body.field}}'}, {'{{query.name}}'} and {'{{method}}'}.</p>
-                      </>
-                    )}
+                    {pinnableTypes.includes(currentNode.type ?? '') && (isPinned
+                      ? <><span className="hint">Pinned: this node uses the saved output below and does not run.</span><button className="ghost" onClick={() => updateData('pin', '')}><PinOff size={14} />Unpin data</button></>
+                      : <button className="ghost" disabled={!canPin} title={canPin ? 'Reuse this output without running the node again' : 'Run the workflow first'} onClick={() => updateData('pin', JSON.stringify(shownStep?.output))}><Pin size={14} />Pin last output</button>)}
+                    <button className="ghost" onClick={duplicateNode}><Copy size={14} />Duplicate node</button>
                     <button className="delete-node" onClick={deleteNode}><Trash2 size={14} />Delete node</button>
                   </div>
                 ) : (
@@ -494,7 +593,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                     {lastRun.steps.map((s, i) => (
                       <div key={i} className={'run-step ' + s.status}>
                         <span className="step-mark">{s.status === 'success' ? '✓' : '!'}</span>
-                        <span className="step-label">{s.label}{s.branch && <em className={'branch-tag ' + s.branch}>{s.branch}</em>}</span>
+                        <span className="step-label">{s.label}{s.iteration && <em className="iter">#{s.iteration.map(k => k + 1).join('.')}</em>}{s.pinned && <em className="pin-chip">pinned</em>}{s.branch && <em className={'branch-tag ' + s.branch}>{s.branch}</em>}</span>
                         <span className="step-ms">{s.duration_ms != null ? `${s.duration_ms} ms` : ''}</span>
                       </div>
                     ))}
@@ -526,6 +625,45 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
             </div>
+          </div>
+        )}
+
+        {page === 'credentials' && (
+          <div className="content">
+            <div className="page-head">
+              <div><h1>Credentials</h1><p>Save API keys, tokens and passwords once. They are encrypted on this computer and hidden in run results.</p></div>
+            </div>
+            <section className="card">
+              <div className="card-head"><div className="seg-title"><h2>Add or replace a credential</h2></div></div>
+              <form className="cred-form" onSubmit={e => void saveCredential(e)}>
+                <label>Name<input data-testid="cred-name" value={credName} onChange={e => setCredName(e.target.value)} placeholder="SLACK_URL" required pattern="[A-Za-z][A-Za-z0-9_\-]{0,39}" title="Start with a letter. Use letters, numbers, _ and - (max 40)" /></label>
+                <label>Secret value<input data-testid="cred-value" type="password" autoComplete="off" value={credValue} onChange={e => setCredValue(e.target.value)} placeholder="Paste the token or URL" required minLength={4} /></label>
+                <button className="primary" type="submit" data-testid="cred-save"><Plus size={16} />Save credential</button>
+              </form>
+              <p className="hint pad">Saving a name that already exists replaces its value. Values can never be viewed again, only replaced or deleted.</p>
+            </section>
+            <section className="card">
+              <div className="card-head"><div className="seg-title"><h2>Saved credentials</h2><span className="count-chip">{creds.length}</span></div></div>
+              <div className="cred-head"><span>Name</span><span>Use it in a node</span><span>Updated</span><span className="th-actions">Actions</span></div>
+              {creds.length ? creds.map(c => (
+                <div className="cred-row" key={c.name} data-testid="cred-row">
+                  <strong>{c.name}</strong>
+                  <code>{`{{cred.${c.name}}}`}</code>
+                  <span className="muted">{formatTime(c.updated_at)}</span>
+                  <span className="row-actions"><button className="icon-button danger" aria-label={`Delete credential ${c.name}`} title="Delete" onClick={() => void deleteCredential(c.name)}><Trash2 size={15} /></button></span>
+                </div>
+              )) : <div className="empty">No credentials yet. Add your first one above.</div>}
+            </section>
+            <section className="panel help-panel">
+              <h2>How to use them</h2>
+              <ul>
+                <li><b>Anywhere in a node:</b> type <code>{'{{cred.NAME}}'}</code> in a URL, header, body, message or template.</li>
+                <li><b>HTTP Request:</b> choose Authentication (Bearer, Basic or an API-key header) and pick the credential.</li>
+                <li><b>Send Email:</b> save an SMTP credential like <code>smtp://user:password@smtp.example.com:587?from=you@example.com</code>.</li>
+                <li><b>Send Message:</b> save the Slack or Discord webhook URL as a credential.</li>
+              </ul>
+              <p className="hint">Back up <code>backend/flowpilot.key</code> together with the database. Without that key file the saved values cannot be decrypted.</p>
+            </section>
           </div>
         )}
 

@@ -301,6 +301,162 @@ await check('HTTP node: method, headers and body fields', async () => {
   await shot('10-http-node');
 });
 
+const goOverview = () => page.getByRole('button', { name: /^Overview/ }).click();
+const node = text => page.locator('.react-flow__node', { hasText: text });
+const nodeCount = () => page.locator('.react-flow__node').count();
+const waitNodes = n => page.waitForFunction(c => document.querySelectorAll('.react-flow__node').length === c, n);
+const openLibrary = async () => { if (!(await page.getByLabel('Filter nodes').isVisible())) await page.getByRole('button', { name: /Add nodes/ }).click(); };
+
+await check('credentials: saved encrypted, never shown again, selectable in a node, deletable', async () => {
+  await page.getByRole('button', { name: /^Credentials/ }).click();
+  await expectText(page.locator('h1'), /^Credentials$/);
+  await page.getByTestId('cred-name').fill('API_KEY');
+  await page.getByTestId('cred-value').fill('abc'); // too short: the browser blocks the submit
+  await page.getByTestId('cred-save').click();
+  if ((await page.getByTestId('cred-row').count()) !== 0) throw new Error('a 3 character secret should be rejected');
+  await page.getByTestId('cred-value').fill('sk-live-topsecret-value');
+  await page.getByTestId('cred-save').click();
+  await expectText(page.getByTestId('cred-row'), /API_KEY/);
+  if (/topsecret/.test(await page.content())) throw new Error('the secret value must never appear on the page');
+  const leaked = await page.evaluate(async () => (await fetch('/api/credentials')).text());
+  if (leaked.includes('topsecret')) throw new Error('the API returned the secret value');
+  await expectText(page.getByRole('button', { name: /^Credentials/ }), /1$/);
+  await shot('11-credentials');
+
+  await goOverview();
+  await page.getByTestId('template-post-api').click();
+  await node('HTTP Request').click();
+  await page.getByLabel('Authentication').selectOption('bearer');
+  await page.getByLabel(/^Credential/).selectOption('API_KEY');
+  await node('Send data to an API').count();
+
+  await page.getByRole('button', { name: /^Credentials/ }).click();
+  page.once('dialog', d => d.accept());
+  await page.getByLabel('Delete credential API_KEY').click();
+  await expectText(page.locator('.empty'), /No credentials yet/);
+});
+
+await check('loop: runs the body once per item and numbers the iterations', async () => {
+  await goOverview();
+  await page.getByTestId('template-loop-list').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Ada scored 91[\s\S]*Bob scored 48[\s\S]*Cy scored 77/);
+  if ((await runPanel().locator('.iter').count()) !== 3) throw new Error('expected 3 iteration chips');
+  await node('Text Template').click();
+  await expectText(page.getByTestId('data-panel'), /3 runs/);
+  await shot('12-loop');
+});
+
+await check('CSV, filter and loop pipeline', async () => {
+  await goOverview();
+  await page.getByTestId('template-csv-report').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Ada: 90[\s\S]*Cy: 75/);
+  if (/Bob/.test(await runPanel().locator('pre').innerText())) throw new Error('Bob should have been filtered out');
+});
+
+await check('data panel shows input and output, and pinning freezes a node', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Hello Ada from London!/);
+  await node('Text Template').click();
+  await expectText(page.getByTestId('data-panel'), /Hello Ada from London!/);
+  await expectText(page.getByTestId('data-panel'), /London/);
+  await page.getByRole('button', { name: /Pin last output/ }).click();
+  await node('Text Template').locator('.fp-pin').waitFor();
+  await node('JSON Input').click();
+  await page.getByLabel('JSON value').fill('{"name":"Zed","city":"Paris"}');
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Hello Ada from London!/); // pinned: the new data is ignored
+  await expectText(runPanel(), /pinned/);
+  await shot('13-pinned');
+  await node('Text Template').click();
+  await page.getByRole('button', { name: /Unpin data/ }).click();
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Hello Zed from Paris!/);
+});
+
+await check('undo, redo, copy, paste, duplicate and tidy', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await waitNodes(4);
+  await node('Text Template').click();
+  await page.keyboard.press('Control+c');
+  await page.keyboard.press('Control+v');
+  await waitNodes(5);
+  await page.keyboard.press('Control+z');
+  await waitNodes(4);
+  await page.keyboard.press('Control+y');
+  await waitNodes(5);
+  await page.getByLabel('Undo').click();
+  await waitNodes(4);
+  await page.getByLabel('Redo').click();
+  await waitNodes(5);
+  await page.getByLabel('Undo').click();
+  await waitNodes(4);
+  await node('Text Template').click();
+  await page.getByRole('button', { name: /Duplicate node/ }).click();
+  await waitNodes(5);
+  await page.getByLabel('Undo').click();
+  await waitNodes(4);
+  await node('Manual Trigger').click();
+  await page.keyboard.press('Control+c');
+  await page.keyboard.press('Control+v');
+  await expectText(toast(), /only have one trigger/);
+  if ((await nodeCount()) !== 4) throw new Error('a second trigger must not be pasted');
+  await page.getByLabel('Tidy up layout').click();
+  await page.waitForTimeout(600);
+  const ys = await page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].map(n => Math.round(n.getBoundingClientRect().top)));
+  if (Math.max(...ys) - Math.min(...ys) > 4) throw new Error('tidy should line a chain up on one row: ' + ys.join(','));
+  await expectText(page.locator('.sub'), /Unsaved/);
+});
+
+await check('schedule supports cron expressions with presets and validation', async () => {
+  await goOverview();
+  await page.getByTestId('template-scheduled-check').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await node('Schedule Trigger').click();
+  await page.getByLabel('Repeat').selectOption('cron');
+  await page.getByRole('button', { name: 'Weekdays 9:00' }).click();
+  if ((await page.getByLabel('Cron expression', { exact: true }).inputValue()) !== '0 9 * * 1-5') throw new Error('preset not applied');
+  await page.getByLabel('Cron expression', { exact: true }).fill('every day');
+  await activeSwitch().click();
+  await expectText(toast(), /cron/i);
+  if ((await activeSwitch().getAttribute('aria-checked')) !== 'false') throw new Error('invalid cron must not activate');
+  await page.getByLabel('Cron expression', { exact: true }).fill('*/10 * * * *');
+  await activeSwitch().click();
+  await waitChecked(true);
+  await expectText(page.locator('.sub'), /Next run/);
+  await activeSwitch().click();
+  await waitChecked(false);
+});
+
+await check('new nodes expose their settings: email, message, merge, filter, sub-workflow', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-email').click();
+  await page.getByLabel(/^SMTP credential/).waitFor();
+  await page.getByLabel(/^To /).waitFor();
+  await page.getByTestId('add-notify').click();
+  await page.getByLabel(/^Service/).selectOption('discord');
+  await page.getByLabel('Webhook URL').waitFor();
+  await page.getByTestId('add-merge').click();
+  await page.getByLabel(/^Mode/).selectOption('combine');
+  await page.getByTestId('add-filter').click();
+  await page.getByLabel(/^Keep items where it/).waitFor();
+  await page.getByTestId('add-subflow').click();
+  const options = await page.getByLabel(/^Workflow to run/).locator('option').allInnerTexts();
+  if (options.length < 2) throw new Error('sub-workflow picker should list other workflows: ' + options.join('|'));
+  await shot('14-new-nodes');
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();
