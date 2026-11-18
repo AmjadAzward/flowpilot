@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, MailCheck, Reply, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Bot, MailCheck, Reply, StickyNote, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -13,6 +13,7 @@ export function WorkflowNode({ id, data, selected, type }: NodeProps) {
   const meta = catalog.find(c => c.type === type);
   const Icon = icons[meta?.icon ?? 'Flag'] ?? Flag;
   const state = states[id];
+  if (type === 'sticky') return <div className={`fp-sticky ${selected ? 'selected' : ''}`} data-testid="sticky">{String(data.text ?? '') || 'Empty note'}</div>;
   const subtitle = nodeSummary(type ?? '', data as Record<string, unknown>) || meta?.desc;
   return (
     <div className={`fp-node type-${type} ${selected ? 'selected' : ''} ${state ? 'state-' + state : ''}`} style={{ ['--node-color' as string]: meta?.color }}>
@@ -72,6 +73,7 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'telegram': return clip(s('text'));
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
     case 'respond': return `reply ${s('status') || '200'}`;
+    case 'ai': return s('prompt') ? clip(s('prompt')) : 'write a prompt';
     case 'switch': return s('path') ? clip(`by ${s('path')}`) : 'choose a field';
     case 'code': return 'Python snippet';
     case 'fail': return clip(s('message'));

@@ -6,6 +6,7 @@ import copy
 import csv
 import hashlib
 import hmac
+import html as html_lib
 import json
 import os
 import logging
@@ -35,9 +36,10 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("FLOWPILOT_DB", str(BASE / "flowpilot.db")))
@@ -61,7 +63,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.6.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.7.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -120,6 +122,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS workflow_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, saved_at TEXT NOT NULL, saved_by TEXT, name TEXT NOT NULL, definition TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions (workflow_id, id)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
@@ -134,6 +137,19 @@ class WorkflowIn(BaseModel):
     description: str = Field(default="", max_length=1000)
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags")
+    @classmethod
+    def clean_tags(cls, value: list[str]) -> list[str]:
+        out: list[str] = []
+        for t in value:
+            t = str(t).strip()
+            if not t: continue
+            if not re.fullmatch(r"[\w .\-]{1,24}", t): raise ValueError("Tags use letters, numbers, spaces, . _ - (max 24 characters)")
+            if t.lower() not in [x.lower() for x in out]: out.append(t)
+        if len(out) > 10: raise ValueError("At most 10 tags")
+        return out
 
 
 def validate_flow(body: WorkflowIn):
@@ -142,7 +158,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -228,9 +244,9 @@ SELF_SERVICE = {"/api/auth/password"}
 def allowed(role: str, method: str, path: str) -> bool:
     """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
     if path in SELF_SERVICE: return True
-    if path.startswith("/api/users"): return role == "owner"
+    if path.startswith(("/api/users", "/api/backup")): return role == "owner"
     if method in ("GET", "HEAD"): return True
-    if path.startswith(("/api/credentials", "/api/oauth")): return role in ("owner", "admin")
+    if path.startswith(("/api/credentials", "/api/oauth", "/api/settings")): return role in ("owner", "admin")
     return role in ("owner", "admin", "editor")
 
 
@@ -382,7 +398,7 @@ def change_password(body: PasswordIn, request: Request):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.6.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.7.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows():
@@ -391,7 +407,7 @@ def workflows():
     out = []
     for r in rows:
         doc = json.loads(r["definition"])
-        out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"],
+        out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"], "tags": doc.get("tags", []),
                     "active": bool(r["active"]), "trigger": trigger_kind(doc), "next_run_at": r["next_run_at"]})
     return out
 
@@ -428,6 +444,7 @@ def update_workflow(workflow_id: str, body: WorkflowIn, request: Request):
     with conn() as db:
         row = db.execute("SELECT active, definition, name FROM workflows WHERE id=?", (workflow_id,)).fetchone()
         if not row: raise HTTPException(404, "Workflow not found")
+        if "tags" not in body.model_fields_set: doc["tags"] = json.loads(row["definition"]).get("tags", [])
         if canonical(json.loads(row["definition"])) != canonical(doc):
             who = getattr(getattr(request, "state", None), "user", None)
             db.execute("INSERT INTO workflow_versions (workflow_id,saved_at,saved_by,name,definition) VALUES (?,?,?,?,?)", (workflow_id, now(), who, row["name"], row["definition"]))
@@ -716,7 +733,8 @@ def apply_auth(headers: dict, d: dict) -> None:
 
 def do_request(method: str, url: str, headers: dict, **kwargs) -> Any:
     # Never follow redirects, so a public URL cannot bounce to an internal address.
-    with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=False) as client:
+    timeout = kwargs.pop("timeout", 8.0)
+    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         response = client.request(method, url, headers=headers, **kwargs)
         response.raise_for_status()
         if len(response.content) > 1_000_000: raise ValueError("HTTP response exceeds 1 MB")
@@ -782,9 +800,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets"}
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail"}
+ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1206,6 +1224,39 @@ def send_gmail(d: dict, previous: Any) -> dict:
     return {"sent_to": recipients, "subject": subject}
 
 
+# ---------------------------------------------------------------------------
+# AI node: any OpenAI-compatible chat endpoint (Ollama and LM Studio run free on your own computer)
+# ---------------------------------------------------------------------------
+def run_ai(d: dict, previous: Any) -> Any:
+    cred = urlparse(lookup_secret(str(d.get("credential") or "").strip()))
+    hint = "The AI credential must look like https://host/v1?model=NAME&key=TOKEN (for a local model: http://127.0.0.1:11434/v1?model=llama3.2)"
+    if cred.scheme not in ("http", "https") or not cred.hostname: raise ValueError(hint)
+    query = parse_qs(cred.query)
+    model, key = query.get("model", [""])[0], query.get("key", [""])[0]
+    if not re.fullmatch(r"[A-Za-z0-9_.:/@\-]{1,100}", model): raise ValueError(hint)
+    if cred.scheme == "http" and os.getenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS") != "1":
+        raise ValueError("Local models use http, which needs FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 when you start the API. This switch never applies to the HTTP node.")
+    assert_public_host(cred.hostname.lower(), relaxed=True)
+    prompt = render_template(str(d.get("prompt", "")), previous)
+    system = render_template(str(d.get("system", "")), previous)
+    if not prompt.strip(): raise ValueError("Write a prompt")
+    if len(prompt) > 50_000 or len(system) > 10_000: raise ValueError("The prompt is too long")
+    try: temperature = max(0.0, min(float(d.get("temperature") or 0.2), 2.0))
+    except (TypeError, ValueError): raise ValueError("Temperature must be a number")
+    messages = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": prompt}]
+    base = f"{cred.scheme}://{cred.hostname}{':' + str(cred.port) if cred.port else ''}{cred.path.rstrip('/')}"
+    res = do_request("POST", base + "/chat/completions", {"Authorization": f"Bearer {key}"} if key else {},
+                     json={"model": model, "messages": messages, "temperature": temperature, "stream": False}, timeout=90.0)
+    try: text = str(res["choices"][0]["message"]["content"])
+    except (TypeError, KeyError, IndexError): raise ValueError("The AI service returned an unexpected reply")
+    if len(text) > 200_000: raise ValueError("The AI reply is too large")
+    if str(d.get("json_output") or "false").lower() == "true":
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+        try: return json.loads(cleaned)
+        except ValueError: raise ValueError("The AI reply was not valid JSON. Ask for JSON only in the prompt.")
+    return {"text": text, "model": model}
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
@@ -1258,6 +1309,10 @@ def step_action(node: dict, previous: Any):
     if typ == "rss":
         value = read_rss(d, previous)
         return value, value, None
+    if typ == "ai":
+        value = run_ai(d, previous)
+        return value, value, None
+    if typ == "sticky": return previous, previous, None
     if typ == "telegram": return send_telegram(d, previous), previous, None
     if typ == "sheets":
         value = sheets_action(d, previous)
@@ -1811,6 +1866,11 @@ def scheduler_loop(stop: threading.Event) -> None:
         except Exception: log.exception("Scheduler tick failed")
         try: resume_due_waits()
         except Exception: log.exception("Resuming waits failed")
+        global _last_prune
+        if time.time() - _last_prune > 3600:
+            _last_prune = time.time()
+            try: prune_executions()
+            except Exception: log.exception("Pruning failed")
 
 
 _hook_hits: dict[str, list[float]] = {}
@@ -1826,6 +1886,47 @@ def hook_allowed(token: str) -> bool:
     return True
 
 
+FORM_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+FORM_STYLE = ("body{font:16px system-ui,sans-serif;background:#f6f7f9;margin:0;padding:32px 16px;color:#1b1f27}main{max-width:520px;margin:0 auto;background:#fff;border:1px solid #e3e6ec;border-radius:14px;padding:28px}"
+              "h1{margin:0 0 6px;font-size:22px}p{color:#5b6472}label{display:block;margin:16px 0 6px;font-weight:600}input,textarea{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #cbd1da;border-radius:8px;font:inherit}"
+              "button{margin-top:20px;padding:11px 20px;border:0;border-radius:8px;background:#e9522a;color:#fff;font:inherit;font-weight:600;cursor:pointer}")
+
+
+def form_fields(node: dict | None) -> list[dict]:
+    """The fields of a webhook's optional public form. Invalid definitions simply mean no form."""
+    raw = str(((node or {}).get("data") or {}).get("form_fields") or "").strip()
+    if not raw: return []
+    try: items = json.loads(raw)
+    except ValueError: return []
+    out = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict): continue
+        name = str(it.get("name") or "")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", name): continue
+        kind = str(it.get("type") or "text")
+        out.append({"name": name, "label": str(it.get("label") or name)[:100], "type": kind if kind in ("text", "email", "number", "textarea") else "text"})
+    return out[:20]
+
+
+def page(title: str, inner: str) -> HTMLResponse:
+    doc = f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{html_lib.escape(title)}</title><style>{FORM_STYLE}</style></head><body><main>{inner}</main></body></html>"
+    return HTMLResponse(doc, headers={"Content-Security-Policy": FORM_CSP, "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
+
+def render_form(doc: dict, fields: list[dict]) -> HTMLResponse:
+    rows = []
+    for f in fields:
+        n, label = html_lib.escape(f["name"]), html_lib.escape(f["label"])
+        control = f"<textarea id='{n}' name='{n}' rows=4></textarea>" if f["type"] == "textarea" else f"<input id='{n}' name='{n}' type='{f['type']}'>"
+        rows.append(f"<label for='{n}'>{label}</label>{control}")
+    desc = html_lib.escape(doc.get("description") or "")
+    return page(doc.get("name", "Form"), f"<h1>{html_lib.escape(doc.get('name', 'Form'))}</h1><p>{desc}</p><form method=post action=''>{''.join(rows)}<button type=submit>Submit</button></form>")
+
+
+def form_done_page(doc: dict, ok: bool) -> HTMLResponse:
+    return page(doc.get("name", "Form"), f"<h1>{'Thank you' if ok else 'Something went wrong'}</h1><p>{'Your response was received.' if ok else 'Your response could not be processed. Please try again later.'}</p>")
+
+
 @app.api_route("/api/hooks/{token}", methods=["GET", "POST"])
 async def receive_webhook(token: str, request: Request):
     """Public endpoint: the secret token in the URL is the credential. Only active webhook workflows respond."""
@@ -1834,6 +1935,8 @@ async def receive_webhook(token: str, request: Request):
     doc = workflow_row(row) if row else None
     if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
+    fields = form_fields(start_node(doc))
+    if request.method == "GET" and fields: return render_form(doc, fields)
     if int(request.headers.get("content-length") or 0) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
     raw = await request.body()
     if len(raw) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
@@ -1841,14 +1944,129 @@ async def receive_webhook(token: str, request: Request):
     body: Any = None
     if raw:
         text = raw.decode("utf-8", errors="replace")
-        try: body = json.loads(text)
-        except ValueError: body = text
+        if ctype.split(";")[0].strip() == "application/x-www-form-urlencoded":
+            sent = {k: v[0][:5000] for k, v in parse_qs(text, keep_blank_values=True).items()}
+            body = {f["name"]: sent.get(f["name"], "") for f in fields} if fields else sent
+        else:
+            try: body = json.loads(text)
+            except ValueError: body = text
+    is_form = ctype.split(";")[0].strip() == "application/x-www-form-urlencoded" and "text/html" in request.headers.get("accept", "")
     payload = webhook_payload(request.method, dict(request.query_params), body, ctype.split(";")[0].strip())
     result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
     if result["status"] == "success" and result.get("response"):
         return JSONResponse(result["response"]["body"], status_code=result["response"]["status"])
     code = 200 if result["status"] in ("success", "waiting") else 500
+    if is_form: return form_done_page(doc, result["status"] != "failed")
     return JSONResponse({"status": result["status"], "execution_id": result["id"]}, status_code=code)
+
+
+# ---------------------------------------------------------------------------
+# Run-history retention, backups
+# ---------------------------------------------------------------------------
+DEFAULT_SETTINGS = {"retention_days": 90, "max_executions": 5000}
+_last_prune = 0.0
+
+
+def get_settings() -> dict:
+    with conn() as db:
+        rows = {r["key"]: r["value"] for r in db.execute("SELECT key, value FROM settings").fetchall()}
+    out = dict(DEFAULT_SETTINGS)
+    for k in out:
+        try: out[k] = int(rows[k])
+        except (KeyError, ValueError): pass
+    return out
+
+
+def prune_executions() -> int:
+    """Delete old finished runs (never one that is still waiting). Returns how many were removed."""
+    cfg = get_settings()
+    removed = 0
+    with conn() as db:
+        if cfg["retention_days"] > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=cfg["retention_days"])).isoformat()
+            removed += db.execute("DELETE FROM executions WHERE status != 'waiting' AND started_at < ?", (cutoff,)).rowcount
+        if cfg["max_executions"] > 0:
+            removed += db.execute("DELETE FROM executions WHERE status != 'waiting' AND id NOT IN (SELECT id FROM executions WHERE status != 'waiting' ORDER BY started_at DESC LIMIT ?)", (cfg["max_executions"],)).rowcount
+        db.execute("DELETE FROM waits WHERE execution_id NOT IN (SELECT id FROM executions)")
+    return removed
+
+
+class SettingsIn(BaseModel):
+    retention_days: int = Field(ge=0, le=3650)
+    max_executions: int = Field(ge=0, le=100_000)
+
+
+@app.get("/api/settings")
+def read_settings():
+    with conn() as db:
+        total = db.execute("SELECT COUNT(*) c FROM executions").fetchone()["c"]
+    return {**get_settings(), "executions_stored": total}
+
+
+@app.put("/api/settings")
+def write_settings(body: SettingsIn):
+    with conn() as db:
+        for k, v in body.model_dump().items():
+            db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+    return {**get_settings(), "removed": prune_executions()}
+
+
+@app.post("/api/settings/prune")
+def prune_now():
+    return {"removed": prune_executions()}
+
+
+@app.get("/api/backup/workflows")
+def backup_workflows():
+    with conn() as db:
+        rows = db.execute("SELECT definition FROM workflows ORDER BY name").fetchall()
+    items = []
+    for r in rows:
+        d = json.loads(r["definition"])
+        items.append({k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges")})
+    body = {"format": "flowpilot-backup", "version": 1, "exported_at": now(), "workflows": items}
+    return JSONResponse(body, headers={"Content-Disposition": 'attachment; filename="flowpilot-workflows.json"'})
+
+
+class RestoreIn(BaseModel):
+    format: str
+    workflows: list[dict[str, Any]] = Field(max_length=200)
+
+
+@app.post("/api/backup/restore")
+def restore_workflows(body: RestoreIn):
+    """Add the workflows from a backup file as new, inactive workflows. Nothing existing is overwritten."""
+    if body.format != "flowpilot-backup": raise HTTPException(400, "This is not a FlowPilot backup file")
+    created, skipped = [], []
+    for item in body.workflows:
+        label = str(item.get("name") or "(unnamed)")[:120]
+        try:
+            wf = WorkflowIn(name=item.get("name") or "Restored workflow", description=item.get("description") or "", nodes=item.get("nodes") or [], edges=item.get("edges") or [], tags=item.get("tags") or [])
+            validate_flow(wf)
+        except HTTPException as exc: skipped.append({"name": label, "reason": exc.detail}); continue
+        except Exception as exc: skipped.append({"name": label, "reason": str(exc).splitlines()[0][:150]}); continue
+        wid = str(uuid.uuid4())
+        doc = wf.model_dump()
+        doc["id"] = wid
+        with conn() as db: insert_workflow(db, wid, wf.name, wf.description, doc, now())
+        created.append({"id": wid, "name": wf.name})
+    return {"created": created, "skipped": skipped}
+
+
+@app.get("/api/backup/database")
+def backup_database():
+    """A consistent copy of the whole database (workflows, runs, users, encrypted credentials). The key file is not included."""
+    tmp = Path(tempfile.mkdtemp(prefix="flowpilot-backup-")) / "flowpilot-backup.db"
+    src, dst = conn(), sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+        dst.execute("DELETE FROM sessions")
+        dst.execute("DELETE FROM oauth_pending")
+        dst.commit()
+    finally:
+        src.close()
+        dst.close()
+    return FileResponse(tmp, filename="flowpilot-backup.db", media_type="application/octet-stream", background=BackgroundTask(lambda: (tmp.unlink(missing_ok=True), tmp.parent.rmdir())))
 
 
 @app.get("/api/executions")

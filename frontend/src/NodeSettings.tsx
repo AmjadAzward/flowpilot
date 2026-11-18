@@ -204,6 +204,19 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">When this workflow is called through its webhook, the caller receives this reply instead of the default status. Use {'{{body.field}}'} to include data. Needs a Webhook trigger and an active workflow.</span>
         </>
       );
+    case 'sticky':
+      return <label>Note<textarea rows={6} value={v('text')} onChange={text('text')} /><span className="hint">A note for you and your team. It is not connected to anything and never runs.</span></label>;
+    case 'ai':
+      return (
+        <>
+          {credSelect('credential', 'AI credential')}
+          <label>System instruction (optional)<textarea rows={2} spellCheck={false} value={v('system')} onChange={text('system')} placeholder="You are a helpful assistant. Answer briefly." /></label>
+          <label>Prompt<textarea rows={5} spellCheck={false} value={v('prompt')} onChange={text('prompt')} /></label>
+          <label>Creativity (0 to 2)<input type="number" min={0} max={2} step={0.1} value={v('temperature', '0.2')} onChange={text('temperature')} /></label>
+          <label>Reply as<select value={v('json_output', 'false')} onChange={text('json_output')}><option value="false">Text: {'{"text": ...}'}</option><option value="true">JSON: the reply becomes data</option></select></label>
+          <span className="hint">Works with any OpenAI-compatible service. Free and private on your own computer with Ollama or LM Studio. Save the credential as <b>http://127.0.0.1:11434/v1?model=llama3.2</b> (start the API with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 for local models), or as <b>https://host/v1?model=NAME&amp;key=TOKEN</b> for a hosted one. Use {'{{field}}'} in the prompt. Local models can take a while, up to 90 seconds.</span>
+        </>
+      );
     case 'switch':
       return (
         <>
@@ -320,6 +333,8 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           </div>
           <span className="hint">Send a POST or GET request to this URL. The URL is the secret, so anyone who has it can run this workflow. {isActive ? 'This workflow is active and listening.' : 'Activate the workflow for the URL to respond.'} It is reachable from this computer only unless you expose it yourself.</span>
           <button type="button" className="ghost" onClick={onRotateWebhook}><RefreshCcw size={14} />Generate new URL</button>
+          <label>Public form fields (optional JSON)<textarea rows={4} spellCheck={false} value={v('form_fields')} onChange={text('form_fields')} placeholder={'[{"name":"email","label":"Your email","type":"email"}]'} /></label>
+          <span className="hint">Fill this in and opening the webhook URL in a browser shows a small form (types: text, email, number, textarea). Anyone with the URL can submit it. Values arrive as {'{{body.email}}'}.</span>
           <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={v('sample')} onChange={text('sample')} /></label>
           <span className="hint">Later nodes can read {'{{body.field}}'}, {'{{query.name}}'} and {'{{method}}'}.</span>
         </>

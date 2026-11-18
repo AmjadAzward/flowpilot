@@ -10,8 +10,8 @@ from app import main
 from app.main import app
 
 PUBLIC = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout", "/api/oauth/callback", "/api/hooks/{token}"}
-OWNER_ONLY_PREFIX = "/api/users"
-ADMIN_WRITE_PREFIXES = ("/api/credentials", "/api/oauth")
+OWNER_ONLY_PREFIXES = ("/api/users", "/api/backup")
+ADMIN_WRITE_PREFIXES = ("/api/credentials", "/api/oauth", "/api/settings")
 SKIP_METHODS = {"HEAD", "OPTIONS"}
 
 
@@ -65,7 +65,7 @@ def test_role_matrix(clients, method, path):
         return clients[role].request(method, concrete(path), json=body).status_code
 
     write = method not in ("GET", "HEAD")
-    if path.startswith(OWNER_ONLY_PREFIX):
+    if path.startswith(OWNER_ONLY_PREFIXES):
         for role in ("viewer", "editor", "admin"): assert status(role) == 403, (role, method, path)
     elif path == "/api/auth/password":
         for role in ("viewer", "editor", "admin"): assert status(role) != 403, (role, method, path)

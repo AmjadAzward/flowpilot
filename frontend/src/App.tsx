@@ -12,6 +12,7 @@ import { Login } from './Login';
 import { ChangePassword, UsersPage } from './UsersPage';
 import { HistoryPanel } from './HistoryPanel';
 import { OAuthConnect } from './OAuthConnect';
+import { DataSettings } from './DataSettings';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
@@ -87,6 +88,8 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
   const [selectedId, setSelectedId] = useState('');
   const [flowName, setFlowName] = useState('Untitled workflow');
   const [description, setDescription] = useState('');
+  const [tagsText, setTagsText] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -128,16 +131,16 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
   }, [notify]);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const snapshot = useMemo(() => JSON.stringify({ flowName, description, n: cleanNodes(nodes), e: cleanEdges(edges) }), [flowName, description, nodes, edges]);
+  const snapshot = useMemo(() => JSON.stringify({ flowName, description, tagsText, n: cleanNodes(nodes), e: cleanEdges(edges) }), [flowName, description, tagsText, nodes, edges]);
   const dirty = page === 'editor' && !!selectedId && snapshot !== savedSnap;
 
   const onConnect = useCallback((c: Connection) => setEdges(es => addEdge({ ...c, style: edgeStyle }, es)), [setEdges]);
 
   const loadDoc = (doc: FlowDoc) => {
     const ns = doc.nodes, es = doc.edges;
-    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setWebhookToken(doc.webhook_token ?? '');
+    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
-    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, n: cleanNodes(ns), e: cleanEdges(es) }));
+    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), n: cleanNodes(ns), e: cleanEdges(es) }));
     hist.current = { stack: [JSON.stringify({ n: cleanNodes(ns), e: cleanEdges(es) })], idx: 0 };
     setPage('editor');
   };
@@ -150,7 +153,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
       await refresh(); await openFlow(doc.id); notify('Workflow created');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
-  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
+  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
   const saveFlow = useCallback(async (silent = false) => {
     if (!selectedId) return false;
     try {
@@ -161,7 +164,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
       return true;
     } catch (e) { notify((e as Error).message, 'error'); return false; }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, snapshot, flowName, description, nodes, edges, refresh, notify]);
+  }, [selectedId, snapshot, flowName, description, tagsText, nodes, edges, refresh, notify]);
   const execute = async () => {
     if (!selectedId) return;
     setBusy(true);
@@ -397,7 +400,8 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
     for (const r of runs) if (r.workflow_id && !m[r.workflow_id]) m[r.workflow_id] = r;
     return m;
   }, [runs]);
-  const filtered = flows.filter(f => f.name.toLowerCase().includes(query.toLowerCase()));
+  const allTags = Array.from(new Set(flows.flatMap(f => f.tags ?? []))).sort((a, b) => a.localeCompare(b));
+  const filtered = flows.filter(f => (f.name.toLowerCase().includes(query.toLowerCase()) || (f.tags ?? []).some(t => t.toLowerCase().includes(query.toLowerCase()))) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
   const success = runs.filter(r => r.status === 'success').length;
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
   const shownRuns = runs.filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
@@ -423,7 +427,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.6</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.7</span>
         </div>
       </aside>
 
@@ -465,6 +469,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                   <button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => void refresh()}><RefreshCcw size={15} /></button>
                 </div>
               </div>
+              {allTags.length > 0 && <div className="tag-bar" data-testid="tag-bar"><button className={'tag-chip ' + (!tagFilter ? 'on' : '')} onClick={() => setTagFilter('')}>All</button>{allTags.map(t => <button key={t} className={'tag-chip ' + (tagFilter === t ? 'on' : '')} onClick={() => setTagFilter(tagFilter === t ? '' : t)}>{t}</button>)}</div>}
               {filtered.length > 0 && <div className="table-head"><span>Name</span><span>Trigger</span><span>Status</span><span>Last run</span><span>Updated</span><span className="th-actions">Actions</span></div>}
               <div className="workflow-list">
                 {filtered.length ? filtered.map(f => {
@@ -473,7 +478,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                     <div key={f.id} className="workflow-row" data-testid="workflow-row">
                       <button className="flow-meta" onClick={() => void openFlow(f.id)}>
                         <span className="flow-tile"><Workflow size={17} /></span>
-                        <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span></span>
+                        <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span>{!!f.tags?.length && <span className="tag-row">{f.tags.map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
                       </button>
                       <span className={'trig-chip ' + (f.trigger ?? 'manual')}>{triggerLabel[f.trigger ?? 'manual']}</span>
                       <button role="switch" aria-checked={!!f.active} aria-label={`Activate ${f.name}`} className={'switch-row compact ' + (f.active ? 'on' : '')}
@@ -519,6 +524,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                 <button className="icon-button" aria-label="Back to overview" onClick={() => setPage('dashboard')}><ArrowLeft size={18} /></button>
                 <div>
                   <input className="workflow-title" value={flowName} onChange={e => setFlowName(e.target.value)} aria-label="Workflow title" />
+                  <input className="tags-input" value={tagsText} onChange={e => setTagsText(e.target.value)} aria-label="Workflow tags" placeholder="Add tags, separated by commas" maxLength={200} />
                   <span className="sub">{dirty ? <><span className="dot warn" />Unsaved changes</> : <><span className="dot on" />All changes saved</>}{isActive && meta?.next_run_at && <> · Next run {formatTime(meta.next_run_at)}</>}</span>
                 </div>
               </div>
@@ -700,6 +706,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
           <div className="content">
             <div className="section-title"><div><div className="eyebrow">Environment</div><h1>Settings</h1><p>FlowPilot Community Edition, self-hosted on your computer.</p></div></div>
             <div className="settings-grid">
+              <DataSettings role={role} notify={notify} onChanged={() => void refresh()} />
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
               <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>
               <div className="panel settings-card"><Database size={22} /><h2>Local database</h2><p>SQLite file: backend/flowpilot.db</p><span>Data persists between restarts.</span></div>

@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.7
+- AI Prompt node for any OpenAI-compatible endpoint (Ollama and LM Studio run free locally)
+- Public forms on webhooks, sticky notes, workflow tags with filtering
+- Run-history retention, workflow backup and restore, full database download
+- Route-by-route access-control test, 473 API tests and a 45-check browser suite
+
 ### v0.6
 - OAuth 2.0 connections (Google, GitHub, custom) with PKCE and automatic refresh
 - Google Sheets and Gmail nodes, OAuth option on the HTTP node

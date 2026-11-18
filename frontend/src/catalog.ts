@@ -1,11 +1,11 @@
 import type { Edge, Node } from '@xyflow/react';
 
 export type TriggerKind = 'manual' | 'schedule' | 'webhook';
-export type FlowDoc = { id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
+export type FlowDoc = { tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -35,9 +35,11 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
+  { type: 'ai', label: 'AI Prompt', desc: 'Ask a local or hosted language model', category: 'Network', color: '#8b5cf6', icon: 'Bot' },
   { type: 'email', label: 'Send Email', desc: 'Send over SMTP', category: 'Network', color: '#d946ef', icon: 'Mail' },
   { type: 'note', label: 'Pass Through', desc: 'Forward data unchanged', category: 'Logic', color: '#94a3b8', icon: 'ArrowRight' },
   { type: 'respond', label: 'Respond to Webhook', desc: 'Choose the reply a webhook caller gets', category: 'Finish', color: '#f43f5e', icon: 'Reply' },
+  { type: 'sticky', label: 'Sticky Note', desc: 'Leave a note on the canvas', category: 'Finish', color: '#eab308', icon: 'StickyNote' },
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
@@ -81,6 +83,8 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'telegram': return { credential: '', chat_id: '', text: 'Hello from FlowPilot' };
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
     case 'respond': return { status: '200', body: '{"ok": true}' };
+    case 'sticky': return { text: 'Write a note here' };
+    case 'ai': return { credential: '', prompt: 'Summarise this in one sentence: {{}}', system: '', temperature: '0.2', json_output: 'false' };
     case 'fail': return { message: 'Something went wrong with {{name}}' };
     case 'subflow': return { workflow_id: '' };
     case 'notify': return { service: 'slack', url: '{{cred.SLACK_URL}}', message: 'Hello from FlowPilot' };

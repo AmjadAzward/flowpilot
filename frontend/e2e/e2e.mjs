@@ -16,6 +16,12 @@ const executablePath = candidates.find(existsSync);
 if (!executablePath) { console.error('No Chrome/Edge found'); process.exit(2); }
 if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 
+// Safety: this suite creates and deletes data, so it only runs against a brand-new, empty database.
+try {
+  const st = await (await fetch(BASE + '/api/auth/status')).json();
+  if (!st.setup_required) { console.error('Refusing to run: the backend already has an account. Start it on a throwaway database (FLOWPILOT_DB=/tmp/e2e.db) and try again.'); process.exit(3); }
+} catch { console.error('Cannot reach the app at ' + BASE); process.exit(3); }
+
 const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
 const pageErrors = [];
@@ -623,6 +629,75 @@ await check('a long wait shows as waiting with a resume time and can be cancelle
   await page.getByTestId('cancel-wait').click();
   await expectText(toast(), /cancelled/i);
   if ((await page.locator('.status-chip.wait').count()) !== 0) throw new Error('the run should no longer be waiting');
+});
+
+await check('tags filter the dashboard, and sticky notes and the AI node work in the editor', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByLabel('Workflow tags').fill('sales-team, ops');
+  await page.getByRole('button', { name: /^Save/ }).click();
+  await expectText(toast(), /saved/i);
+  await openLibrary();
+  await page.getByTestId('add-sticky').click();
+  await page.getByLabel(/^Note/).fill('Remember to rotate the key');
+  await page.getByTestId('sticky').waitFor();
+  await expectText(page.getByTestId('sticky'), /rotate the key/);
+  await page.getByTestId('add-ai').click();
+  await page.getByLabel(/^Prompt/).waitFor();
+  await page.getByLabel(/^AI credential/).waitFor();
+  await page.getByRole('button', { name: /^Save/ }).click();
+  await goOverview();
+  await page.getByTestId('tag-bar').waitFor();
+  await page.getByTestId('tag-bar').getByRole('button', { name: 'sales-team' }).click();
+  const rows = await page.getByTestId('workflow-row').count();
+  if (rows < 1) throw new Error('the tag filter should keep the tagged workflow');
+  for (const r of await page.getByTestId('workflow-row').all()) if (!/sales-team/.test(await r.innerText())) throw new Error('a workflow without the tag is still shown');
+  await shot('22-tags');
+  await page.getByTestId('tag-bar').getByRole('button', { name: 'All' }).click();
+});
+
+await check('settings: run-history retention and workflow backup and restore', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('retention-card').waitFor();
+  await page.getByTestId('retention-days').fill('45');
+  await page.getByTestId('retention-save').click();
+  await expectText(toast(), /Saved/);
+  await page.reload();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.waitForFunction(() => document.querySelector('[data-testid=retention-days]')?.value === '45', null, { timeout: 8000 }).catch(() => { throw new Error('retention was not kept'); });
+  const href = await page.getByTestId('backup-workflows').getAttribute('href');
+  if (href !== '/api/backup/workflows') throw new Error('backup link: ' + href);
+  const dl = await page.evaluate(async () => { const r = await fetch('/api/backup/workflows'); const j = await r.json(); return { ok: r.ok, n: j.workflows.length, fmt: j.format }; });
+  if (!dl.ok || dl.fmt !== 'flowpilot-backup' || dl.n < 1) throw new Error('backup download failed: ' + JSON.stringify(dl));
+  const file = { name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'flowpilot-backup', workflows: [{ name: 'Restored from file', nodes: [{ id: 't', type: 'trigger', position: { x: 0, y: 0 }, data: { label: 'Manual Trigger' } }], edges: [] }] })) };
+  await page.getByTestId('restore-file').setInputFiles(file);
+  await expectText(toast(), /Restored 1 workflow/);
+  await shot('23-settings-data');
+});
+
+await check('a webhook with form fields serves a public form that runs the workflow', async () => {
+  const token = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const fields = JSON.stringify([{ name: 'email', label: 'Your email', type: 'email' }, { name: 'note', label: 'Message', type: 'textarea' }]);
+    const body = { name: 'Contact form', description: 'Tell us what you need', nodes: [node('w', 'webhook', { form_fields: fields }), node('m', 'template', { template: 'From {{body.email}}: {{body.note}}' }), node('o', 'output')], edges: [{ id: 'a', source: 'w', target: 'm' }, { id: 'b', source: 'm', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/active`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true }) });
+    return (await (await fetch(`/api/workflows/${created.id}`)).json()).webhook_token;
+  });
+  const ctx = await browser.newContext({ viewport: { width: 900, height: 700 } });
+  const v = await ctx.newPage();
+  try {
+    await v.goto(BASE + '/api/hooks/' + token);
+    await v.getByLabel('Your email').fill('ada@example.com');
+    await v.getByLabel('Message').fill('Hello from a visitor');
+    if (SHOTS) await v.screenshot({ path: `${SHOTS}/24-public-form.png` });
+    await v.getByRole('button', { name: 'Submit' }).click();
+    await v.getByText('Thank you').waitFor();
+  } finally { await ctx.close(); }
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.locator('summary', { hasText: 'Contact form' }).first().click();
+  await expectText(page.locator('.history-details').first(), /From ada@example.com: Hello from a visitor/);
 });
 
 await check('executions page lists runs, filters and expands', async () => {

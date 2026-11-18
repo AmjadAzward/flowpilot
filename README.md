@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-432%20API%20%2B%2042%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-473%20API%20%2B%2045%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -58,6 +58,9 @@
 | **Credentials vault** | API keys, tokens and passwords are encrypted with Fernet (AES) on your computer, referenced as `{{cred.NAME}}` or chosen in a dropdown, never returned by the API, and replaced with `[hidden]` in outputs, inputs and error messages |
 | **Loops, lists and merging** | Loop Over Items (up to 100 per loop, nested loops work), Merge (append, combine or first), Filter List, Parse CSV and Set Fields. Branches that are not taken never block a Merge |
 | **Debug like a pro** | Click a node to see the exact input and output of its last run, with iteration counts. Pin a node's output so it is skipped while you build the rest (no repeated API calls) |
+| **AI, free and private** | The AI Prompt node talks to any OpenAI-compatible service. Run a model on your own computer with Ollama or LM Studio at no cost, or use a hosted one. Replies can be text or JSON data |
+| **Forms** | Give a webhook form fields and its URL becomes a small public web page. Submissions run the workflow and the visitor sees a thank-you page |
+| **Organise and protect** | Tags with a dashboard filter, sticky notes on the canvas, automatic run-history cleanup (by age and count), workflow backup and restore, and a full database download (owner only) |
 | **Connected accounts (OAuth)** | Connect Google (Sheets, Gmail and any Google API through the HTTP node), GitHub or any OAuth 2.0 service with your own free app. Authorization code with PKCE, tokens encrypted in the vault and refreshed automatically, hidden in run results |
 | **Long waits** | A Wait of up to 7 days pauses the run, survives API restarts and continues by itself. Waiting runs show a resume time and can be cancelled |
 | **Teams and roles** | The owner adds users as admin, editor or viewer. Viewers are read only, editors build and run, admins also manage credentials. Everyone can change their own password, and removing or demoting a user takes effect immediately |
@@ -69,7 +72,7 @@
 | **Editor comfort** | Undo and redo (Ctrl+Z, Ctrl+Y), copy and paste nodes (Ctrl+C, Ctrl+V), duplicate node, one-click Tidy layout, unsaved-change indicator, Ctrl+S |
 | **Connect to services** | Send Email over SMTP, Send Message to Slack or Discord, HTTP with Bearer, Basic or API-key auth, and Run Workflow to call one workflow from another |
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
-| **Thirty node types** | Manual, Schedule and Webhook triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV; Compare Value, Switch, Loop Over Items, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, Gmail; Result Output, Respond to Webhook |
+| **Thirty-two node types** | Manual, Schedule and Webhook triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV; Compare Value, Switch, Loop Over Items, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
@@ -239,7 +242,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (432 tests, use a temporary database and key):
+**API, engine, security and connector tests** (473 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -304,6 +307,9 @@ flowpilot/
 - **Long waits:** a Wait over 60 seconds pauses the run and stores it in the database. It resumes only while the API is running, so a run due while the API was off continues at the next start. It is not allowed inside a loop or a sub-workflow, and a run can have one long wait. A run interrupted mid-resume is closed as failed rather than repeated.
 - **OAuth connections:** open Credentials, choose Connect an account, create a free OAuth client with the service, add the shown redirect URL (set `FLOWPILOT_PUBLIC_URL` if you serve FlowPilot on another address), paste the client ID and secret and approve access. Google apps in testing mode need you added as a test user, and their refresh tokens can expire after 7 days until the app is published.
 - **Everyone shares the same workflows.** Roles limit what people can do, but there are no separate per-user projects yet.
+- **AI nodes:** local models use plain http, so start the API with `FLOWPILOT_ALLOW_PRIVATE_HOSTS=1` for them (this never applies to the HTTP node). A reply can take up to 90 seconds.
+- **Forms are public** to anyone who has the webhook URL, and are rate limited like any webhook. Do not put secrets in them.
+- **Backups:** the workflow file holds no credentials. The database copy includes password hashes and encrypted credentials, so keep it private and keep `backend/flowpilot.key` with it.
 - **Not yet:** per-user projects, SSO, queue workers for heavy load, and a Postgres option for FlowPilot's own storage. The OAuth flow was tested with simulated providers, not against live Google.
 - **Triggers need the API running.** Schedules and webhooks only work while the API window is open, and you should run a single API process (two would run each schedule twice). Cron expressions, signed webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md).
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
