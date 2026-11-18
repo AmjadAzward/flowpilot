@@ -44,7 +44,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
   { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
   { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
-  { type: 'app', label: 'App Action', desc: '16 services: Slack, Notion, Jira, Stripe, Twilio and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
+  { type: 'app', label: 'App Action', desc: '18 services: Slack, Notion, Jira, Stripe, Google Calendar and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
@@ -65,7 +65,7 @@ export const eachItemTypes: string[] = ['datetime', 'crypto', 'app', 'transform'
 export const errorTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
 
 type AppOp = { label: string; example: string; hint: string };
-export const appServices: Record<string, { label: string; credential: string; operations: Record<string, AppOp> }> = {
+export const appServices: Record<string, { label: string; credential: string; oauth?: boolean; operations: Record<string, AppOp> }> = {
   slack: { label: 'Slack', credential: 'Bot token starting with xoxb-', operations: {
     post_message: { label: 'Post a message', example: '{"channel": "#general", "text": "Hello from FlowPilot"}', hint: 'channel and text. The bot must be invited to the channel.' } } },
   notion: { label: 'Notion', credential: 'Internal integration token', operations: {
@@ -118,6 +118,12 @@ export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = 
     { key: 'key', label: 'Secret key', kind: 'text', placeholder: '{{cred.SIGNING_KEY}}', when: { operation: ['hmac_sha256'] } }] },
 };
 
+appServices.gcalendar = { label: 'Google Calendar', credential: 'A Google connection with the Calendar permission (add the scope https://www.googleapis.com/auth/calendar.events when connecting)', oauth: true, operations: {
+  list_events: { label: 'List upcoming events', example: '{"calendar_id": "primary", "limit": 20}', hint: 'Optional: calendar_id (default primary), time_min (a date or date and time, default now) and limit (up to 250).' },
+  create_event: { label: 'Create an event', example: '{"summary": "{{title}}", "start": "2026-03-01T10:00:00Z", "end": "2026-03-01T11:00:00Z", "description": "", "location": ""}', hint: 'summary, start and end (a date like 2026-03-01 for an all-day event, or a date and time). Optional: calendar_id, description, location.' } } };
+appServices.gdrive = { label: 'Google Drive', credential: 'A Google connection with the Drive permission (add the scope https://www.googleapis.com/auth/drive.file when connecting)', oauth: true, operations: {
+  list_files: { label: 'List files', example: '{"name_contains": "invoice", "folder_id": "", "limit": 20}', hint: 'Optional: name_contains, folder_id and limit (up to 100). Newest first. Trashed files are left out.' },
+  create_folder: { label: 'Create a folder', example: '{"name": "Reports", "folder_id": ""}', hint: 'name. Optional: folder_id of the parent folder.' } } };
 appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
   send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
 appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {

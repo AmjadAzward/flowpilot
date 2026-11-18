@@ -943,6 +943,77 @@ await check('bulk actions: select workflows, activate, deactivate, run and delet
   await shot('33-bulk');
 });
 
+await check('Variables can be added, edited and deleted on the Settings page', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('variables-panel').waitFor();
+  await page.getByLabel('Variable name').fill('SITE_URL');
+  await page.getByLabel('Variable value').fill('https://example.com');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await expectText(toast(), /Variable saved/);
+  await page.getByTestId('variable-row').filter({ hasText: 'SITE_URL' }).waitFor();
+  await page.getByLabel('Value of SITE_URL').fill('https://changed.example.com');
+  await page.getByLabel('Value of SITE_URL').blur();
+  await expectText(toast(), /Variable saved/);
+  await page.reload();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('variable-row').filter({ hasText: 'SITE_URL' }).waitFor();
+  if ((await page.getByLabel('Value of SITE_URL').inputValue()) !== 'https://changed.example.com') throw new Error('the edited value was not kept');
+  const used = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Uses a variable', description: '', nodes: [node('t', 'trigger'), node('m', 'template', { template: 'Go to {{vars.SITE_URL}}' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'm' }, { id: 'b', source: 'm', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    const run = await (await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' })).json();
+    await fetch(`/api/workflows/${created.id}`, { method: 'DELETE' });
+    return run.output;
+  });
+  if (used !== 'Go to https://changed.example.com') throw new Error('variable not used by a run: ' + used);
+  page.once('dialog', d => d.accept());
+  await page.getByLabel('Delete SITE_URL').click();
+  await expectText(toast(), /Variable deleted/);
+  if (await page.getByTestId('variable-row').filter({ hasText: 'SITE_URL' }).count()) throw new Error('the variable should be gone');
+  await shot('34-variables');
+});
+
+await check('an n8n export is converted on import, with a report of what needs attention', async () => {
+  await goOverview();
+  const sample = {
+    name: 'Order alerts from n8n',
+    nodes: [
+      { id: '1', name: 'Webhook', type: 'n8n-nodes-base.webhook', typeVersion: 1, position: [0, 0], parameters: { path: 'orders', httpMethod: 'POST' } },
+      { id: '2', name: 'Edit Fields', type: 'n8n-nodes-base.set', typeVersion: 3.3, position: [220, 0], parameters: { assignments: { assignments: [{ name: 'total', value: '={{ $json.body.total }}', type: 'number' }] } } },
+      { id: '3', name: 'Big order?', type: 'n8n-nodes-base.if', typeVersion: 2, position: [440, 0], parameters: { conditions: { conditions: [{ leftValue: '={{ $json.total }}', rightValue: 100, operator: { type: 'number', operation: 'gt' } }] } } },
+      { id: '4', name: 'Notify', type: 'n8n-nodes-base.slack', typeVersion: 2.1, position: [660, -90], parameters: { channelId: { value: '#alerts' }, text: 'Big order' }, credentials: { slackApi: { id: '1', name: 'Slack' } } },
+      { id: '5', name: 'Fancy', type: 'n8n-nodes-base.someVendorNode', typeVersion: 1, position: [660, 90], parameters: {} },
+    ],
+    connections: { Webhook: { main: [[{ node: 'Edit Fields', type: 'main', index: 0 }]] }, 'Edit Fields': { main: [[{ node: 'Big order?', type: 'main', index: 0 }]] }, 'Big order?': { main: [[{ node: 'Notify', type: 'main', index: 0 }], [{ node: 'Fancy', type: 'main', index: 0 }]] } },
+  };
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'n8n-workflow.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(sample)) });
+  await page.getByTestId('import-report').waitFor();
+  await expectText(page.getByTestId('import-report'), /Imported from n8n/);
+  await expectText(page.getByTestId('import-report'), /webhook address/i);
+  await expectText(page.getByTestId('import-report'), /no FlowPilot equivalent/);
+  await expectText(page.getByTestId('import-report'), /slackApi/);
+  await shot('35-n8n-import-report');
+  await page.getByTestId('import-report-close').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  if ((await page.locator('.react-flow__node').count()) !== 5) throw new Error('expected 5 nodes after the import');
+  await expectText(page.locator('.react-flow__node', { hasText: 'Big order?' }), /total/);
+  if ((await page.locator('.workflow-title').inputValue()) !== 'Order alerts from n8n') throw new Error('wrong title');
+});
+
+await check('Google Calendar and Drive use a connection, not a pasted credential', async () => {
+  await openLibrary();
+  await page.getByTestId('add-app').click();
+  await page.getByLabel('Service').selectOption('gcalendar');
+  await page.getByLabel('Google Calendar connection').waitFor();
+  await page.getByLabel('Action').selectOption('create_event');
+  if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes('summary')) throw new Error('event fields missing');
+  await page.getByLabel('Service').selectOption('gdrive');
+  await page.getByLabel('Google Drive connection').waitFor();
+  await page.getByLabel('Service').selectOption('slack');
+  await page.getByLabel('Slack credential').waitFor();
+});
+
 await check('projects limit what a member can see', async () => {
   await page.getByRole('button', { name: /^Users/ }).click();
   await page.getByTestId('user-name').fill('pat-editor');

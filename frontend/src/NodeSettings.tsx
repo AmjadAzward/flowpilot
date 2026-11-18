@@ -205,7 +205,7 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
         <>
           <label>Service<select value={service} onChange={pickService}>{Object.entries(appServices).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}</select></label>
           <label>Action<select value={opKey} onChange={pickOp}>{Object.entries(def.operations).map(([k, o]) => <option key={k} value={k}>{o.label}</option>)}</select></label>
-          {credSelect('credential', `${def.label} credential`)}
+          {def.oauth ? connSelect('credential', `${def.label} connection`) : credSelect('credential', `${def.label} credential`)}
           <label>Fields (JSON)<textarea rows={6} spellCheck={false} value={v('fields')} onChange={text('fields')} /><span className="hint">{opDef.hint} {'{{field}}'} values from the previous node are escaped for you.</span></label>
           <span className="hint">Save the credential on the Credentials page: {def.credential}. These services are tested against simulated servers, so try yours with a test account first.</span>
         </>

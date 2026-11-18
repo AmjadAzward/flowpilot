@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.16
+- Import n8n workflow exports (best effort, with a report of what needs attention)
+- Variables: shared non-secret values used as {{vars.NAME}}
+- Google Calendar and Google Drive actions (18 App Action services)
+- 881 API tests and a 63-check browser suite
+
 ### v0.15
 - New Items trigger (RSS, GitHub issues, any JSON list) with first-check baseline and per-check cap
 - Nine more App Action services (16 in all), two more templates (25), bulk actions on the Overview page

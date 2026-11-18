@@ -15,6 +15,8 @@ import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
 import { AuditPanel } from './AuditPanel';
 import { Tour } from './Tour';
+import { VariablesPanel } from './VariablesPanel';
+import { ImportReport, type ImportInfo } from './ImportReport';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
@@ -105,6 +107,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'error' } | null>(null);
   const [query, setQuery] = useState('');
   const [libQuery, setLibQuery] = useState('');
+  const [importInfo, setImportInfo] = useState<ImportInfo | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [tplGroup, setTplGroup] = useState<(typeof templateGroups)[number]>('All');
@@ -276,6 +279,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const upload = async (file: File) => {
     try {
       const doc = JSON.parse(await file.text());
+      const looksLikeN8n = doc && typeof doc.connections === 'object' && Array.isArray(doc.nodes) && doc.nodes.some((n: { type?: unknown }) => typeof n.type === 'string' && n.type.includes('.'));
+      if (looksLikeN8n) {
+        const conv = await api<{ name: string; description: string; nodes: Node[]; edges: Edge[]; warnings: ImportInfo['warnings']; summary: { nodes: number; placeholders: number } }>('/api/import/n8n', { method: 'POST', body: JSON.stringify(doc) });
+        await createFlow(conv.name, conv.description, conv.nodes, conv.edges);
+        setImportInfo({ name: conv.name, nodes: conv.summary.nodes, placeholders: conv.summary.placeholders, warnings: conv.warnings });
+        return;
+      }
       if (!Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) throw Error('Invalid workflow file');
       await createFlow(doc.name || 'Imported workflow', doc.description || '', doc.nodes, doc.edges);
     } catch (e) { notify((e as Error).message, 'error'); }
@@ -471,6 +481,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   return (
     <div className="app">
       {tourOpen && <Tour onClose={closeTour} />}
+      {importInfo && <ImportReport info={importInfo} onClose={() => setImportInfo(null)} />}
       <aside className={'sidebar ' + (navOpen ? 'open' : '')} onClick={() => setNavOpen(false)}>
         <div className="brand">
           <div className="brand-mark"><Workflow size={18} strokeWidth={2.4} /></div>
@@ -486,7 +497,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.15</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.16</span>
         </div>
       </aside>
 
@@ -793,6 +804,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             <div className="section-title"><div><div className="eyebrow">Environment</div><h1>Settings</h1><p>FlowPilot Community Edition, self-hosted on your computer.</p></div></div>
             <div className="settings-grid">
               <DataSettings role={role} notify={notify} onChanged={() => void refresh()} />
+              <VariablesPanel canEdit={role === 'owner' || role === 'admin'} notify={notify} />
               {isOwner && <AuditPanel notify={notify} />}
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
               <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>

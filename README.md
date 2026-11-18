@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-829%20API%20%2B%2060%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-881%20API%20%2B%2063%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -82,7 +82,9 @@
 | **Connect to services** | Send Email over SMTP, Send Message to Slack or Discord, HTTP with Bearer, Basic or API-key auth, and Run Workflow to call one workflow from another |
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
 | **Work on lists** | Most action nodes can run once for every element of a list ("Run once for each item", up to 200 items), so one HTTP, Code, Set or message node handles a whole list and returns a list of results |
-| **App Action node** | Sixteen services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab and ntfy (free push notifications). These are tested against simulated servers only, so try each one with a test account before relying on it |
+| **Import from n8n** | The Import button on the Overview page and in the editor also accepts an n8n workflow export. Triggers, Set/Edit Fields, IF, Switch, Filter, HTTP Request, Merge, Wait, Respond to Webhook, Sort, Limit, Remove Duplicates, Split Out, Summarize, Date and Time, Crypto, Slack, Telegram, GitHub, Email, RSS and Google Sheets nodes are converted, and `$json` expressions are translated. Everything else becomes a Pass Through node, and a report lists what needs attention (credentials are never exported by n8n, JavaScript code and cross-node references cannot be converted, loops must be rebuilt). It is best effort: always read the report and test before activating |
+| **Variables** | Shared, non-secret values (a website address, a rate) managed in Settings by admins and owners, and used anywhere as `{{vars.NAME}}`, including inside expressions. Everyone can read them, so secrets still belong on the Credentials page |
+| **App Action node** | Eighteen services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab, ntfy (free push notifications), and Google Calendar and Google Drive (which use a connected Google account). These are tested against simulated servers only, so try each one with a test account before relying on it |
 | **Data tools** | Sort, Limit, Remove Duplicates, Split Out, Summarize (count, sum, average, min, max, collect), Rename Keys, Date and Time (add, subtract, compare, format) and Crypto and Encoding (SHA, MD5, HMAC signatures, base64, random IDs) |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
@@ -272,7 +274,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (829 tests, use a temporary database and key):
+**API, engine, security and connector tests** (881 tests, use a temporary database and key):
 
 ```powershell
 cd backend

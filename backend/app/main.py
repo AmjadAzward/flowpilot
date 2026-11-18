@@ -39,6 +39,7 @@ from email.message import EmailMessage
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import httpx
+from .n8n_import import convert as convert_n8n
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,7 +76,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.15.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.16.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -140,6 +141,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
         db.execute("CREATE TABLE IF NOT EXISTS poll_state (workflow_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)")
         db.execute("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, username TEXT, role TEXT, method TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL)")
@@ -321,7 +323,7 @@ def allowed(role: str, method: str, path: str) -> bool:
     if path.startswith(("/api/users", "/api/backup", "/api/audit")): return role == "owner"
     if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
-    if path.startswith(("/api/credentials", "/api/oauth", "/api/settings")): return role in ("owner", "admin")
+    if path.startswith(("/api/credentials", "/api/oauth", "/api/settings", "/api/variables")): return role in ("owner", "admin")
     return role in ("owner", "admin", "editor")
 
 
@@ -371,6 +373,13 @@ def record_audit(username: str | None, role: str | None, method: str, path: str,
     with conn() as db:
         cur = db.execute("INSERT INTO audit_log (at,username,role,method,path,status) VALUES (?,?,?,?,?,?)", (now(), username, role, method, path[:300], status))
         db.execute("DELETE FROM audit_log WHERE id <= ?", (cur.lastrowid - AUDIT_KEEP,))
+
+
+@app.post("/api/import/n8n")
+def import_n8n(body: dict[str, Any]):
+    """Convert an n8n export into a FlowPilot workflow. Nothing is saved: the caller creates the workflow from the result."""
+    try: return convert_n8n(body)
+    except ValueError as exc: raise HTTPException(400, str(exc))
 
 
 @app.get("/api/audit")
@@ -625,7 +634,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.15.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.16.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -823,6 +832,7 @@ NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
 MAX_CREDENTIALS = 100
 _fernets: dict[str, Fernet] = {}
 _secrets_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_secrets", default={})
+_vars_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_vars", default={})
 _stack_var: contextvars.ContextVar[tuple] = contextvars.ContextVar("fp_call_stack", default=())
 
 
@@ -1097,9 +1107,13 @@ def render_template(text: str, data: Any, json_escape: bool = False) -> str:
         if path.startswith("cred."):
             value = lookup_secret(path[5:])
             if oauth_config(value): raise ValueError("An OAuth connection cannot be inserted as text. Choose it in the node's Authentication or Connection setting.")
+        elif path.startswith("vars.") and not (isinstance(data, dict) and "vars" in data):
+            variables = _vars_var.get()
+            if path[5:] not in variables: raise ValueError(f"The variable {path[5:]!r} is not defined. Add it in Settings, under Variables.")
+            value = variables[path[5:]]
         elif PLAIN_PATH_RE.fullmatch(path): value = get_path(data, path)
         else:
-            try: value = eval_expression(path, data)
+            try: value = eval_expression(path, data if not isinstance(data, dict) or "vars" in data else {**data, "vars": _vars_var.get()})
             except ExprError as exc: raise ValueError(f"Expression error in {{{{ {path[:60]} }}}}: {exc}")
         if value is None: return ""
         if isinstance(value, str): return json.dumps(value)[1:-1] if json_escape else value
@@ -1476,8 +1490,11 @@ APP_OPS = {
     "gitlab": ["create_issue"],
     "discord": ["post_message"],
     "ntfy": ["publish"],
+    "gcalendar": ["list_events", "create_event"],
+    "gdrive": ["list_files", "create_folder"],
 }
 OPTIONAL_CREDENTIAL = {"ntfy"}
+OAUTH_SERVICES = {"gcalendar", "gdrive"}
 NOTION_ID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
 AIRTABLE_BASE_RE = re.compile(r"^app[A-Za-z0-9]{8,30}$")
 AIRTABLE_TABLE_RE = re.compile(r"^[A-Za-z0-9 _.\-]{1,80}$")
@@ -1700,7 +1717,52 @@ def app_ntfy(op: str, secret: str, f: dict) -> Any:
     return {"sent": True, "topic": topic}
 
 
-APP_HANDLERS = {"sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def _rfc3339(value: str, label: str) -> str:
+    try: return _to_datetime(value).isoformat()
+    except ValueError as exc: raise ValueError(f"{label}: {exc}")
+
+
+def app_gcalendar(op: str, token: str, f: dict) -> Any:
+    cal = _text(f, "calendar_id", "Calendar ID", required=False, maxlen=200) or "primary"
+    if not re.fullmatch(r"primary|[A-Za-z0-9_.@\-]{3,200}", cal): raise ValueError("Calendar ID is primary or an address like name@group.calendar.google.com")
+    url, headers = f"https://www.googleapis.com/calendar/v3/calendars/{quote(cal, safe='')}/events", {"Authorization": f"Bearer {token}"}
+    if op == "list_events":
+        start = _rfc3339(_text(f, "time_min", "Start", required=False, maxlen=40) or datetime.now(timezone.utc).isoformat(), "Start")
+        res = do_request("GET", url, headers, params={"maxResults": _limit(f, 20, 250), "singleEvents": "true", "orderBy": "startTime", "timeMin": start})
+        out = []
+        for e in (res.get("items") if isinstance(res, dict) else None) or []:
+            st, en = e.get("start") or {}, e.get("end") or {}
+            out.append({"id": e.get("id"), "summary": e.get("summary"), "start": st.get("dateTime") or st.get("date"), "end": en.get("dateTime") or en.get("date"), "location": e.get("location"), "link": e.get("htmlLink")})
+        return out
+    def when(key: str, label: str) -> dict:
+        raw = _text(f, key, label, maxlen=40)
+        return {"date": raw} if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw) else {"dateTime": _rfc3339(raw, label)}
+    body = {"summary": _text(f, "summary", "Title", maxlen=500), "start": when("start", "Start"), "end": when("end", "End")}
+    for key in ("description", "location"):
+        val = _text(f, key, key.title(), required=False, maxlen=8000)
+        if val: body[key] = val
+    res = do_request("POST", url, headers, json=body)
+    return {"id": res.get("id"), "link": res.get("htmlLink"), "summary": res.get("summary")} if isinstance(res, dict) else res
+
+
+def app_gdrive(op: str, token: str, f: dict) -> Any:
+    headers, url = {"Authorization": f"Bearer {token}"}, "https://www.googleapis.com/drive/v3/files"
+    parent = _text(f, "folder_id", "Folder ID", required=False, maxlen=80)
+    if parent and not re.fullmatch(r"[A-Za-z0-9_\-]{10,80}", parent): raise ValueError("Folder ID has unsupported characters")
+    if op == "create_folder":
+        body: dict[str, Any] = {"name": _text(f, "name", "Folder name", maxlen=200), "mimeType": "application/vnd.google-apps.folder"}
+        if parent: body["parents"] = [parent]
+        res = do_request("POST", url, headers, json=body, params={"fields": "id,name,webViewLink"})
+        return {"id": res.get("id"), "name": res.get("name"), "url": res.get("webViewLink")} if isinstance(res, dict) else res
+    clauses = ["trashed = false"]
+    needle = _text(f, "name_contains", "Name contains", required=False, maxlen=200)
+    if needle: clauses.append("name contains '" + needle.replace("\\", "\\\\").replace("'", "\\'") + "'")
+    if parent: clauses.append(f"'{parent}' in parents")
+    res = do_request("GET", url, headers, params={"q": " and ".join(clauses), "pageSize": _limit(f, 20, 100), "orderBy": "modifiedTime desc", "fields": "files(id,name,mimeType,modifiedTime,webViewLink,size)"})
+    return [{"id": x.get("id"), "name": x.get("name"), "type": x.get("mimeType"), "modified": x.get("modifiedTime"), "url": x.get("webViewLink"), "size": x.get("size")} for x in (res.get("files") if isinstance(res, dict) else None) or []]
+
+
+APP_HANDLERS = {"gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:
@@ -1708,7 +1770,7 @@ def app_action(d: dict, previous: Any) -> Any:
     if service not in APP_OPS: raise ValueError(f"Choose a service ({', '.join(APP_OPS)})")
     if op not in APP_OPS[service]: raise ValueError(f"Unknown {service} action: {op or '(none)'}")
     cred = str(d.get("credential") or "").strip()
-    secret = lookup_secret(cred) if cred or service not in OPTIONAL_CREDENTIAL else ""
+    secret = oauth_access_token(cred) if service in OAUTH_SERVICES else lookup_secret(cred) if cred or service not in OPTIONAL_CREDENTIAL else ""
     fields = read_json(render_template(str(d.get("fields") or "{}"), previous, json_escape=True))
     if not isinstance(fields, dict): raise ValueError("Fields must be a JSON object")
     return APP_HANDLERS[service](op, secret, fields)
@@ -2814,13 +2876,46 @@ def _execute(doc: dict, initial: Any = None, resume: tuple | None = None) -> dic
     return {"status": "success", "output": final, "steps": g.steps, "error": None}
 
 
+def load_variables() -> dict:
+    with conn() as db: return {r["name"]: r["value"] for r in db.execute("SELECT name, value FROM variables").fetchall()}
+
+
+MAX_VARIABLES = 200
+
+
+class VariableIn(BaseModel):
+    value: str = Field(max_length=2000)
+
+
+@app.get("/api/variables")
+def list_variables():
+    with conn() as db: rows = db.execute("SELECT name, value, updated_at FROM variables ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.put("/api/variables/{name}")
+def put_variable(name: str, body: VariableIn):
+    if not NAME_RE.fullmatch(name): raise HTTPException(400, "Name must start with a letter and use only letters, numbers, _ and - (max 40)")
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM variables WHERE name=?", (name,)).fetchone() and db.execute("SELECT COUNT(*) c FROM variables").fetchone()["c"] >= MAX_VARIABLES:
+            raise HTTPException(400, f"At most {MAX_VARIABLES} variables")
+        db.execute("INSERT INTO variables (name,value,updated_at) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at", (name, body.value, now()))
+    return {"name": name, "saved": True}
+
+
+@app.delete("/api/variables/{name}", status_code=204)
+def delete_variable(name: str):
+    with conn() as db: db.execute("DELETE FROM variables WHERE name=?", (name,))
+
+
 def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
     secrets_ = load_secrets()
     holder: dict = {}
-    t1, t2, t3 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder)
+    t1, t2, t3, t4 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables())
     try: result = _execute(doc, initial, resume)
     finally:
+        _vars_var.reset(t4)
         _secrets_var.reset(t1)
         _stack_var.reset(t2)
         _response_var.reset(t3)
