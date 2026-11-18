@@ -27,9 +27,14 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
-### v0.5 (in progress)
-- Switch, Code (restricted Python) and Stop and Fail nodes
+### v0.5
+- Switch, Code (restricted Python), Stop and Fail and Wait nodes
 - Per-node retries, continue-on-error and error-handler workflows
+- Database Query (SQLite, Postgres), Read RSS, Telegram and GitHub nodes
+- Respond to Webhook
+- Users with owner, admin, editor and viewer roles, and change password
+- Workflow version history with restore
+- 325 API tests and a 39-check browser suite
 
 ### v0.4
 - Credentials vault: Fernet-encrypted at rest, never returned by the API, redacted from run results

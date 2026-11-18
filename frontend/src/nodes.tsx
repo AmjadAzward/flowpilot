@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, OctagonX, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Reply, Rss, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -64,6 +64,12 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'schedule': return s('mode') === 'cron' ? clip(`cron ${s('cron')}`) : s('mode') === 'daily' ? `daily at ${s('time') || '09:00'}` : `every ${s('minutes') || '15'} min`;
     case 'webhook': return 'waits for a request';
     case 'loop': return s('path') ? `items in ${s('path')}` : 'once per item';
+    case 'sql': return s('query') ? clip(s('query').replace(/\s+/g, ' ')) : 'write a query';
+    case 'rss': return s('url') ? clip(s('url').replace(/^https:\/\//, '')) : '';
+    case 'wait': return `wait ${s('seconds') || '5'}s`;
+    case 'telegram': return clip(s('text'));
+    case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
+    case 'respond': return `reply ${s('status') || '200'}`;
     case 'switch': return s('path') ? clip(`by ${s('path')}`) : 'choose a field';
     case 'code': return 'Python snippet';
     case 'fail': return clip(s('message'));

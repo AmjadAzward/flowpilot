@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, type Connection, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
-  KeyRound, LayoutDashboard, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
+  History as HistoryIcon, KeyRound, LayoutDashboard, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
 import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
 import { MiniFlow } from './MiniFlow';
 import { NodeSettings } from './NodeSettings';
 import { Login } from './Login';
+import { ChangePassword, UsersPage } from './UsersPage';
+import { HistoryPanel } from './HistoryPanel';
 
-type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'settings';
+type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string };
 type Theme = 'dark' | 'light';
 
@@ -38,20 +40,20 @@ function readTheme(): Theme {
   return 'light';
 }
 
-type AuthState = { phase: 'loading' | 'login' | 'setup' | 'ready' | 'offline'; username: string };
+type AuthState = { phase: 'loading' | 'login' | 'setup' | 'ready' | 'offline'; username: string; role: string };
 
 export default function App() {
-  const [auth, setAuth] = useState<AuthState>({ phase: 'loading', username: '' });
+  const [auth, setAuth] = useState<AuthState>({ phase: 'loading', username: '', role: '' });
   const check = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/status');
-      const st = (await res.json()) as { setup_required: boolean; authenticated: boolean; username: string | null };
-      setAuth(st.authenticated ? { phase: 'ready', username: st.username ?? '' } : { phase: st.setup_required ? 'setup' : 'login', username: '' });
-    } catch { setAuth({ phase: 'offline', username: '' }); }
+      const st = (await res.json()) as { setup_required: boolean; authenticated: boolean; username: string | null; role: string | null };
+      setAuth(st.authenticated ? { phase: 'ready', username: st.username ?? '', role: st.role ?? 'viewer' } : { phase: st.setup_required ? 'setup' : 'login', username: '', role: '' });
+    } catch { setAuth({ phase: 'offline', username: '', role: '' }); }
   }, []);
   useEffect(() => { void check(); }, [check]);
   useEffect(() => {
-    const onUnauth = () => setAuth(a => (a.phase === 'ready' ? { phase: 'login', username: '' } : a));
+    const onUnauth = () => setAuth(a => (a.phase === 'ready' ? { phase: 'login', username: '', role: '' } : a));
     window.addEventListener('fp-unauthorized', onUnauth);
     return () => window.removeEventListener('fp-unauthorized', onUnauth);
   }, []);
@@ -62,19 +64,23 @@ export default function App() {
   }, [auth.phase]);
   const signOut = async () => {
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
-    setAuth({ phase: 'login', username: '' });
+    setAuth({ phase: 'login', username: '', role: '' });
   };
 
   if (auth.phase === 'loading') return <div className="splash" aria-busy="true"><span className="spinner" /></div>;
   if (auth.phase === 'offline') return (
-    <div className="splash"><div className="offline-card"><h1>Cannot reach the FlowPilot API</h1><p>Make sure the backend is running on port 8000, then try again.</p><button className="primary" onClick={() => { setAuth({ phase: 'loading', username: '' }); void check(); }}>Retry</button></div></div>
+    <div className="splash"><div className="offline-card"><h1>Cannot reach the FlowPilot API</h1><p>Make sure the backend is running on port 8000, then try again.</p><button className="primary" onClick={() => { setAuth({ phase: 'loading', username: '', role: '' }); void check(); }}>Retry</button></div></div>
   );
-  if (auth.phase === 'login' || auth.phase === 'setup') return <Login mode={auth.phase} onDone={username => setAuth({ phase: 'ready', username })} />;
-  return <Workspace username={auth.username} onSignOut={() => void signOut()} />;
+  if (auth.phase === 'login' || auth.phase === 'setup') return <Login mode={auth.phase} onDone={(username, role) => setAuth({ phase: 'ready', username, role })} />;
+  return <Workspace username={auth.username} role={auth.role} onSignOut={() => void signOut()} />;
 }
 
-function Workspace({ username, onSignOut }: { username: string; onSignOut: () => void }) {
+function Workspace({ username, role, onSignOut }: { username: string; role: string; onSignOut: () => void }) {
   const [page, setPage] = useState<Page>('dashboard');
+  const [showHistory, setShowHistory] = useState(false);
+  const canEdit = role !== 'viewer';
+  const canCreds = role === 'owner' || role === 'admin';
+  const isOwner = role === 'owner';
   const [theme, setTheme] = useState<Theme>(readTheme);
   const [flows, setFlows] = useState<FlowDoc[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -381,7 +387,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
   const shownRuns = runs.filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
-  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', settings: 'Settings' }[page];
+  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', users: 'Users', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);
   const flowName_ = (id?: string) => flows.find(f => f.id === id)?.name || 'Deleted workflow';
 
@@ -392,16 +398,17 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
           <div className="brand-mark"><Workflow size={18} strokeWidth={2.4} /></div>
           <span className="brand-name">FlowPilot</span>
         </div>
-        <button className="primary side-create" onClick={() => void createFlow()}><Plus size={16} />Create workflow</button>
+        <button className="primary side-create" disabled={!canEdit} onClick={() => void createFlow()}><Plus size={16} />Create workflow</button>
         <nav className="nav-group">
           <button className={'nav ' + (page === 'dashboard' ? 'active' : '')} onClick={() => setPage('dashboard')}><LayoutDashboard size={17} />Overview</button>
           <button className={'nav ' + (page === 'editor' ? 'active' : '')} onClick={() => (selectedId ? setPage('editor') : void createFlow())}><Workflow size={17} />Workflow Studio</button>
           <button className={'nav ' + (page === 'executions' ? 'active' : '')} onClick={() => { void refresh(); setPage('executions'); }}><Activity size={17} />Executions<span className="nav-count">{runs.length}</span></button>
           <button className={'nav ' + (page === 'credentials' ? 'active' : '')} onClick={() => { void refresh(); setPage('credentials'); }}><KeyRound size={17} />Credentials<span className="nav-count">{creds.length}</span></button>
+          {isOwner && <button className={'nav ' + (page === 'users' ? 'active' : '')} onClick={() => setPage('users')}><UsersIcon size={17} />Users</button>}
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.4</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.5</span>
         </div>
       </aside>
 
@@ -412,7 +419,8 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
             <button className="icon-button" aria-label="Toggle theme" title="Switch light or dark theme" onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}>
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>
-            <div className="avatar" title={`Signed in as ${username}`}>{username.slice(0, 2).toUpperCase()}</div>
+            {!canEdit && <span className="role-chip" title="Your role is read only">View only</span>}
+            <div className="avatar" title={`Signed in as ${username} (${role})`}>{username.slice(0, 2).toUpperCase()}</div>
             <button className="ghost signout" onClick={onSignOut}><LogOut size={15} />Sign out</button>
           </div>
         </header>
@@ -423,7 +431,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
               <div><h1>Workflows</h1><p>Build, run and monitor your automations. Everything stays on this computer.</p></div>
               <div className="page-actions">
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
-                <button className="primary" onClick={() => void createFlow()}><Plus size={16} />Create workflow</button>
+                <button className="primary" disabled={!canEdit} onClick={() => void createFlow()}><Plus size={16} />Create workflow</button>
               </div>
             </div>
 
@@ -500,7 +508,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                 </div>
               </div>
               <div className="editor-actions">
-                <button role="switch" aria-checked={isActive} aria-label="Workflow active" className={'switch-row ' + (isActive ? 'on' : '')} disabled={!canActivate || busy}
+                <button role="switch" aria-checked={isActive} aria-label="Workflow active" className={'switch-row ' + (isActive ? 'on' : '')} disabled={!canActivate || busy || !canEdit}
                   title={canActivate ? 'Run automatically when this workflow is active' : 'Add a Schedule or Webhook trigger to activate'} onClick={() => void setActive(selectedId, !isActive)}>
                   <span className="switch"><span /></span>{isActive ? 'Active' : 'Inactive'}</button>
                 <span className="tool-group">
@@ -510,12 +518,14 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                 </span>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
-                <button className="ghost" onClick={() => void saveFlow()} disabled={busy} title="Ctrl+S"><Save size={15} />Save</button>
-                <button className="primary" onClick={() => void execute()} disabled={busy}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
+                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => setShowHistory(h => !h)}><HistoryIcon size={15} />History</button>
+                <button className="ghost" onClick={() => void saveFlow()} disabled={busy || !canEdit} title="Ctrl+S"><Save size={15} />Save</button>
+                <button className="primary" onClick={() => void execute()} disabled={busy || !canEdit}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
               </div>
             </div>
 
             <div className="studio">
+              {showHistory && selectedId && <HistoryPanel workflowId={selectedId} canRestore={canEdit} dirty={dirty} notify={notify} onClose={() => setShowHistory(false)} onRestored={() => { setShowHistory(false); void openFlow(selectedId); void refresh(); }} />}
               {showCatalog && (
                 <aside className="node-panel">
                   <div className="mini-heading">Node library<button className="icon-button" aria-label="Hide library" onClick={() => setShowCatalog(false)}><X size={15} /></button></div>
@@ -635,7 +645,8 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
             </div>
             <section className="card">
               <div className="card-head"><div className="seg-title"><h2>Add or replace a credential</h2></div></div>
-              <form className="cred-form" onSubmit={e => void saveCredential(e)}>
+              {!canCreds && <p className="hint pad">Your role can use credentials in workflows but cannot add or delete them.</p>}
+              <form className="cred-form" onSubmit={e => void saveCredential(e)} aria-disabled={!canCreds} style={canCreds ? undefined : { opacity: 0.5, pointerEvents: "none" }}>
                 <label>Name<input data-testid="cred-name" value={credName} onChange={e => setCredName(e.target.value)} placeholder="SLACK_URL" required pattern="[A-Za-z][A-Za-z0-9_\-]{0,39}" title="Start with a letter. Use letters, numbers, _ and - (max 40)" /></label>
                 <label>Secret value<input data-testid="cred-value" type="password" autoComplete="off" value={credValue} onChange={e => setCredValue(e.target.value)} placeholder="Paste the token or URL" required minLength={4} /></label>
                 <button className="primary" type="submit" data-testid="cred-save"><Plus size={16} />Save credential</button>
@@ -650,7 +661,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                   <strong>{c.name}</strong>
                   <code>{`{{cred.${c.name}}}`}</code>
                   <span className="muted">{formatTime(c.updated_at)}</span>
-                  <span className="row-actions"><button className="icon-button danger" aria-label={`Delete credential ${c.name}`} title="Delete" onClick={() => void deleteCredential(c.name)}><Trash2 size={15} /></button></span>
+                  <span className="row-actions"><button className="icon-button danger" aria-label={`Delete credential ${c.name}`} title="Delete" disabled={!canCreds} onClick={() => void deleteCredential(c.name)}><Trash2 size={15} /></button></span>
                 </div>
               )) : <div className="empty">No credentials yet. Add your first one above.</div>}
             </section>
@@ -667,16 +678,18 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
           </div>
         )}
 
+        {page === 'users' && isOwner && <UsersPage notify={notify} me={username} />}
+
         {page === 'settings' && (
           <div className="content">
             <div className="section-title"><div><div className="eyebrow">Environment</div><h1>Settings</h1><p>FlowPilot Community Edition, self-hosted on your computer.</p></div></div>
             <div className="settings-grid">
-              <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span></div>
+              <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
               <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>
               <div className="panel settings-card"><Database size={22} /><h2>Local database</h2><p>SQLite file: backend/flowpilot.db</p><span>Data persists between restarts.</span></div>
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Privacy</h2><p>No analytics or tracking services.</p><span>Only configured HTTP nodes contact outside services.</span></div>
               <div className="panel settings-card"><Code2 size={22} /><h2>Developer API</h2><p>FastAPI docs at localhost:8000/docs</p><span>Designed for single-user local use, not public internet exposure.</span></div>
-              <div className="panel settings-card"><Clock3 size={22} /><h2>Coming next</h2><p>Scheduled triggers, credentials, teams and queues.</p><span>See ROADMAP.md for planned modules.</span></div>
+              <div className="panel settings-card"><Clock3 size={22} /><h2>Coming next</h2><p>OAuth connectors, queues and per-user projects.</p><span>See ROADMAP.md for planned modules.</span></div>
             </div>
           </div>
         )}

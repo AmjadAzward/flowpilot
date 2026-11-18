@@ -5,7 +5,7 @@ export type FlowDoc = { id: string; name: string; description: string; nodes: No
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -26,18 +26,24 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'fail', label: 'Stop and Fail', desc: 'End the run with an error message', category: 'Logic', color: '#ef4444', icon: 'OctagonX' },
   { type: 'condition', label: 'Compare Value', desc: 'Branch into true and false paths', category: 'Logic', color: '#f472b6', icon: 'GitBranch' },
   { type: 'delay', label: 'Delay', desc: 'Wait up to 5 seconds', category: 'Logic', color: '#fb923c', icon: 'Timer' },
+  { type: 'sql', label: 'Database Query', desc: 'Run SQL on SQLite or Postgres', category: 'Data', color: '#0891b2', icon: 'Database' },
+  { type: 'rss', label: 'Read RSS Feed', desc: 'Fetch items from an RSS or Atom feed', category: 'Network', color: '#f97316', icon: 'Rss' },
+  { type: 'wait', label: 'Wait', desc: 'Pause up to 60 seconds', category: 'Logic', color: '#f59e0b', icon: 'Hourglass' },
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
   { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
+  { type: 'telegram', label: 'Telegram Message', desc: 'Send with a Telegram bot', category: 'Network', color: '#0ea5e9', icon: 'Send' },
+  { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'email', label: 'Send Email', desc: 'Send over SMTP', category: 'Network', color: '#d946ef', icon: 'Mail' },
   { type: 'note', label: 'Pass Through', desc: 'Forward data unchanged', category: 'Logic', color: '#94a3b8', icon: 'ArrowRight' },
+  { type: 'respond', label: 'Respond to Webhook', desc: 'Choose the reply a webhook caller gets', category: 'Finish', color: '#f43f5e', icon: 'Reply' },
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code'];
+export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss'];
 /** Nodes that support retries and continue-on-error. */
-export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay'];
+export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github'];
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -65,6 +71,12 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'merge': return { mode: 'append' };
     case 'switch': return { path: 'status', case1: 'new', case2: 'paid', case3: '', case4: '' };
     case 'code': return { code: "# 'input' holds the incoming data. Put your answer in 'result'.\nresult = {'count': len(input) if isinstance(input, list) else 1}" };
+    case 'sql': return { credential: '', query: 'SELECT 1 AS ok', params: '' };
+    case 'rss': return { url: 'https://hnrss.org/frontpage', limit: '10' };
+    case 'wait': return { seconds: '5' };
+    case 'telegram': return { credential: '', chat_id: '', text: 'Hello from FlowPilot' };
+    case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
+    case 'respond': return { status: '200', body: '{"ok": true}' };
     case 'fail': return { message: 'Something went wrong with {{name}}' };
     case 'subflow': return { workflow_id: '' };
     case 'notify': return { service: 'slack', url: '{{cred.SLACK_URL}}', message: 'Hello from FlowPilot' };

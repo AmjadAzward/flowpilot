@@ -115,6 +115,55 @@ function TypeSettings({ node, update, credentials, flows, currentFlowId, webhook
           <span className="hint">Connect several branches into this node. It waits for every branch that is actually running, so a branch that was not taken never blocks it.</span>
         </>
       );
+    case 'sql':
+      return (
+        <>
+          {credSelect('credential', 'Database credential')}
+          <label>SQL query<textarea rows={6} spellCheck={false} value={v('query')} onChange={text('query')} placeholder="SELECT * FROM orders WHERE total > ?" /></label>
+          <label>Parameters (JSON list, optional)<input value={v('params')} onChange={text('params')} spellCheck={false} placeholder={'["{{name}}", 5]'} /></label>
+          <span className="hint">Put <b>?</b> (SQLite) or <b>%s</b> (Postgres) in the query and the values in Parameters, so data can never change the query itself. Credential format: <b>sqlite:///shop.db</b> (a file in backend/data) or <b>postgresql://user:password@host:5432/database</b>. Returns a list of rows (up to 1000), or the number of rows changed. For Postgres, use a database user with only the rights this workflow needs.</span>
+        </>
+      );
+    case 'rss':
+      return (
+        <>
+          <label>Feed URL (public HTTPS)<input value={v('url')} onChange={text('url')} /></label>
+          <label>Items to keep (1 to 50)<input type="number" min={1} max={50} value={v('limit', '10')} onChange={text('limit')} /></label>
+          <span className="hint">Reads RSS and Atom. Each item has title, link, published and summary. Pair it with Loop Over Items.</span>
+        </>
+      );
+    case 'wait':
+      return <label>Seconds (0 to 60)<input type="number" min={0} max={60} value={v('seconds', '5')} onChange={text('seconds')} /><span className="hint">Holds the run for this long, then passes the data on. Runs are not saved across API restarts.</span></label>;
+    case 'telegram':
+      return (
+        <>
+          {credSelect('credential', 'Bot token credential')}
+          <label>Chat ID<input value={v('chat_id')} onChange={text('chat_id')} placeholder="123456789 or @channelname" /></label>
+          <label>Message<textarea rows={4} spellCheck={false} value={v('text')} onChange={text('text')} /></label>
+          <span className="hint">Create a bot with BotFather, save its token on the Credentials page, and message the bot once so it can reply to you. The incoming data continues to the next node.</span>
+        </>
+      );
+    case 'github': {
+      const op = v('operation', 'create_issue');
+      return (
+        <>
+          {credSelect('credential', 'GitHub token credential')}
+          <label>Repository<input value={v('repo')} onChange={text('repo')} placeholder="owner/name" /></label>
+          <label>Action<select value={op} onChange={text('operation')}><option value="create_issue">Create an issue</option><option value="list_issues">List issues</option></select></label>
+          {op === 'create_issue' && <><label>Title<input value={v('title')} onChange={text('title')} /></label><label>Body<textarea rows={4} spellCheck={false} value={v('body')} onChange={text('body')} /></label></>}
+          {op === 'list_issues' && <label>State<select value={v('state', 'open')} onChange={text('state')}><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select></label>}
+          <span className="hint">Use a free personal access token with Issues permission on that repository.</span>
+        </>
+      );
+    }
+    case 'respond':
+      return (
+        <>
+          <label>Status code (200 to 599)<input type="number" min={200} max={599} value={v('status', '200')} onChange={text('status')} /></label>
+          <label>Response body (JSON or text)<textarea rows={5} spellCheck={false} value={v('body')} onChange={text('body')} /></label>
+          <span className="hint">When this workflow is called through its webhook, the caller receives this reply instead of the default status. Use {'{{body.field}}'} to include data. Needs a Webhook trigger and an active workflow.</span>
+        </>
+      );
     case 'switch':
       return (
         <>

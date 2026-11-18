@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { AlertCircle, Eye, EyeOff, GitBranch, Lock, ShieldCheck, Workflow, Zap } from 'lucide-react';
 
-type Props = { mode: 'login' | 'setup'; onDone: (username: string) => void };
+type Props = { mode: 'login' | 'setup'; onDone: (username: string, role: string) => void };
 
-async function post(url: string, body: unknown): Promise<{ username: string }> {
+async function post(url: string, body: unknown): Promise<{ username: string; role: string }> {
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
@@ -36,7 +36,7 @@ export function Login({ mode, onDone }: Props) {
     setBusy(true);
     try {
       const res = await post(setup ? '/api/auth/setup' : '/api/auth/login', { username, password });
-      onDone(res.username);
+      onDone(res.username, res.role);
     } catch (err) {
       setError((err as Error).message);
     } finally {

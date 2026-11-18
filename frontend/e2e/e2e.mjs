@@ -479,6 +479,94 @@ await check('code, switch, stop-and-fail, retries and error workflow settings wo
   await shot('15-logic-nodes');
 });
 
+await check('database, feed, chat, GitHub, wait and respond nodes expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-sql').click();
+  await page.getByLabel('SQL query').waitFor();
+  await page.getByLabel(/^Database credential/).waitFor();
+  await page.getByTestId('add-rss').click();
+  await page.getByLabel(/^Feed URL/).waitFor();
+  await page.getByTestId('add-wait').click();
+  await page.getByLabel(/^Seconds \(0 to 60\)/).waitFor();
+  await page.getByTestId('add-telegram').click();
+  await page.getByLabel('Chat ID').waitFor();
+  await page.getByTestId('add-github').click();
+  await page.getByLabel('Repository').waitFor();
+  await page.getByLabel('Action').selectOption('list_issues');
+  await page.getByLabel('State').waitFor();
+  await page.getByTestId('add-respond').click();
+  await page.getByLabel(/^Status code/).waitFor();
+  await shot('16-more-nodes');
+});
+
+await check('version history lists earlier saves and restores one', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  const title = page.getByLabel('Workflow title');
+  const original = await title.inputValue();
+  await title.fill('Renamed once');
+  await page.getByRole('button', { name: /^Save/ }).click();
+  await expectText(toast(), /saved/i);
+  await title.fill('Renamed twice');
+  await page.getByRole('button', { name: /^Save/ }).click();
+  await page.waitForTimeout(500);
+  await page.getByLabel('Version history').click();
+  await page.getByTestId('history-row').first().waitFor();
+  if ((await page.getByTestId('history-row').count()) !== 2) throw new Error('expected 2 earlier versions');
+  await shot('17-history');
+  page.once('dialog', d => d.accept());
+  await page.getByTestId('history-row').last().getByRole('button', { name: /Restore/ }).click();
+  await page.waitForFunction(v => document.querySelector('[aria-label="Workflow title"]')?.value === v, original);
+});
+
+await check('owner adds a viewer, the viewer is read-only, and the owner removes them', async () => {
+  await page.getByRole('button', { name: /^Users/ }).click();
+  await expectText(page.locator('h1'), /^Users$/);
+  await page.getByTestId('user-name').fill('vera-view');
+  await page.getByTestId('user-password').fill('viewer-password-1');
+  await page.getByTestId('user-role').selectOption('viewer');
+  await page.getByTestId('user-add').click();
+  await expectText(page.getByTestId('user-row').last(), /vera-view/);
+  await shot('18-users');
+
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const v = await ctx.newPage();
+  try {
+    await v.goto(BASE);
+    await v.getByLabel('Username').fill('vera-view');
+    await v.getByLabel('Password', { exact: true }).fill('viewer-password-1');
+    await v.getByRole('button', { name: /^Sign in/ }).click();
+    await v.getByText('View only').waitFor();
+    if (!(await v.getByRole('button', { name: /^Create workflow/ }).first().isDisabled())) throw new Error('viewer can create workflows');
+    if ((await v.getByRole('button', { name: /^Users/ }).count()) !== 0) throw new Error('viewer sees the Users page');
+    const code = await v.evaluate(async () => (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'x', description: '', nodes: [], edges: [] }) })).status);
+    if (code !== 403) throw new Error('expected 403 for a viewer write, got ' + code);
+  } finally { await ctx.close(); }
+
+  page.once('dialog', d => d.accept());
+  await page.getByLabel('Delete user vera-view').click();
+  await page.waitForFunction(() => !document.body.innerText.includes('vera-view'));
+});
+
+await check('change your own password and sign in with the new one', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('pw-current').fill('wrong-password');
+  await page.getByTestId('pw-new').fill('e2e-password-456');
+  await page.getByTestId('pw-save').click();
+  await expectText(toast(), /incorrect/i);
+  await page.getByTestId('pw-current').fill(PW);
+  await page.getByTestId('pw-save').click();
+  await expectText(toast(), /Password changed/);
+  await page.getByTestId('pw-current').fill('e2e-password-456');
+  await page.getByTestId('pw-new').fill(PW);
+  await page.getByTestId('pw-save').click();
+  await expectText(toast(), /Password changed/);
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();

@@ -11,3 +11,4 @@ frontend/dist/
 *.log
 docs/screenshots/fail-*.png
 *.key
+backend/data/

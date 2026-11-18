@@ -23,6 +23,7 @@ import sys
 import tempfile
 import ssl
 import uuid
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -59,7 +60,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.4.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.5.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -111,6 +112,12 @@ def initialize():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
         db.execute("CREATE TABLE IF NOT EXISTS credentials (name TEXT PRIMARY KEY, value_enc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        if "role" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
+            db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
+            first = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
+            if first: db.execute("UPDATE users SET role='owner' WHERE id=?", (first["id"],))
+        db.execute("CREATE TABLE IF NOT EXISTS workflow_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, saved_at TEXT NOT NULL, saved_by TEXT, name TEXT NOT NULL, definition TEXT NOT NULL)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions (workflow_id, id)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
             obj = sample_workflow()
@@ -132,7 +139,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -196,13 +203,32 @@ def create_session(user_id: str, response: Response) -> None:
     response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="strict", path="/")
 
 
-def session_username(token: str | None) -> str | None:
+def session_user(token: str | None) -> dict | None:
     if not token: return None
     with conn() as db:
         row = db.execute(
-            "SELECT u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=? AND s.expires_at > ?",
+            "SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=? AND s.expires_at > ?",
             (token_hash(token), now())).fetchone()
-    return row["username"] if row else None
+    return dict(row) if row else None
+
+
+def session_username(token: str | None) -> str | None:
+    user = session_user(token)
+    return user["username"] if user else None
+
+
+ROLES = ("owner", "admin", "editor", "viewer")
+ASSIGNABLE_ROLES = ("admin", "editor", "viewer")
+SELF_SERVICE = {"/api/auth/password"}
+
+
+def allowed(role: str, method: str, path: str) -> bool:
+    """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
+    if path in SELF_SERVICE: return True
+    if path.startswith("/api/users"): return role == "owner"
+    if method in ("GET", "HEAD"): return True
+    if path.startswith("/api/credentials"): return role in ("owner", "admin")
+    return role in ("owner", "admin", "editor")
 
 
 class SetupIn(BaseModel):
@@ -219,8 +245,12 @@ class LoginIn(BaseModel):
 async def require_login(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api/") and path not in PUBLIC_PATHS and not path.startswith("/api/hooks/") and request.method != "OPTIONS":
-        if not session_username(request.cookies.get(COOKIE)):
+        user = session_user(request.cookies.get(COOKIE))
+        if not user:
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
+        if not allowed(user["role"], request.method, path):
+            return JSONResponse({"detail": "Your role does not allow this action"}, status_code=403)
+        request.state.user = user["username"]
     return await call_next(request)
 
 
@@ -228,8 +258,8 @@ async def require_login(request: Request, call_next):
 def auth_status(request: Request):
     with conn() as db:
         has_users = db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
-    username = session_username(request.cookies.get(COOKIE))
-    return {"setup_required": not has_users, "authenticated": username is not None, "username": username}
+    user = session_user(request.cookies.get(COOKIE))
+    return {"setup_required": not has_users, "authenticated": user is not None, "username": user["username"] if user else None, "role": user["role"] if user else None}
 
 
 @app.post("/api/auth/setup", status_code=201)
@@ -239,9 +269,9 @@ def auth_setup(body: SetupIn, response: Response):
     with conn() as db:
         if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             raise HTTPException(409, "An account already exists. Please sign in.")
-        db.execute("INSERT INTO users VALUES (?,?,?,?)", (user_id, body.username.lower(), hash_password(body.password), now()))
+        db.execute("INSERT INTO users (id,username,password_hash,created_at,role) VALUES (?,?,?,?,?)", (user_id, body.username.lower(), hash_password(body.password), now(), "owner"))
     create_session(user_id, response)
-    return {"username": body.username.lower()}
+    return {"username": body.username.lower(), "role": "owner"}
 
 
 @app.post("/api/auth/login")
@@ -252,14 +282,14 @@ def auth_login(body: LoginIn, request: Request, response: Response):
     if len(recent) >= MAX_FAILED_LOGINS:
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
     with conn() as db:
-        row = db.execute("SELECT id, password_hash FROM users WHERE username=?", (body.username.strip().lower(),)).fetchone()
+        row = db.execute("SELECT id, password_hash, role FROM users WHERE username=?", (body.username.strip().lower(),)).fetchone()
     ok = verify_password(body.password, row["password_hash"] if row else DUMMY_HASH)
     if not row or not ok:
         _failed_logins[key].append(time.time())
         raise HTTPException(401, "Incorrect username or password")
     _failed_logins.pop(key, None)
     create_session(row["id"], response)
-    return {"username": body.username.strip().lower()}
+    return {"username": body.username.strip().lower(), "role": row["role"]}
 
 
 @app.post("/api/auth/logout", status_code=204)
@@ -271,8 +301,85 @@ def auth_logout(request: Request, response: Response):
     response.delete_cookie(COOKIE, path="/")
 
 
+# ---------------------------------------------------------------------------
+# Users and roles (owner only), and changing your own password
+# ---------------------------------------------------------------------------
+MAX_USERS = 50
+
+
+class NewUserIn(BaseModel):
+    username: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.@-]+$")
+    password: str = Field(min_length=8, max_length=200)
+    role: str = "editor"
+
+
+class UserPatch(BaseModel):
+    role: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+
+
+class PasswordIn(BaseModel):
+    current: str = Field(min_length=1, max_length=200)
+    new: str = Field(min_length=8, max_length=200)
+
+
+@app.get("/api/users")
+def list_users():
+    with conn() as db:
+        rows = db.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/users", status_code=201)
+def create_user(body: NewUserIn):
+    if body.role not in ASSIGNABLE_ROLES: raise HTTPException(400, "Role must be admin, editor or viewer")
+    uid = str(uuid.uuid4())
+    with conn() as db:
+        if db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] >= MAX_USERS: raise HTTPException(400, f"Maximum {MAX_USERS} users")
+        if db.execute("SELECT 1 FROM users WHERE username=?", (body.username.lower(),)).fetchone(): raise HTTPException(409, "That username is taken")
+        db.execute("INSERT INTO users (id,username,password_hash,created_at,role) VALUES (?,?,?,?,?)", (uid, body.username.lower(), hash_password(body.password), now(), body.role))
+    return {"id": uid, "username": body.username.lower(), "role": body.role}
+
+
+@app.put("/api/users/{user_id}")
+def update_user(user_id: str, body: UserPatch):
+    with conn() as db:
+        row = db.execute("SELECT id, role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row: raise HTTPException(404, "User not found")
+        if row["role"] == "owner": raise HTTPException(400, "The owner account cannot be changed here")
+        if body.role is not None:
+            if body.role not in ASSIGNABLE_ROLES: raise HTTPException(400, "Role must be admin, editor or viewer")
+            db.execute("UPDATE users SET role=? WHERE id=?", (body.role, user_id))
+        if body.password is not None:
+            db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body.password), user_id))
+            db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+    return {"id": user_id, "updated": True}
+
+
+@app.delete("/api/users/{user_id}", status_code=204)
+def delete_user(user_id: str):
+    with conn() as db:
+        row = db.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row: raise HTTPException(404, "User not found")
+        if row["role"] == "owner": raise HTTPException(400, "The owner account cannot be deleted")
+        db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        db.execute("DELETE FROM users WHERE id=?", (user_id,))
+
+
+@app.post("/api/auth/password")
+def change_password(body: PasswordIn, request: Request):
+    user = session_user(request.cookies.get(COOKIE))
+    if not user: raise HTTPException(401, "Not signed in")
+    with conn() as db:
+        row = db.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
+        if not verify_password(body.current, row["password_hash"]): raise HTTPException(400, "Current password is incorrect")
+        db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body.new), user["id"]))
+        db.execute("DELETE FROM sessions WHERE user_id=? AND token_hash != ?", (user["id"], token_hash(request.cookies.get(COOKIE) or "")))
+    return {"changed": True}
+
+
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.4.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.5.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows():
@@ -302,15 +409,26 @@ def create_workflow(body: WorkflowIn):
         insert_workflow(db, workflow_id, body.name, body.description, doc, now())
     return {"id":workflow_id}
 
+MAX_VERSIONS = 30
+
+
+def canonical(doc: dict) -> str:
+    return json.dumps({k: doc.get(k) for k in ("name", "description", "nodes", "edges")}, sort_keys=True)
+
+
 @app.put("/api/workflows/{workflow_id}")
-def update_workflow(workflow_id: str, body: WorkflowIn):
+def update_workflow(workflow_id: str, body: WorkflowIn, request: Request):
     validate_flow(body)
     doc = body.model_dump()
     doc["id"] = workflow_id
     deactivated = None
     with conn() as db:
-        row = db.execute("SELECT active FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+        row = db.execute("SELECT active, definition, name FROM workflows WHERE id=?", (workflow_id,)).fetchone()
         if not row: raise HTTPException(404, "Workflow not found")
+        if canonical(json.loads(row["definition"])) != canonical(doc):
+            who = getattr(getattr(request, "state", None), "user", None)
+            db.execute("INSERT INTO workflow_versions (workflow_id,saved_at,saved_by,name,definition) VALUES (?,?,?,?,?)", (workflow_id, now(), who, row["name"], row["definition"]))
+            db.execute("DELETE FROM workflow_versions WHERE workflow_id=? AND id NOT IN (SELECT id FROM workflow_versions WHERE workflow_id=? ORDER BY id DESC LIMIT ?)", (workflow_id, workflow_id, MAX_VERSIONS))
         active, next_run = bool(row["active"]), None
         if active:
             try: next_run = activation_next_run(doc)
@@ -324,6 +442,38 @@ def delete_workflow(workflow_id: str):
     with conn() as db:
         db.execute("DELETE FROM workflows WHERE id=?",(workflow_id,))
         db.execute("DELETE FROM executions WHERE workflow_id=?",(workflow_id,))
+        db.execute("DELETE FROM workflow_versions WHERE workflow_id=?", (workflow_id,))
+
+
+@app.get("/api/workflows/{workflow_id}/versions")
+def list_versions(workflow_id: str):
+    get_workflow(workflow_id)
+    with conn() as db:
+        rows = db.execute("SELECT id, saved_at, saved_by, name, definition FROM workflow_versions WHERE workflow_id=? ORDER BY id DESC", (workflow_id,)).fetchall()
+    return [{"id": r["id"], "saved_at": r["saved_at"], "saved_by": r["saved_by"], "name": r["name"], "nodes": len(json.loads(r["definition"]).get("nodes", []))} for r in rows]
+
+
+def load_version(workflow_id: str, version_id: int) -> sqlite3.Row:
+    with conn() as db:
+        row = db.execute("SELECT * FROM workflow_versions WHERE id=? AND workflow_id=?", (version_id, workflow_id)).fetchone()
+    if not row: raise HTTPException(404, "Version not found")
+    return row
+
+
+@app.get("/api/workflows/{workflow_id}/versions/{version_id}")
+def get_version(workflow_id: str, version_id: int):
+    row = load_version(workflow_id, version_id)
+    doc = json.loads(row["definition"])
+    doc.update(id=workflow_id, version_id=version_id, saved_at=row["saved_at"])
+    return doc
+
+
+@app.post("/api/workflows/{workflow_id}/versions/{version_id}/restore")
+def restore_version(workflow_id: str, version_id: int, request: Request):
+    """Restore an older version. The current version is kept as a new history entry first, so a restore can be undone."""
+    doc = json.loads(load_version(workflow_id, version_id)["definition"])
+    body = WorkflowIn(name=doc["name"], description=doc.get("description", ""), nodes=doc["nodes"], edges=doc["edges"])
+    return update_workflow(workflow_id, body, request)
 
 
 @app.post("/api/workflows/{workflow_id}/duplicate", status_code=201)
@@ -603,9 +753,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code"}
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay"}
+ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -689,6 +839,154 @@ def run_code(d: dict, previous: Any) -> Any:
     return res.get("result")
 
 
+# ---------------------------------------------------------------------------
+# Database, feed and chat/code-host nodes
+# ---------------------------------------------------------------------------
+SQL_ROW_LIMIT = 1000
+MAX_WAIT_SECONDS = 60.0
+_response_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_response", default={})
+
+
+def jsonable(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray, memoryview)): return bytes(value).hex()
+    if isinstance(value, (str, int, float, bool)) or value is None: return value
+    if isinstance(value, (list, tuple)): return [jsonable(v) for v in value]
+    if isinstance(value, dict): return {str(k): jsonable(v) for k, v in value.items()}
+    return str(value)
+
+
+def sqlite_folder() -> Path:
+    return Path(os.getenv("FLOWPILOT_SQLITE_DIR", str(BASE / "data"))).resolve()
+
+
+def run_sql(d: dict, previous: Any) -> Any:
+    cred = urlparse(lookup_secret(str(d.get("credential") or "").strip()))
+    query = str(d.get("query") or "").strip()
+    if not query: raise ValueError("Write a SQL query")
+    if len(query) > 10_000: raise ValueError("The query is limited to 10000 characters")
+    raw = str(d.get("params") or "").strip()
+    params: Any = []
+    if raw:
+        try: params = json.loads(render_template(raw, previous, json_escape=True))
+        except ValueError: raise ValueError("Parameters must be a JSON list such as [\"{{name}}\", 5]")
+        if not isinstance(params, list) or len(params) > 100: raise ValueError("Parameters must be a JSON list of at most 100 values")
+    if cred.scheme == "sqlite":
+        rel = unquote(cred.path).lstrip("/")
+        if not rel or ".." in rel.replace("\\", "/").split("/") or re.match(r"^[A-Za-z]:", rel): raise ValueError("The SQLite credential must look like sqlite:///shop.db (a file inside the data folder)")
+        folder = sqlite_folder()
+        target = (folder / rel).resolve()
+        if folder not in target.parents: raise ValueError("SQLite files must live inside the data folder")
+        folder.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(target, timeout=5)
+        deny = {getattr(sqlite3, "SQLITE_ATTACH", 24), getattr(sqlite3, "SQLITE_DETACH", 25)}
+        db.set_authorizer(lambda action, *_a: sqlite3.SQLITE_DENY if action in deny else sqlite3.SQLITE_OK)
+        db.row_factory = sqlite3.Row
+        try:
+            cur = db.execute(query, params)
+            if cur.description is None:
+                db.commit()
+                return {"rows_affected": cur.rowcount}
+            rows = cur.fetchmany(SQL_ROW_LIMIT + 1)
+            if len(rows) > SQL_ROW_LIMIT: raise ValueError(f"The query returned more than {SQL_ROW_LIMIT} rows. Add a LIMIT.")
+            return [jsonable(dict(r)) for r in rows]
+        except sqlite3.Error as exc: raise ValueError(f"SQLite error: {exc}")
+        finally: db.close()
+    if cred.scheme in ("postgres", "postgresql"):
+        try: import psycopg
+        except ImportError: raise ValueError("Postgres support needs the psycopg package: pip install \"psycopg[binary]\"")
+        from psycopg.rows import dict_row
+        if not cred.hostname: raise ValueError("The Postgres credential must look like postgresql://user:password@host:5432/database")
+        assert_public_host(cred.hostname.lower(), relaxed=True)
+        sslmode = parse_qs(cred.query).get("sslmode", ["prefer"])[0]
+        try:
+            with psycopg.connect(host=cred.hostname, port=cred.port or 5432, user=unquote(cred.username or ""), password=unquote(cred.password or ""),
+                                 dbname=unquote(cred.path.lstrip("/")), connect_timeout=8, sslmode=sslmode, options="-c statement_timeout=8000", row_factory=dict_row) as conn_pg:
+                cur = conn_pg.execute(query, params)
+                if cur.description is None: return {"rows_affected": cur.rowcount}
+                rows = cur.fetchmany(SQL_ROW_LIMIT + 1)
+                if len(rows) > SQL_ROW_LIMIT: raise ValueError(f"The query returned more than {SQL_ROW_LIMIT} rows. Add a LIMIT.")
+                return [jsonable(r) for r in rows]
+        except psycopg.Error as exc: raise ValueError(f"Postgres error: {str(exc).splitlines()[0] if str(exc) else type(exc).__name__}")
+    raise ValueError("The database credential must start with sqlite:/// or postgresql://")
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def read_rss(d: dict, previous: Any) -> list:
+    url = safe_url(render_template(str(d.get("url", "")), previous))
+    try: limit = max(1, min(int(float(d.get("limit") or 10)), 50))
+    except (TypeError, ValueError): raise ValueError("Limit must be a number")
+    text = do_request("GET", url, {"Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml"})
+    if not isinstance(text, str): raise ValueError("The URL did not return an RSS or Atom feed")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper(): raise ValueError("Feeds with DOCTYPE or entity declarations are not supported")
+    try: root = ET.fromstring(text)
+    except ET.ParseError: raise ValueError("The feed is not valid XML")
+    out = []
+    for item in root.iter():
+        if _local(item.tag) not in ("item", "entry"): continue
+        row: dict[str, str] = {}
+        for child in item:
+            name = _local(child.tag)
+            if name == "link":
+                row.setdefault("link", child.get("href") or (child.text or "").strip())
+            elif name == "title": row["title"] = (child.text or "").strip()
+            elif name in ("pubDate", "published", "updated"): row.setdefault("published", (child.text or "").strip())
+            elif name in ("description", "summary", "content"): row.setdefault("summary", re.sub(r"<[^>]+>", "", child.text or "").strip()[:500])
+        out.append({"title": row.get("title", ""), "link": row.get("link", ""), "published": row.get("published", ""), "summary": row.get("summary", "")})
+        if len(out) >= limit: break
+    return out
+
+
+def send_telegram(d: dict, previous: Any) -> dict:
+    token = lookup_secret(str(d.get("credential") or "").strip())
+    if not re.fullmatch(r"\d{3,15}:[A-Za-z0-9_-]{20,80}", token): raise ValueError("The Telegram credential must be the bot token from BotFather")
+    chat = render_template(str(d.get("chat_id", "")), previous).strip()
+    if not re.fullmatch(r"-?\d{1,20}|@[A-Za-z0-9_]{4,64}", chat): raise ValueError("Chat ID must be a number or @channelname")
+    text = render_template(str(d.get("text", "")), previous)
+    if not text.strip() or len(text) > 4000: raise ValueError("The message must be between 1 and 4000 characters")
+    do_request("POST", f"https://api.telegram.org/bot{token}/sendMessage", {}, json={"chat_id": chat, "text": text})
+    return {"sent": True, "chat_id": chat}
+
+
+GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+
+
+def github_action(d: dict, previous: Any) -> Any:
+    token = lookup_secret(str(d.get("credential") or "").strip())
+    repo = render_template(str(d.get("repo", "")), previous).strip()
+    if not GITHUB_REPO_RE.fullmatch(repo): raise ValueError("Repository must look like owner/name")
+    op = str(d.get("operation") or "create_issue")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "flowpilot"}
+    base = f"https://api.github.com/repos/{repo}/issues"
+    if op == "create_issue":
+        title = render_template(str(d.get("title", "")), previous).strip()
+        if not title or len(title) > 250: raise ValueError("The issue title must be between 1 and 250 characters")
+        body = render_template(str(d.get("body", "")), previous)
+        if len(body) > 60_000: raise ValueError("The issue body is too large")
+        res = do_request("POST", base, headers, json={"title": title, "body": body})
+        return {"number": res.get("number"), "url": res.get("html_url")} if isinstance(res, dict) else res
+    if op == "list_issues":
+        state = str(d.get("state") or "open")
+        if state not in ("open", "closed", "all"): raise ValueError("State must be open, closed or all")
+        res = do_request("GET", f"{base}?state={state}&per_page=30", headers)
+        if not isinstance(res, list): raise ValueError("Unexpected response from GitHub")
+        return [{"number": i.get("number"), "title": i.get("title"), "state": i.get("state"), "url": i.get("html_url"), "user": (i.get("user") or {}).get("login")} for i in res if "pull_request" not in i]
+    raise ValueError(f"Unknown GitHub operation: {op}")
+
+
+def build_response(d: dict, previous: Any) -> dict:
+    try: status = int(float(d.get("status") or 200))
+    except (TypeError, ValueError): raise ValueError("Status must be a number")
+    if not 200 <= status <= 599: raise ValueError("Status must be between 200 and 599")
+    raw = str(d.get("body") if d.get("body") is not None else "")
+    try: body = json.loads(render_template(raw, previous, json_escape=True)) if raw.strip() else None
+    except ValueError: body = render_template(raw, previous)
+    if len(json.dumps(body, default=str)) > 256 * 1024: raise ValueError("The response body is too large")
+    return {"status": status, "body": body}
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
@@ -735,6 +1033,26 @@ def step_action(node: dict, previous: Any):
     if typ == "code":
         value = run_code(d, previous)
         return value, value, None
+    if typ == "sql":
+        value = run_sql(d, previous)
+        return value, value, None
+    if typ == "rss":
+        value = read_rss(d, previous)
+        return value, value, None
+    if typ == "telegram": return send_telegram(d, previous), previous, None
+    if typ == "github":
+        value = github_action(d, previous)
+        return value, value, None
+    if typ == "wait":
+        try: seconds = float(d.get("seconds", 1))
+        except (TypeError, ValueError): raise ValueError("Wait seconds must be a number")
+        seconds = max(0.0, min(seconds, MAX_WAIT_SECONDS))
+        time.sleep(seconds)
+        return {"waited_seconds": seconds}, previous, None
+    if typ == "respond":
+        resp = build_response(d, previous)
+        _response_var.get()["response"] = resp
+        return resp, previous, None
     if typ == "fail":
         raise ValueError(render_template(str(d.get("message") or "Workflow stopped by a Stop and Fail node"), previous))
     if typ == "switch":
@@ -777,9 +1095,11 @@ def step_action(node: dict, previous: Any):
         if len(stack) > MAX_SUBFLOW_DEPTH: raise ValueError("Sub-workflows are nested too deeply")
         try: sub = get_workflow(wid)
         except HTTPException: raise ValueError("Sub-workflow not found")
-        token = _stack_var.set(stack + (wid,))
+        token, rtoken = _stack_var.set(stack + (wid,)), _response_var.set({})
         try: res = _execute(sub, previous)
-        finally: _stack_var.reset(token)
+        finally:
+            _stack_var.reset(token)
+            _response_var.reset(rtoken)
         if res["status"] != "success": raise ValueError(f"Sub-workflow '{sub['name']}' failed: {res['error']}")
         return res["output"], res["output"], None
     raise ValueError(f"Unsupported node: {typ}")
@@ -957,11 +1277,14 @@ def _execute(doc: dict, initial: Any = None) -> dict:
 def run_flow(doc: dict, initial: Any = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
     secrets_ = load_secrets()
-    t1, t2 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),))
+    holder: dict = {}
+    t1, t2, t3 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder)
     try: result = _execute(doc, initial)
     finally:
         _secrets_var.reset(t1)
         _stack_var.reset(t2)
+        _response_var.reset(t3)
+    if result["status"] == "success" and "response" in holder: result["response"] = holder["response"]
     return redact(result, secrets_)
 
 
@@ -1202,6 +1525,8 @@ async def receive_webhook(token: str, request: Request):
         except ValueError: body = text
     payload = webhook_payload(request.method, dict(request.query_params), body, ctype.split(";")[0].strip())
     result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
+    if result["status"] == "success" and result.get("response"):
+        return JSONResponse(result["response"]["body"], status_code=result["response"]["status"])
     code = 200 if result["status"] == "success" else 500
     return JSONResponse({"status": result["status"], "execution_id": result["id"]}, status_code=code)
 
