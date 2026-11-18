@@ -3,7 +3,7 @@ import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import { request, roleHelp, type Role } from './api';
 import { ProjectsCard } from './ProjectsCard';
 
-type UserRow = { id: string; username: string; role: Role; created_at: string };
+type UserRow = { id: string; username: string; role: Role; created_at: string; auth_source?: string };
 type Notify = (msg: string, kind?: 'ok' | 'error') => void;
 
 const when = (d: string) => new Date(d).toLocaleDateString();
@@ -65,14 +65,14 @@ export function UsersPage({ notify, me, onProjectsChanged }: { notify: Notify; m
         <div className="cred-head"><span>User</span><span>Role</span><span>Added</span><span className="th-actions">Actions</span></div>
         {users.map(u => (
           <div className="cred-row" key={u.id} data-testid="user-row">
-            <strong>{u.username}{u.username === me && <em className="iter"> you</em>}</strong>
+            <strong>{u.username}{u.username === me && <em className="iter"> you</em>}{u.auth_source === 'sso' && <em className="iter sso-chip" data-testid="sso-chip"> single sign-on</em>}</strong>
             {u.role === 'owner'
               ? <span className="muted">owner: {roleHelp.owner}</span>
               : <select aria-label={`Role for ${u.username}`} value={u.role} onChange={e => void changeRole(u, e.target.value as Role)}>{(['admin', 'editor', 'viewer'] as Role[]).map(r => <option key={r} value={r}>{r}</option>)}</select>}
             <span className="muted">{when(u.created_at)}</span>
             <span className="row-actions">
               {u.role !== 'owner' && <>
-                <button className="icon-button" aria-label={`Reset password for ${u.username}`} title="Reset password" onClick={() => void resetPassword(u)}><KeyRound size={15} /></button>
+                {u.auth_source !== 'sso' && <button className="icon-button" aria-label={`Reset password for ${u.username}`} title="Reset password" onClick={() => void resetPassword(u)}><KeyRound size={15} /></button>}
                 <button className="icon-button danger" aria-label={`Delete user ${u.username}`} title="Delete" onClick={() => void remove(u)}><Trash2 size={15} /></button>
               </>}
             </span>

@@ -16,6 +16,7 @@ import { DataSettings } from './DataSettings';
 import { AuditPanel } from './AuditPanel';
 import { Tour } from './Tour';
 import { VariablesPanel } from './VariablesPanel';
+import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
@@ -501,7 +502,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.18</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.19</span>
         </div>
       </aside>
 
@@ -809,6 +810,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             <div className="settings-grid">
               <DataSettings role={role} notify={notify} onChanged={() => void refresh()} />
               <VariablesPanel canEdit={role === 'owner' || role === 'admin'} notify={notify} />
+              {isOwner && <SsoPanel notify={notify} />}
               {isOwner && <AuditPanel notify={notify} />}
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
               <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>

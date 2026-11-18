@@ -1,9 +1,11 @@
 // End-to-end browser test. Requires the backend (8000) and frontend (5173) to be running
 // and Google Chrome or Microsoft Edge installed. It creates and deletes workflows, so point the
 // backend at a throwaway database first:  FLOWPILOT_DB=/tmp/e2e.db uvicorn app.main:app   Run with:  npm run test:e2e
+// The single sign-on check talks to a stand-in provider on 127.0.0.1:9100 and is skipped unless the backend also has FLOWPILOT_ALLOW_PRIVATE_HOSTS=1.
 import { chromium } from 'playwright-core';
 import { existsSync, mkdirSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign as rsaSign, randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { build } from 'esbuild';
 
 const BASE = process.env.FLOWPILOT_URL || 'http://127.0.0.1:5173';
@@ -970,7 +972,7 @@ await check('Variables can be added, edited and deleted on the Settings page', a
   page.once('dialog', d => d.accept());
   await page.getByLabel('Delete SITE_URL').click();
   await expectText(toast(), /Variable deleted/);
-  if (await page.getByTestId('variable-row').filter({ hasText: 'SITE_URL' }).count()) throw new Error('the variable should be gone');
+  await page.getByTestId('variable-row').filter({ hasText: 'SITE_URL' }).waitFor({ state: 'detached' });
   await shot('34-variables');
 });
 
@@ -1129,6 +1131,78 @@ await check('a run waits for approval and continues from the button and from the
   const outputs = rows.map(r => r.output).sort();
   if (JSON.stringify(outputs) !== JSON.stringify(['Approved: Buy a laptop', 'Declined: reject'])) throw new Error('unexpected outcomes: ' + JSON.stringify(rows));
   await page.evaluate(async id => { await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); }, made.id);
+});
+
+await check('single sign-on: a stand-in provider signs people in, wrong domains are refused, local accounts are safe', async () => {
+  const ISSUER = 'http://127.0.0.1:9100';
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', use: 'sig', alg: 'RS256' };
+  const b64 = o => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
+  const codes = new Map();
+  let nextEmail = 'ada@company.com';
+  const idp = createServer((req, res) => {
+    const url = new URL(req.url, ISSUER);
+    const json = (o) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (url.pathname === '/.well-known/openid-configuration') return json({ issuer: ISSUER, authorization_endpoint: ISSUER + '/authorize', token_endpoint: ISSUER + '/token', jwks_uri: ISSUER + '/keys' });
+    if (url.pathname === '/keys') return json({ keys: [jwk] });
+    if (url.pathname === '/authorize') {
+      const code = randomUUID();
+      codes.set(code, { nonce: url.searchParams.get('nonce'), email: nextEmail });
+      res.writeHead(302, { Location: `${url.searchParams.get('redirect_uri')}?code=${code}&state=${url.searchParams.get('state')}` });
+      return res.end();
+    }
+    if (url.pathname === '/token') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        const form = new URLSearchParams(body);
+        const entry = codes.get(form.get('code'));
+        if (!entry || form.get('client_secret') !== 'e2e-client-secret' || !form.get('code_verifier')) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end('{"error":"invalid_grant"}'); }
+        const now = Math.floor(Date.now() / 1000);
+        const head = b64({ alg: 'RS256', kid: 'k1', typ: 'JWT' }), claims = b64({ iss: ISSUER, aud: 'e2e-client', sub: 'u-1', email: entry.email, email_verified: true, iat: now, exp: now + 300, nonce: entry.nonce });
+        const sig = rsaSign('RSA-SHA256', Buffer.from(head + '.' + claims), privateKey).toString('base64url');
+        json({ id_token: `${head}.${claims}.${sig}`, access_token: 'unused', token_type: 'Bearer' });
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise(r => idp.listen(9100, '127.0.0.1', r));
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  try {
+    const put = await page.evaluate(async cfg => { const r = await fetch('/api/sso/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) }); return { status: r.status, text: await r.text() }; },
+      { enabled: true, issuer: ISSUER, client_id: 'e2e-client', client_secret: 'e2e-client-secret', allowed_domains: 'company.com', default_role: 'viewer' });
+    if (put.status === 400 && /FLOWPILOT_ALLOW_PRIVATE_HOSTS/.test(put.text)) { console.log('  SKIP single sign-on (start the backend with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 to test it against a local stand-in provider)'); return; }
+    if (put.status !== 200) throw new Error('could not configure SSO: ' + put.text);
+    const v = await ctx.newPage();
+    await v.goto(BASE);
+    await v.getByTestId('sso-button').waitFor();
+    await v.getByTestId('sso-button').click();
+    await v.getByRole('button', { name: /^Overview/ }).waitFor();  // signed in, no password
+    const me = await v.evaluate(async () => (await (await fetch('/api/auth/status')).json()));
+    if (me.username !== 'ada@company.com' || me.role !== 'viewer') throw new Error('unexpected account ' + JSON.stringify(me));
+    if (await v.getByRole('button', { name: /^Users/ }).count()) throw new Error('a viewer should not see the Users page');
+    await v.evaluate(async () => { await fetch('/api/auth/logout', { method: 'POST' }); });
+    // a person from another domain is refused and told why
+    nextEmail = 'mallory@evil.org';
+    await v.goto(BASE);
+    await v.getByTestId('sso-button').click();
+    await v.getByRole('alert').waitFor();
+    await expectText(v.getByRole('alert'), /domain is not allowed/i);
+    if ((await v.evaluate(async () => (await (await fetch('/api/auth/status')).json()).authenticated))) throw new Error('the refused person must not be signed in');
+    if (SHOTS) await v.screenshot({ path: `${SHOTS}/40-sso-refused.png` });
+    // the owner sees the SSO account and the panel
+    await page.getByRole('button', { name: /^Users/ }).click();
+    await page.getByTestId('sso-chip').waitFor();
+    await page.getByRole('button', { name: /^Settings/ }).click();
+    await page.getByTestId('sso-panel').waitFor();
+    await expectText(page.getByTestId('sso-panel'), /api\/auth\/sso\/callback/);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/41-sso-settings.png` });
+  } finally {
+    await ctx.close();
+    await new Promise(r => idp.close(r));
+    await page.evaluate(async () => { await fetch('/api/sso/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false, issuer: '', client_id: '', allowed_domains: '', default_role: 'viewer' }) }); });
+  }
 });
 
 await check('projects limit what a member can see', async () => {

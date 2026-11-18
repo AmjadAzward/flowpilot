@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-973%20API%20%2B%2067%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1007%20API%20%2B%2068%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -83,6 +83,7 @@
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
 | **Work on lists** | Most action nodes can run once for every element of a list ("Run once for each item", up to 200 items), so one HTTP, Code, Set or message node handles a whole list and returns a list of results |
 | **Import from n8n** | The Import button on the Overview page and in the editor also accepts an n8n workflow export. Triggers, Set/Edit Fields, IF, Switch, Filter, HTTP Request, Merge, Wait, Respond to Webhook, Sort, Limit, Remove Duplicates, Split Out, Summarize, Date and Time, Crypto, Slack, Telegram, GitHub, Email, RSS and Google Sheets nodes are converted, and `$json` expressions are translated. Everything else becomes a Pass Through node, and a report lists what needs attention (credentials are never exported by n8n, JavaScript code and cross-node references cannot be converted, loops must be rebuilt). It is best effort: always read the report and test before activating |
+| **Single sign-on (OpenID Connect)** | The owner can turn on sign-in with a company account (Google, Microsoft Entra ID, Okta, Keycloak or any OpenID Connect provider) in Settings: issuer, client ID and secret, allowed email domains and the role for new people. It uses the authorization code flow with PKCE and verifies the ID token itself (RS256 signature against the provider's published keys, issuer, audience, expiry, nonce and a confirmed email address). People get an account of their own kind with no password, an existing local account is never taken over, and local passwords keep working. It has been tested against a stand-in provider that signs real tokens, not against a real Google, Entra or Okta tenant, so try it with a test account first |
 | **Wait for Response (approvals)** | A node that pauses the run until someone answers. Any earlier node can put `{{run.approve_url}}` and `{{run.reject_url}}` in a message (Slack, ntfy, email); opening a link answers the run, or an editor presses Approve or Reject on the Executions page. The next nodes get `{{decision}}` (approve, reject, timeout, or your own word with `?decision=word`), `{{data}}` and `{{body}}`. Links are signed, work once, and expire after the time limit (1 minute to 7 days), when the run continues with the decision "timeout" or fails. Anyone who has a link can answer, so send it only to people you trust |
 | **Webhook authentication** | A webhook can require a secret header or Basic authentication, checked against a saved credential in constant time. Calls without it get a 401 and never run the workflow. A deleted credential or a broken setting locks the webhook instead of opening it. Not compatible with the public form, because browsers cannot send the header |
 | **Smarter HTTP Request** | Query parameters as JSON, form (urlencoded) bodies, a per-node timeout (1 to 60 seconds) and pagination: follow a "next" address in each reply (same site only) or count pages with a parameter, up to 20 pages and 5000 items, returned as one list |
@@ -279,7 +280,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (973 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1007 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -390,7 +391,7 @@ Everything works with no configuration. These optional environment variables cha
 - **Files** live in `backend/data/files` (override with `FLOWPILOT_FILES_DIR`). Binary data is passed around as base64 inside JSON. Webhook uploads are stored under `uploads/` there.
 - **New Items trigger:** checks run while FlowPilot is running, and items that appear and disappear between two checks are missed. An API list without a stable identifier field is matched by its whole content, so an item that changes counts as new.
 - **Email trigger:** a message is marked read when picked up, so a failed run is not retried (the failed run keeps the message). Gmail needs an app password.
-- **Not yet:** SSO and a Postgres option for FlowPilot's own storage (the Database Query node can already talk to Postgres). The OAuth flow was tested with simulated providers, not against live Google.
+- **Not yet:** a Postgres option for FlowPilot's own storage (the Database Query node can already talk to Postgres). The OAuth flow was tested with simulated providers, not against live Google.
 - **Triggers need the API running.** Schedules and webhooks only work while the API window is open, and you should run a single API process (two would run each schedule twice). Cron expressions, signed webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md).
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
 - **One incoming connection per node, except Merge.** Branches come back together through a Merge node, and cycles are rejected (use Loop Over Items or Repeat Until). One node may fan out to several.

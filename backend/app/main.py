@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 
 import httpx
 from .n8n_import import convert as convert_n8n
+from .oidc import verify_id_token
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,7 +79,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.18.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.19.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -135,6 +136,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS project_members (project_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (project_id, user_id))")
         if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}: db.execute("ALTER TABLE workflows ADD COLUMN project_id TEXT")
+        if "auth_source" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}: db.execute("ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'")
         if "role" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
             db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
             first = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
@@ -228,7 +230,7 @@ SESSION_DAYS = 7
 PBKDF2_ROUNDS = 240_000
 MAX_FAILED_LOGINS = 5
 LOCKOUT_SECONDS = 300
-PUBLIC_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout"}
+PUBLIC_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout", "/api/auth/sso/start", "/api/auth/sso/callback"}
 _failed_logins: dict[str, list[float]] = {}
 
 
@@ -327,7 +329,7 @@ SELF_SERVICE = {"/api/auth/password"}
 def allowed(role: str, method: str, path: str) -> bool:
     """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
     if path in SELF_SERVICE: return True
-    if path.startswith(("/api/users", "/api/backup", "/api/audit")): return role == "owner"
+    if path.startswith(("/api/users", "/api/backup", "/api/audit", "/api/sso")): return role == "owner"
     if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
     if path.startswith(("/api/credentials", "/api/oauth", "/api/settings", "/api/variables")): return role in ("owner", "admin")
@@ -431,7 +433,9 @@ def auth_status(request: Request):
             rows = db.execute("SELECT id, name FROM projects ORDER BY name").fetchall()
         mine = None if sees_everything(user) else my_project_ids(user)
         projects = [{"id": r["id"], "name": r["name"]} for r in rows if mine is None or r["id"] in mine]
-    return {"setup_required": not has_users, "authenticated": user is not None, "username": user["username"] if user else None, "role": user["role"] if user else None, "projects": projects}
+    sso = sso_config()
+    return {"setup_required": not has_users, "authenticated": user is not None, "username": user["username"] if user else None, "role": user["role"] if user else None, "projects": projects,
+            "sso": {"enabled": sso["ready"], "label": "single sign-on"}}
 
 
 @app.post("/api/auth/setup", status_code=201)
@@ -500,7 +504,7 @@ class PasswordIn(BaseModel):
 @app.get("/api/users")
 def list_users():
     with conn() as db:
-        rows = db.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at").fetchall()
+        rows = db.execute("SELECT id, username, role, created_at, auth_source FROM users ORDER BY created_at").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -521,6 +525,7 @@ def update_user(user_id: str, body: UserPatch):
         row = db.execute("SELECT id, role FROM users WHERE id=?", (user_id,)).fetchone()
         if not row: raise HTTPException(404, "User not found")
         if row["role"] == "owner": raise HTTPException(400, "The owner account cannot be changed here")
+        if body.password is not None and db.execute("SELECT auth_source FROM users WHERE id=?", (user_id,)).fetchone()["auth_source"] == "sso": raise HTTPException(400, "A single sign-on account has no password")
         if body.role is not None:
             if body.role not in ASSIGNABLE_ROLES: raise HTTPException(400, "Role must be admin, editor or viewer")
             db.execute("UPDATE users SET role=? WHERE id=?", (body.role, user_id))
@@ -546,7 +551,8 @@ def change_password(body: PasswordIn, request: Request):
     user = session_user(request.cookies.get(COOKIE))
     if not user: raise HTTPException(401, "Not signed in")
     with conn() as db:
-        row = db.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
+        row = db.execute("SELECT password_hash, auth_source FROM users WHERE id=?", (user["id"],)).fetchone()
+        if row["auth_source"] == "sso": raise HTTPException(400, "A single sign-on account has no password")
         if not verify_password(body.current, row["password_hash"]): raise HTTPException(400, "Current password is incorrect")
         db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(body.new), user["id"]))
         db.execute("DELETE FROM sessions WHERE user_id=? AND token_hash != ?", (user["id"], token_hash(request.cookies.get(COOKIE) or "")))
@@ -641,7 +647,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.18.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.19.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -4052,6 +4058,189 @@ def executions(request: Request, workflow_id: str | None = None):
         waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
              "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Single sign-on (OpenID Connect, authorization code flow with PKCE). Local accounts keep working.
+# Signing in creates or reuses an account of its own kind ("sso"); it never takes over a local account.
+# ---------------------------------------------------------------------------
+SSO_SECRET_NAME = "SSO_CLIENT_SECRET"
+SSO_ROLES = ("viewer", "editor", "admin")
+DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+_sso_cache: dict[str, tuple[float, Any]] = {}
+SSO_CACHE_SECONDS = 600
+
+
+def sso_config() -> dict:
+    with conn() as db: rows = {r["key"]: r["value"] for r in db.execute("SELECT key, value FROM settings WHERE key LIKE 'sso_%'").fetchall()}
+    with conn() as db: has_secret = db.execute("SELECT 1 FROM credentials WHERE name=?", (SSO_SECRET_NAME,)).fetchone() is not None
+    cfg = {"enabled": rows.get("sso_enabled") == "1", "issuer": rows.get("sso_issuer", ""), "client_id": rows.get("sso_client_id", ""), "allowed_domains": rows.get("sso_allowed_domains", ""),
+           "default_role": rows.get("sso_default_role", "viewer") if rows.get("sso_default_role") in SSO_ROLES else "viewer", "has_secret": has_secret}
+    cfg["ready"] = bool(cfg["enabled"] and cfg["issuer"] and cfg["client_id"] and has_secret and cfg["allowed_domains"])
+    return cfg
+
+
+def sso_redirect_uri() -> str: return public_url() + "/api/auth/sso/callback"
+
+
+def sso_url(url: str) -> str:
+    """The provider's addresses must be public HTTPS, unless private hosts were allowed for a provider on your own network."""
+    if os.getenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS") == "1":
+        if urlparse(url).scheme not in ("http", "https"): raise ValueError("Provider addresses must be http or https")
+        return url
+    return safe_url(url)
+
+
+def sso_cached(key: str, load, fresh: bool = False) -> Any:
+    hit = _sso_cache.get(key)
+    if hit and not fresh and time.time() - hit[0] < SSO_CACHE_SECONDS: return hit[1]
+    value = load()
+    _sso_cache[key] = (time.time(), value)
+    return value
+
+
+def sso_discovery(issuer: str, fresh: bool = False) -> dict:
+    def load() -> dict:
+        res = do_request("GET", sso_url(issuer.rstrip("/") + "/.well-known/openid-configuration"), {"Accept": "application/json"})
+        if not isinstance(res, dict): raise ValueError("The provider did not return a discovery document")
+        if str(res.get("issuer", "")).rstrip("/") != issuer.rstrip("/"): raise ValueError("The provider's issuer does not match the one you entered")
+        for k in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            if not isinstance(res.get(k), str) or not res[k].startswith(("https://", "http://")): raise ValueError(f"The provider's discovery document has no {k}")
+        return res
+    return sso_cached("disc:" + issuer, load, fresh)
+
+
+def sso_keys(disc: dict, fresh: bool = False) -> list[dict]:
+    def load() -> list:
+        res = do_request("GET", sso_url(disc["jwks_uri"]), {"Accept": "application/json"})
+        keys = res.get("keys") if isinstance(res, dict) else None
+        if not isinstance(keys, list): raise ValueError("The provider did not return its signing keys")
+        return keys
+    return sso_cached("jwks:" + disc["jwks_uri"], load, fresh)
+
+
+class SsoIn(BaseModel):
+    enabled: bool = False
+    issuer: str = Field(default="", max_length=300)
+    client_id: str = Field(default="", max_length=300)
+    client_secret: str | None = Field(default=None, max_length=500)
+    allowed_domains: str = Field(default="", max_length=500)
+    default_role: str = "viewer"
+
+
+def public_sso(cfg: dict) -> dict:
+    return {k: cfg[k] for k in ("enabled", "issuer", "client_id", "allowed_domains", "default_role", "has_secret", "ready")} | {"redirect_uri": sso_redirect_uri()}
+
+
+@app.get("/api/sso/config")
+def get_sso_config(): return public_sso(sso_config())
+
+
+@app.put("/api/sso/config")
+def put_sso_config(body: SsoIn):
+    issuer = body.issuer.strip().rstrip("/")
+    domains = [d.strip().lower().lstrip("@") for d in body.allowed_domains.replace(";", ",").split(",") if d.strip()]
+    if issuer and (not issuer.startswith(("https://", "http://")) or any(c.isspace() for c in issuer)): raise HTTPException(400, "The issuer must be an address starting with https://")
+    if issuer.startswith("http://") and os.getenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS") != "1": raise HTTPException(400, "The issuer must use https (plain http needs FLOWPILOT_ALLOW_PRIVATE_HOSTS=1)")
+    if body.client_id and (any(c.isspace() for c in body.client_id)): raise HTTPException(400, "The client ID cannot contain spaces")
+    if any(not DOMAIN_RE.fullmatch(d) for d in domains) or len(domains) > 20: raise HTTPException(400, "Allowed domains look like example.com (up to 20, separated by commas)")
+    if body.default_role not in SSO_ROLES: raise HTTPException(400, "The default role must be viewer, editor or admin")
+    if body.client_secret:
+        if any(c.isspace() for c in body.client_secret): raise HTTPException(400, "The client secret cannot contain spaces")
+        store_credential(SSO_SECRET_NAME, body.client_secret)
+    with conn() as db:
+        for k, v in (("sso_issuer", issuer), ("sso_client_id", body.client_id.strip()), ("sso_allowed_domains", ",".join(domains)), ("sso_default_role", body.default_role)):
+            db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+    cfg = sso_config()
+    if body.enabled and not (cfg["issuer"] and cfg["client_id"] and cfg["has_secret"] and cfg["allowed_domains"]):
+        raise HTTPException(400, "To turn single sign-on on, fill in the issuer, client ID, client secret and at least one allowed domain")
+    with conn() as db: db.execute("INSERT INTO settings (key,value) VALUES ('sso_enabled', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if body.enabled else "0",))
+    _sso_cache.clear()
+    return public_sso(sso_config())
+
+
+@app.post("/api/sso/test")
+def test_sso():
+    cfg = sso_config()
+    if not cfg["issuer"]: raise HTTPException(400, "Enter the issuer first and save")
+    try:
+        disc = sso_discovery(cfg["issuer"], fresh=True)
+        keys = sso_keys(disc, fresh=True)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    except httpx.HTTPError as exc: raise HTTPException(400, f"Could not reach the provider: {type(exc).__name__}")
+    return {"ok": True, "authorization_endpoint": disc["authorization_endpoint"], "token_endpoint": disc["token_endpoint"], "keys": len(keys), "redirect_uri": sso_redirect_uri()}
+
+
+def sso_back(kind: str, reason: str = "") -> RedirectResponse:
+    return RedirectResponse(f"/?sso={kind}" + (f"&reason={quote(reason[:160])}" if reason else ""), status_code=303)
+
+
+@app.get("/api/auth/sso/start")
+def sso_start():
+    cfg = sso_config()
+    if not cfg["ready"]: raise HTTPException(404, "Single sign-on is not turned on")
+    try: disc = sso_discovery(cfg["issuer"])
+    except (ValueError, httpx.HTTPError) as exc: return sso_back("error", f"Could not reach the sign-in provider ({str(exc)[:100]})")
+    verifier, state, nonce = secrets.token_urlsafe(48), secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    with conn() as db:
+        db.execute("DELETE FROM oauth_pending WHERE created_at < ?", (time.time() - OAUTH_STATE_SECONDS,))
+        db.execute("INSERT INTO oauth_pending (state,payload_enc,created_at) VALUES (?,?,?)", (state, fernet().encrypt(json.dumps({"kind": "sso", "verifier": verifier, "nonce": nonce}).encode()).decode(), time.time()))
+    params = {"response_type": "code", "client_id": cfg["client_id"], "redirect_uri": sso_redirect_uri(), "scope": "openid email profile", "state": state, "nonce": nonce, "code_challenge": challenge, "code_challenge_method": "S256"}
+    url = disc["authorization_endpoint"]
+    return RedirectResponse(url + ("&" if "?" in url else "?") + urlencode(params), status_code=303)
+
+
+def sso_user(email: str, role: str) -> dict:
+    """The account for a verified address: reuse a single sign-on account, create one, but never touch a local account."""
+    if not re.fullmatch(r"[a-z0-9_.+\-]+@[a-z0-9.\-]+", email) or len(email) > 40: raise ValueError("This address cannot be used as a username here (it must be at most 40 letters, numbers and . _ + - @)")
+    with conn() as db:
+        row = db.execute("SELECT id, role, auth_source FROM users WHERE username=?", (email,)).fetchone()
+        if row:
+            if row["auth_source"] != "sso": raise ValueError("A local account already uses this address. Sign in with its password.")
+            return {"id": row["id"], "role": row["role"]}
+        if db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] >= MAX_USERS: raise ValueError(f"Maximum {MAX_USERS} users")
+        uid = str(uuid.uuid4())
+        db.execute("INSERT INTO users (id,username,password_hash,created_at,role,auth_source) VALUES (?,?,?,?,?,'sso')", (uid, email, "sso$no-password", now(), role))
+    return {"id": uid, "role": role}
+
+
+@app.get("/api/auth/sso/callback")
+def sso_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    with conn() as db:
+        row = db.execute("SELECT payload_enc, created_at FROM oauth_pending WHERE state=?", (state,)).fetchone()
+        if row: db.execute("DELETE FROM oauth_pending WHERE state=?", (state,))  # single use
+    cfg = sso_config()
+    if not cfg["ready"]: return sso_back("error", "Single sign-on is not turned on")
+    if not row or time.time() - row["created_at"] > OAUTH_STATE_SECONDS: return sso_back("error", "This sign-in expired or was not started here. Try again.")
+    try: pending = json.loads(fernet().decrypt(row["payload_enc"].encode()).decode())
+    except Exception: return sso_back("error", "This sign-in expired or was not started here. Try again.")
+    if pending.get("kind") != "sso": return sso_back("error", "This sign-in expired or was not started here. Try again.")
+    if error or not code: return sso_back("error", f"The provider refused the sign-in: {error or 'no code returned'}"[:160])
+    try:
+        disc = sso_discovery(cfg["issuer"])
+        secret = load_secrets().get(SSO_SECRET_NAME, "")
+        res = do_request("POST", sso_url(disc["token_endpoint"]), {"Accept": "application/json"}, data={"grant_type": "authorization_code", "code": code, "redirect_uri": sso_redirect_uri(),
+                         "client_id": cfg["client_id"], "client_secret": secret, "code_verifier": pending["verifier"]})
+        if not isinstance(res, dict) or not res.get("id_token"): raise ValueError("The provider did not return an ID token")
+        try: claims = verify_id_token(res["id_token"], sso_keys(disc), issuer=disc["issuer"], client_id=cfg["client_id"], nonce=pending["nonce"])
+        except ValueError as first:
+            if "signing key not found" not in str(first): raise
+            claims = verify_id_token(res["id_token"], sso_keys(disc, fresh=True), issuer=disc["issuer"], client_id=cfg["client_id"], nonce=pending["nonce"])  # the provider may have rotated its keys
+        email = str(claims.get("email") or "").strip().lower()
+        if not email or claims.get("email_verified") not in (True, "true"): raise ValueError("The provider did not confirm your email address")
+        if email.rsplit("@", 1)[-1] not in cfg["allowed_domains"].split(","): raise ValueError("Your email domain is not allowed to sign in here")
+        account = sso_user(email, cfg["default_role"])
+    except (ValueError, httpx.HTTPError) as exc:
+        msg = str(exc)
+        for hidden in (load_secrets().get(SSO_SECRET_NAME, ""), code):
+            if hidden: msg = msg.replace(hidden, "[hidden]")
+        return sso_back("error", msg)
+    response = RedirectResponse("/", status_code=303)
+    create_session(account["id"], response, is_https(request))
+    try: record_audit(email, account["role"], "SSO", "/api/auth/sso/callback", 200)
+    except Exception: log.exception("Could not write the audit log")
+    return response
 
 
 def mount_ui(target, dist: Path) -> bool:

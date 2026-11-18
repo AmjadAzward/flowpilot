@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { AlertCircle, Eye, EyeOff, GitBranch, Lock, ShieldCheck, Workflow, Zap } from 'lucide-react';
 
 type Props = { mode: 'login' | 'setup'; onDone: (username: string, role: string) => void };
@@ -28,6 +28,16 @@ export function Login({ mode, onDone }: Props) {
   const [show, setShow] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sso, setSso] = useState(false);
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('sso') === 'error') {
+      setError(q.get('reason') || 'Single sign-on did not work. Try again or use your password.');
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+    if (!setup) fetch('/api/auth/status').then(r => r.json()).then(s => setSso(!!s?.sso?.enabled)).catch(() => { /* the button just stays hidden */ });
+  }, [setup]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -83,6 +93,7 @@ export function Login({ mode, onDone }: Props) {
           )}
 
           <button className="primary auth-submit" type="submit" disabled={busy}>{busy ? 'Please wait…' : setup ? 'Create account and continue' : 'Sign in'}</button>
+          {sso && !setup && <a className="ghost auth-sso" data-testid="sso-button" href="/api/auth/sso/start">Sign in with single sign-on</a>}
           <p className="auth-foot">{setup ? 'There is a single owner account. It cannot be created again later.' : 'Forgot your password? See the README for how to reset it.'}</p>
         </form>
       </main>

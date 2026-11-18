@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.19
+- Single sign-on with OpenID Connect (code flow with PKCE, ID tokens verified in FlowPilot, domain allow-list, no takeover of local accounts)
+- 1007 API tests and a 68-check browser suite
+
 ### v0.18
 - Wait for Response node (approvals through signed one-time links or the Executions page)
 - Webhook authentication (secret header or Basic), HTTP Request query parameters, form bodies, timeout and pagination
