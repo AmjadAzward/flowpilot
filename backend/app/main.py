@@ -29,13 +29,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from email.message import EmailMessage
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -54,13 +54,14 @@ log = logging.getLogger("flowpilot")
 @asynccontextmanager
 async def lifespan(_app):
     stop = threading.Event()
+    recover_waits()
     if SCHEDULER_ENABLED:
         threading.Thread(target=scheduler_loop, args=(stop,), daemon=True, name="flowpilot-scheduler").start()
     yield
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.5.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.6.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -117,6 +118,8 @@ def initialize():
             first = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
             if first: db.execute("UPDATE users SET role='owner' WHERE id=?", (first["id"],))
         db.execute("CREATE TABLE IF NOT EXISTS workflow_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, saved_at TEXT NOT NULL, saved_by TEXT, name TEXT NOT NULL, definition TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions (workflow_id, id)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
@@ -139,7 +142,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -227,7 +230,7 @@ def allowed(role: str, method: str, path: str) -> bool:
     if path in SELF_SERVICE: return True
     if path.startswith("/api/users"): return role == "owner"
     if method in ("GET", "HEAD"): return True
-    if path.startswith("/api/credentials"): return role in ("owner", "admin")
+    if path.startswith(("/api/credentials", "/api/oauth")): return role in ("owner", "admin")
     return role in ("owner", "admin", "editor")
 
 
@@ -244,7 +247,7 @@ class LoginIn(BaseModel):
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in PUBLIC_PATHS and not path.startswith("/api/hooks/") and request.method != "OPTIONS":
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and path != "/api/oauth/callback" and not path.startswith("/api/hooks/") and request.method != "OPTIONS":
         user = session_user(request.cookies.get(COOKIE))
         if not user:
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
@@ -379,7 +382,7 @@ def change_password(body: PasswordIn, request: Request):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.5.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.6.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows():
@@ -443,6 +446,7 @@ def delete_workflow(workflow_id: str):
         db.execute("DELETE FROM workflows WHERE id=?",(workflow_id,))
         db.execute("DELETE FROM executions WHERE workflow_id=?",(workflow_id,))
         db.execute("DELETE FROM workflow_versions WHERE workflow_id=?", (workflow_id,))
+        db.execute("DELETE FROM waits WHERE workflow_id=?", (workflow_id,))
 
 
 @app.get("/api/workflows/{workflow_id}/versions")
@@ -493,6 +497,7 @@ def clear_executions(workflow_id: str | None = None):
     with conn() as db:
         if workflow_id: db.execute("DELETE FROM executions WHERE workflow_id=?", (workflow_id,))
         else: db.execute("DELETE FROM executions")
+        db.execute("DELETE FROM waits WHERE execution_id NOT IN (SELECT id FROM executions)")
 
 
 def read_json(text: str):
@@ -593,9 +598,22 @@ def lookup_secret(name: str) -> str:
     return value
 
 
+def oauth_config(raw: str | None) -> dict | None:
+    if not raw or not raw.startswith('{"oauth2"'): return None
+    try: cfg = json.loads(raw)
+    except ValueError: return None
+    return cfg if isinstance(cfg, dict) and cfg.get("oauth2") == 1 else None
+
+
 def redact(result: dict, secrets_: dict) -> dict:
     """Hide every credential value anywhere in a run result (outputs, inputs, errors)."""
-    values = sorted({v for v in secrets_.values() if v and len(v) >= 4}, key=len, reverse=True)
+    found: set[str] = set()
+    for v in secrets_.values():
+        if not v: continue
+        found.add(v)
+        cfg = oauth_config(v)
+        if cfg: found.update(str(cfg.get(k)) for k in ("access_token", "refresh_token", "client_secret") if cfg.get(k))
+    values = sorted({v for v in found if len(v) >= 4}, key=len, reverse=True)
     if not values: return result
     text = json.dumps(result, default=str)
     for v in values:
@@ -612,8 +630,13 @@ class CredentialIn(BaseModel):
 def list_credentials():
     """Names only. Values are never returned by any endpoint."""
     with conn() as db:
-        rows = db.execute("SELECT name, created_at, updated_at FROM credentials ORDER BY name").fetchall()
-    return [{"name": r["name"], "created_at": r["created_at"], "updated_at": r["updated_at"]} for r in rows]
+        rows = db.execute("SELECT name, value_enc, created_at, updated_at FROM credentials ORDER BY name").fetchall()
+    out = []
+    for r in rows:
+        try: cfg = oauth_config(fernet().decrypt(r["value_enc"].encode()).decode())
+        except InvalidToken: cfg = None
+        out.append({"name": r["name"], "created_at": r["created_at"], "updated_at": r["updated_at"], "kind": "oauth2" if cfg else "secret", "provider": cfg.get("provider") if cfg else None})
+    return out
 
 
 @app.put("/api/credentials/{name}")
@@ -641,7 +664,10 @@ def render_template(text: str, data: Any, json_escape: bool = False) -> str:
     """Replace {{path}} with values from the incoming data and {{cred.NAME}} with a stored credential."""
     def repl(match):
         path = match.group(1).strip()
-        value = lookup_secret(path[5:]) if path.startswith("cred.") else get_path(data, path)
+        if path.startswith("cred."):
+            value = lookup_secret(path[5:])
+            if oauth_config(value): raise ValueError("An OAuth connection cannot be inserted as text. Choose it in the node's Authentication or Connection setting.")
+        else: value = get_path(data, path)
         if value is None: return ""
         if isinstance(value, str): return json.dumps(value)[1:-1] if json_escape else value
         return json.dumps(value)
@@ -675,6 +701,9 @@ def apply_auth(headers: dict, d: dict) -> None:
     """Add an Authorization (or custom) header from a stored credential, when the node asks for one."""
     kind = str(d.get("auth_type") or "none")
     if kind == "none": return
+    if kind == "oauth2":
+        headers["Authorization"] = f"Bearer {oauth_access_token(str(d.get('auth_credential') or '').strip())}"
+        return
     secret = lookup_secret(str(d.get("auth_credential") or "").strip())
     if kind == "bearer": headers["Authorization"] = f"Bearer {secret}"
     elif kind == "basic": headers["Authorization"] = "Basic " + base64.b64encode(secret.encode()).decode()
@@ -753,9 +782,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss"}
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github"}
+ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -844,6 +873,19 @@ def run_code(d: dict, previous: Any) -> Any:
 # ---------------------------------------------------------------------------
 SQL_ROW_LIMIT = 1000
 MAX_WAIT_SECONDS = 60.0
+MAX_LONG_WAIT_SECONDS = 7 * 86400
+MAX_PENDING_WAITS = 200
+WAIT_UNITS = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}
+
+
+def wait_seconds(d: dict) -> float:
+    try: amount = float(d.get("seconds", 1))
+    except (TypeError, ValueError): raise ValueError("Wait time must be a number")
+    unit = str(d.get("unit") or "seconds")
+    if unit not in WAIT_UNITS: raise ValueError("Wait unit must be seconds, minutes, hours or days")
+    total = max(0.0, amount * WAIT_UNITS[unit])
+    if total > MAX_LONG_WAIT_SECONDS: raise ValueError("A Wait is limited to 7 days")
+    return total
 _response_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_response", default={})
 
 
@@ -987,6 +1029,183 @@ def build_response(d: dict, previous: Any) -> dict:
     return {"status": status, "body": body}
 
 
+# ---------------------------------------------------------------------------
+# OAuth 2.0 connections (authorization code + PKCE). You bring your own app (client id and secret), so nothing is
+# shared with anyone else. Tokens are stored encrypted in the credentials vault and refreshed automatically.
+# ---------------------------------------------------------------------------
+OAUTH_PROVIDERS = {
+    "google": {"auth_url": "https://accounts.google.com/o/oauth2/v2/auth", "token_url": "https://oauth2.googleapis.com/token",
+               "extra": {"access_type": "offline", "prompt": "consent"},
+               "scopes": "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send"},
+    "github": {"auth_url": "https://github.com/login/oauth/authorize", "token_url": "https://github.com/login/oauth/access_token", "extra": {}, "scopes": "repo"},
+}
+OAUTH_STATE_SECONDS = 600
+SCOPE_RE = re.compile(r"^[A-Za-z0-9_:/.\- ]{1,500}$")
+
+
+def public_url() -> str:
+    return os.getenv("FLOWPILOT_PUBLIC_URL", "http://127.0.0.1:5173").rstrip("/")
+
+
+def store_credential(name: str, value: str) -> None:
+    encrypted = fernet().encrypt(value.encode()).decode()
+    with conn() as db:
+        ts = now()
+        if db.execute("SELECT 1 FROM credentials WHERE name=?", (name,)).fetchone():
+            db.execute("UPDATE credentials SET value_enc=?, updated_at=? WHERE name=?", (encrypted, ts, name))
+        else:
+            if db.execute("SELECT COUNT(*) n FROM credentials").fetchone()["n"] >= MAX_CREDENTIALS: raise ValueError(f"At most {MAX_CREDENTIALS} credentials are allowed")
+            db.execute("INSERT INTO credentials (name,value_enc,created_at,updated_at) VALUES (?,?,?,?)", (name, encrypted, ts, ts))
+
+
+def token_request(token_url: str, data: dict) -> dict:
+    safe_url(token_url)
+    res = do_request("POST", token_url, {"Accept": "application/json"}, data=data)
+    if not isinstance(res, dict) or not res.get("access_token"):
+        detail = res.get("error_description") or res.get("error") if isinstance(res, dict) else None
+        raise ValueError(f"The provider did not return an access token{': ' + str(detail)[:150] if detail else ''}")
+    return res
+
+
+def oauth_access_token(name: str) -> str:
+    """A valid access token for an OAuth connection, refreshed (and saved) when it is about to expire."""
+    cfg = oauth_config(lookup_secret(name))
+    if not cfg: raise ValueError(f"{name or '(none chosen)'} is not an OAuth connection. Connect an account on the Credentials page.")
+    if float(cfg.get("expires_at") or 0) - time.time() > 60 and cfg.get("access_token"): return cfg["access_token"]
+    if not cfg.get("refresh_token"): raise ValueError(f"The connection {name} has expired and cannot be refreshed. Reconnect the account.")
+    res = token_request(cfg["token_url"], {"grant_type": "refresh_token", "refresh_token": cfg["refresh_token"], "client_id": cfg["client_id"], "client_secret": cfg["client_secret"]})
+    cfg["access_token"] = res["access_token"]
+    cfg["expires_at"] = time.time() + float(res.get("expires_in") or 3600)
+    if res.get("refresh_token"): cfg["refresh_token"] = res["refresh_token"]
+    raw = json.dumps(cfg)
+    store_credential(name, raw)
+    _secrets_var.get()[name] = raw  # later steps in this run, and the redaction of this run, see the new token
+    return cfg["access_token"]
+
+
+class OAuthStartIn(BaseModel):
+    name: str
+    provider: str
+    client_id: str = Field(min_length=1, max_length=500)
+    client_secret: str = Field(min_length=1, max_length=500)
+    scopes: str = ""
+    auth_url: str = ""
+    token_url: str = ""
+
+
+@app.get("/api/oauth/info")
+def oauth_info():
+    return {"redirect_uri": public_url() + "/api/oauth/callback", "providers": {k: {"scopes": v["scopes"]} for k, v in OAUTH_PROVIDERS.items()}}
+
+
+@app.post("/api/oauth/start")
+def oauth_start(body: OAuthStartIn):
+    if not NAME_RE.fullmatch(body.name): raise HTTPException(400, "Name must start with a letter and use only letters, numbers, _ and - (max 40)")
+    if any(c.isspace() for c in body.client_id + body.client_secret): raise HTTPException(400, "Client ID and secret cannot contain spaces or line breaks")
+    preset = OAUTH_PROVIDERS.get(body.provider)
+    if preset is None and body.provider != "custom": raise HTTPException(400, "Provider must be google, github or custom")
+    auth_url = preset["auth_url"] if preset else body.auth_url.strip()
+    token_url = preset["token_url"] if preset else body.token_url.strip()
+    for u in (auth_url, token_url):
+        parsed = urlparse(u)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password: raise HTTPException(400, "Authorization and token URLs must be HTTPS URLs")
+    scopes = (body.scopes or (preset or {}).get("scopes", "")).strip()
+    if scopes and not SCOPE_RE.fullmatch(scopes): raise HTTPException(400, "Scopes contain unsupported characters")
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    state = secrets.token_urlsafe(24)
+    redirect_uri = public_url() + "/api/oauth/callback"
+    payload = {"name": body.name, "provider": body.provider, "client_id": body.client_id, "client_secret": body.client_secret, "scopes": scopes, "token_url": token_url, "verifier": verifier, "redirect_uri": redirect_uri}
+    with conn() as db:
+        db.execute("DELETE FROM oauth_pending WHERE created_at < ?", (time.time() - OAUTH_STATE_SECONDS,))
+        db.execute("INSERT INTO oauth_pending (state,payload_enc,created_at) VALUES (?,?,?)", (state, fernet().encrypt(json.dumps(payload).encode()).decode(), time.time()))
+    params = {"response_type": "code", "client_id": body.client_id, "redirect_uri": redirect_uri, "state": state, "code_challenge": challenge, "code_challenge_method": "S256", **(preset or {}).get("extra", {})}
+    if scopes: params["scope"] = scopes
+    return {"auth_url": auth_url + ("&" if "?" in auth_url else "?") + urlencode(params), "redirect_uri": redirect_uri}
+
+
+@app.get("/api/oauth/callback")
+def oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Where the provider sends the browser back. The one-time secret state (not a cookie) proves who started the flow."""
+    def back(kind: str, msg: str = "") -> RedirectResponse:
+        return RedirectResponse(f"/?oauth={kind}" + (f"&reason={quote(msg[:160])}" if msg else ""), status_code=303)
+    with conn() as db:
+        row = db.execute("SELECT payload_enc, created_at FROM oauth_pending WHERE state=?", (state,)).fetchone()
+        if row: db.execute("DELETE FROM oauth_pending WHERE state=?", (state,))  # single use
+    if not row or time.time() - row["created_at"] > OAUTH_STATE_SECONDS: return back("error", "This connection request expired or was not started here. Try again.")
+    if error or not code: return back("error", f"The provider refused the request: {error or 'no code returned'}")
+    try:
+        payload = json.loads(fernet().decrypt(row["payload_enc"].encode()).decode())
+        res = token_request(payload["token_url"], {"grant_type": "authorization_code", "code": code, "redirect_uri": payload["redirect_uri"],
+                                                   "client_id": payload["client_id"], "client_secret": payload["client_secret"], "code_verifier": payload["verifier"]})
+        cfg = {"oauth2": 1, "provider": payload["provider"], "client_id": payload["client_id"], "client_secret": payload["client_secret"], "token_url": payload["token_url"],
+               "scopes": payload["scopes"], "access_token": res["access_token"], "refresh_token": res.get("refresh_token", ""),
+               "expires_at": time.time() + float(res.get("expires_in") or 3600)}
+        store_credential(payload["name"], json.dumps(cfg))
+    except Exception as exc:
+        msg = str(exc)
+        for secret_value in (locals().get("payload") or {}).get("client_secret", ""), code:
+            if secret_value: msg = msg.replace(secret_value, "[hidden]")
+        return back("error", msg)
+    return back("connected")
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets and Gmail (use an OAuth connection)
+# ---------------------------------------------------------------------------
+SHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,100}$")
+SHEET_RANGE_RE = re.compile(r"^[A-Za-z0-9_ !:'$.\-]{1,100}$")
+SHEET_ROW_LIMIT = 10_000
+
+
+def sheets_action(d: dict, previous: Any) -> Any:
+    token = oauth_access_token(str(d.get("credential") or "").strip())
+    sheet = render_template(str(d.get("spreadsheet_id", "")), previous).strip()
+    rng = render_template(str(d.get("range", "")), previous).strip() or "Sheet1"
+    if not SHEET_ID_RE.fullmatch(sheet): raise ValueError("Spreadsheet ID looks wrong. Copy the long ID from the sheet's URL.")
+    if not SHEET_RANGE_RE.fullmatch(rng): raise ValueError("Range must look like Sheet1 or Sheet1!A1:D50")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    base = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet}/values/{quote(rng, safe='')}"
+    op = str(d.get("operation") or "read")
+    if op == "read":
+        res = do_request("GET", base + "?majorDimension=ROWS", headers)
+        rows = (res.get("values") if isinstance(res, dict) else None) or []
+        if len(rows) > SHEET_ROW_LIMIT: raise ValueError(f"The range has more than {SHEET_ROW_LIMIT} rows. Use a smaller range.")
+        if str(d.get("header", "true")).lower() == "false" or not rows: return rows
+        keys = [str(k).strip() for k in rows[0]]
+        return [{k: (row[i] if i < len(row) else "") for i, k in enumerate(keys)} for row in rows[1:]]
+    if op == "append":
+        raw = str(d.get("values") or "").strip()
+        if not raw: raise ValueError("Provide the values to append, for example [[\"{{name}}\", \"{{city}}\"]]")
+        try: values = json.loads(render_template(raw, previous, json_escape=True))
+        except ValueError: raise ValueError("Values must be JSON: a list of rows, or one row as a list")
+        if not isinstance(values, list) or not values: raise ValueError("Values must be a non-empty JSON list")
+        if not all(isinstance(r, list) for r in values): values = [values]
+        if len(values) > 1000 or any(len(r) > 100 for r in values): raise ValueError("At most 1000 rows of 100 cells can be appended at once")
+        res = do_request("POST", base + ":append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS", headers, json={"values": values})
+        upd = (res.get("updates") if isinstance(res, dict) else None) or {}
+        return {"updated_range": upd.get("updatedRange"), "updated_rows": upd.get("updatedRows")}
+    raise ValueError(f"Unknown Google Sheets action: {op}")
+
+
+def send_gmail(d: dict, previous: Any) -> dict:
+    token = oauth_access_token(str(d.get("credential") or "").strip())
+    recipients = [x.strip() for x in render_template(str(d.get("to", "")), previous).split(",") if x.strip()]
+    if not 1 <= len(recipients) <= 10: raise ValueError("Provide between 1 and 10 recipients")
+    for r in recipients:
+        if not EMAIL_RE.fullmatch(r): raise ValueError(f"Invalid recipient address: {r!r}")
+    subject = render_template(str(d.get("subject", "")), previous)
+    if "\r" in subject or "\n" in subject or len(subject) > 200: raise ValueError("Subject must be one line of at most 200 characters")
+    body = render_template(str(d.get("body", "")), previous)
+    if len(body) > 100_000: raise ValueError("Email body is too large")
+    msg = EmailMessage()
+    msg["To"], msg["Subject"] = ", ".join(recipients), subject
+    msg.set_content(body)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    do_request("POST", "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {"Authorization": f"Bearer {token}"}, json={"raw": raw})
+    return {"sent_to": recipients, "subject": subject}
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
@@ -1040,13 +1259,16 @@ def step_action(node: dict, previous: Any):
         value = read_rss(d, previous)
         return value, value, None
     if typ == "telegram": return send_telegram(d, previous), previous, None
+    if typ == "sheets":
+        value = sheets_action(d, previous)
+        return value, value, None
+    if typ == "gmail": return send_gmail(d, previous), previous, None
     if typ == "github":
         value = github_action(d, previous)
         return value, value, None
     if typ == "wait":
-        try: seconds = float(d.get("seconds", 1))
-        except (TypeError, ValueError): raise ValueError("Wait seconds must be a number")
-        seconds = max(0.0, min(seconds, MAX_WAIT_SECONDS))
+        seconds = wait_seconds(d)
+        if seconds > MAX_WAIT_SECONDS: raise ValueError("Waits longer than 60 seconds must be run by the engine")
         time.sleep(seconds)
         return {"waited_seconds": seconds}, previous, None
     if typ == "respond":
@@ -1125,6 +1347,7 @@ class Graph:
                 self.inc[e["target"]].append(e)
         self.steps: list[dict] = []
         self.iter: list[int] = []
+        self.suspended: dict | None = None
 
     def reach(self, starts) -> set:
         seen, queue = set(), list(starts)
@@ -1214,6 +1437,22 @@ def run_graph(g: Graph, allowed: set, seeds: list):
         step = {"node_id": nid, "label": data.get("label", typ), "type": typ, "input": preview(value)}
         if g.iter: step["iteration"] = list(g.iter)
         g.steps.append(step)
+        if typ == "wait":
+            try: secs = wait_seconds(data)
+            except ValueError as exc:
+                step.update(status="error", error=str(exc))
+                raise StepFailure(str(exc)) from exc
+            if secs > MAX_WAIT_SECONDS:
+                if g.iter or len(_stack_var.get()) > 1:
+                    step.update(status="error", error="A Wait longer than 60 seconds cannot be used inside a loop or a sub-workflow")
+                    raise StepFailure(step["error"])
+                if g.suspended:
+                    step.update(status="error", error="Only one long Wait per run is supported")
+                    raise StepFailure(step["error"])
+                resume_at = (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
+                g.suspended = {"node_id": nid, "value": value, "resume_at": resume_at}
+                step.update(status="waiting", output={"resume_at": resume_at}, duration_ms=0)
+                continue
         t0, branch = time.perf_counter(), None
         try:
             pin = str(data.get("pin") or "").strip()
@@ -1259,27 +1498,36 @@ def run_graph(g: Graph, allowed: set, seeds: list):
     return final
 
 
-def _execute(doc: dict, initial: Any = None) -> dict:
+def _execute(doc: dict, initial: Any = None, resume: tuple | None = None) -> dict:
     g = Graph(doc)
-    starts = [nid for nid, n in g.nodes.items() if n["type"] in START_TYPES]
-    if len(starts) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
-    if g.inc[starts[0]]: raise ValueError("A trigger cannot have incoming connections")
-    if any(len(g.inc[n]) > 1 and g.nodes[n]["type"] != "merge" for n in g.nodes):
-        raise ValueError("Only a Merge node can have more than one incoming connection")
-    reachable = g.reach([starts[0]])
-    if g.has_cycle(reachable): raise ValueError("Cycles are not supported in this release")
-    try: final = run_graph(g, reachable, [({"target": starts[0]}, initial)])
+    try:
+        if resume:
+            nid, value = resume
+            if nid not in g.nodes: raise ValueError("The waiting node no longer exists in this workflow")
+            allowed = g.reach([e["target"] for e in g.out[nid]])
+            if g.has_cycle(allowed): raise ValueError("Cycles are not supported in this release")
+            final = run_graph(g, allowed, [(e, value) for e in g.out[nid]])
+        else:
+            starts = [nid for nid, n in g.nodes.items() if n["type"] in START_TYPES]
+            if len(starts) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
+            if g.inc[starts[0]]: raise ValueError("A trigger cannot have incoming connections")
+            if any(len(g.inc[n]) > 1 and g.nodes[n]["type"] != "merge" for n in g.nodes):
+                raise ValueError("Only a Merge node can have more than one incoming connection")
+            reachable = g.reach([starts[0]])
+            if g.has_cycle(reachable): raise ValueError("Cycles are not supported in this release")
+            final = run_graph(g, reachable, [({"target": starts[0]}, initial)])
     except StepFailure as exc:
         return {"status": "failed", "output": None, "steps": g.steps, "error": str(exc)}
+    if g.suspended: return {"status": "waiting", "output": final, "steps": g.steps, "error": None, "wait": g.suspended}
     return {"status": "success", "output": final, "steps": g.steps, "error": None}
 
 
-def run_flow(doc: dict, initial: Any = None) -> dict:
+def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
     secrets_ = load_secrets()
     holder: dict = {}
     t1, t2, t3 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder)
-    try: result = _execute(doc, initial)
+    try: result = _execute(doc, initial, resume)
     finally:
         _secrets_var.reset(t1)
         _stack_var.reset(t2)
@@ -1294,10 +1542,80 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
     try: result = run_flow(doc, initial() if callable(initial) else initial)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     with conn() as db:
+        if result["status"] == "waiting" and db.execute("SELECT COUNT(*) c FROM waits WHERE status='pending'").fetchone()["c"] >= MAX_PENDING_WAITS:
+            result = {"status": "failed", "output": None, "steps": result["steps"], "error": f"Too many runs are waiting (limit {MAX_PENDING_WAITS})"}
         db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
-                   (exec_id, doc["id"], result["status"], started, now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
-    if result["status"] != "success" and kind != "error": run_error_handler(doc, exec_id, kind, result)
+                   (exec_id, doc["id"], result["status"], started, None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
+        if result["status"] == "waiting": add_wait(db, exec_id, doc["id"], result["wait"])
+    if result["status"] == "failed" and kind != "error": run_error_handler(doc, exec_id, kind, result)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
+
+
+def add_wait(db, exec_id: str, workflow_id: str, wait: dict) -> None:
+    db.execute("INSERT INTO waits (id,execution_id,workflow_id,node_id,value,resume_at,status,created_at) VALUES (?,?,?,?,?,?,'pending',?)",
+               (str(uuid.uuid4()), exec_id, workflow_id, wait["node_id"], json.dumps(wait["value"], default=str), wait["resume_at"], now()))
+
+
+def resume_due_waits(at: datetime | None = None) -> int:
+    """Continue every waiting run whose time has come. Returns how many were resumed."""
+    moment = (at or datetime.now(timezone.utc)).isoformat()
+    with conn() as db:
+        due = db.execute("SELECT id FROM waits WHERE status='pending' AND resume_at <= ? ORDER BY resume_at", (moment,)).fetchall()
+    resumed = 0
+    for row in due:
+        try:
+            with conn() as db:  # claim it, so two ticks can never resume the same wait
+                claimed = db.execute("UPDATE waits SET status='running' WHERE id=? AND status='pending'", (row["id"],)).rowcount
+                w = db.execute("SELECT * FROM waits WHERE id=?", (row["id"],)).fetchone() if claimed else None
+                ex = db.execute("SELECT * FROM executions WHERE id=?", (w["execution_id"],)).fetchone() if w else None
+            if not w: continue
+            if not ex:
+                with conn() as db: db.execute("UPDATE waits SET status='done' WHERE id=?", (w["id"],))
+                continue
+            finish_wait(w, ex)
+            resumed += 1
+        except Exception:
+            log.exception("Resuming a wait failed for %s", row["id"])
+    return resumed
+
+
+def finish_wait(w, ex) -> None:
+    old_steps = json.loads(ex["steps"] or "[]")
+    for st in old_steps:
+        if st.get("node_id") == w["node_id"] and st.get("status") == "waiting":
+            st.update(status="success", output={"resumed_at": now()})
+    try:
+        doc = get_workflow(w["workflow_id"])
+        result = run_flow(doc, None, resume=(w["node_id"], json.loads(w["value"])))
+    except Exception as exc:
+        doc, result = None, {"status": "failed", "output": None, "steps": [], "error": f"Could not resume: {exc}"}
+    steps = old_steps + result["steps"]
+    with conn() as db:
+        db.execute("UPDATE executions SET status=?, finished_at=?, output=?, steps=?, error=? WHERE id=?",
+                   (result["status"], None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(steps), result["error"], ex["id"]))
+        db.execute("UPDATE waits SET status='done' WHERE id=?", (w["id"],))
+        if result["status"] == "waiting": add_wait(db, ex["id"], w["workflow_id"], result["wait"])
+    if result["status"] == "failed" and doc is not None and ex["trigger_kind"] != "error":
+        run_error_handler(doc, ex["id"], ex["trigger_kind"], {**result, "steps": steps})
+
+
+def recover_waits() -> None:
+    """A wait that was being resumed when the API stopped cannot be continued safely, so it is closed as failed."""
+    with conn() as db:
+        for w in db.execute("SELECT id, execution_id FROM waits WHERE status='running'").fetchall():
+            db.execute("UPDATE waits SET status='interrupted' WHERE id=?", (w["id"],))
+            db.execute("UPDATE executions SET status='failed', finished_at=?, error='Interrupted: the API stopped while this run was resuming' WHERE id=?", (now(), w["execution_id"]))
+
+
+@app.post("/api/executions/{execution_id}/cancel")
+def cancel_waiting_run(execution_id: str):
+    with conn() as db:
+        ex = db.execute("SELECT status FROM executions WHERE id=?", (execution_id,)).fetchone()
+        if not ex: raise HTTPException(404, "Execution not found")
+        if ex["status"] != "waiting": raise HTTPException(400, "Only a waiting run can be cancelled")
+        db.execute("UPDATE waits SET status='cancelled' WHERE execution_id=? AND status='pending'", (execution_id,))
+        db.execute("UPDATE executions SET status='failed', finished_at=?, error='Cancelled while waiting' WHERE id=?", (now(), execution_id))
+    return {"id": execution_id, "cancelled": True}
 
 
 def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict) -> None:
@@ -1491,6 +1809,8 @@ def scheduler_loop(stop: threading.Event) -> None:
     while not stop.wait(SCHEDULER_TICK_SECONDS):
         try: scheduler_tick()
         except Exception: log.exception("Scheduler tick failed")
+        try: resume_due_waits()
+        except Exception: log.exception("Resuming waits failed")
 
 
 _hook_hits: dict[str, list[float]] = {}
@@ -1527,7 +1847,7 @@ async def receive_webhook(token: str, request: Request):
     result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
     if result["status"] == "success" and result.get("response"):
         return JSONResponse(result["response"]["body"], status_code=result["response"]["status"])
-    code = 200 if result["status"] == "success" else 500
+    code = 200 if result["status"] in ("success", "waiting") else 500
     return JSONResponse({"status": result["status"], "execution_id": result["id"]}, status_code=code)
 
 
@@ -1537,4 +1857,5 @@ def executions(workflow_id: str | None = None):
         if workflow_id:
             rows=db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT 100",(workflow_id,)).fetchall()
         else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 100").fetchall()
-    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null")} for r in rows]
+        resume = {w["execution_id"]: w["resume_at"] for w in db.execute("SELECT execution_id, resume_at FROM waits WHERE status='pending'").fetchall()}
+    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),"resume_at":resume.get(r["id"])} for r in rows]

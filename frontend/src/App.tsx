@@ -11,9 +11,10 @@ import { NodeSettings } from './NodeSettings';
 import { Login } from './Login';
 import { ChangePassword, UsersPage } from './UsersPage';
 import { HistoryPanel } from './HistoryPanel';
+import { OAuthConnect } from './OAuthConnect';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
-type CredentialRow = { name: string; created_at: string; updated_at: string };
+type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
 type Theme = 'dark' | 'light';
 
 const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
@@ -168,7 +169,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
       if (!(await saveFlow(true))) return;
       const result = await api<Run>(`/api/workflows/${selectedId}/run`, { method: 'POST' });
       setLastRun(result); await refresh();
-      notify(result.status === 'success' ? 'Workflow completed' : 'Workflow failed: see the run panel', result.status === 'success' ? 'ok' : 'error');
+      notify(result.status === 'success' ? 'Workflow completed' : result.status === 'waiting' ? `Workflow is waiting until ${formatTime(result.wait?.resume_at)}` : 'Workflow failed: see the run panel', result.status === 'failed' ? 'error' : 'ok');
     } catch (e) { notify((e as Error).message, 'error'); } finally { setBusy(false); }
   };
   const setActive = async (id: string, on: boolean) => {
@@ -343,6 +344,20 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
   });
 
   // ---- credentials ------------------------------------------------------------------------------
+  const cancelWait = async (id: string) => {
+    try { await api(`/api/executions/${id}/cancel`, { method: 'POST' }); await refresh(); notify('Run cancelled'); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const result = q.get('oauth');
+    if (!result) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    setPage('credentials');
+    if (result === 'connected') { notify('Account connected'); void refresh(); }
+    else notify(q.get('reason') || 'Could not connect the account', 'error');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const saveCredential = async (ev: { preventDefault: () => void }) => {
     ev.preventDefault();
     try {
@@ -408,7 +423,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.5</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.6</span>
         </div>
       </aside>
 
@@ -566,7 +581,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                   <div className="inspect-body" data-testid="inspector">
                     <div className="inspect-type">{currentNode.type}</div>
                     <label>Display name<input value={String(currentNode.data.label || '')} onChange={e => updateData('label', e.target.value)} /></label>
-                    <NodeSettings node={currentNode} update={updateData} credentials={creds.map(c => c.name)} flows={flows} currentFlowId={selectedId}
+                    <NodeSettings node={currentNode} update={updateData} credentials={creds.filter(c => c.kind !== 'oauth2').map(c => c.name)} oauth={creds.filter(c => c.kind === 'oauth2').map(c => c.name)} flows={flows} currentFlowId={selectedId}
                       webhookUrl={webhookUrl} isActive={isActive} onCopyWebhook={() => void copyWebhook()} onRotateWebhook={() => void rotateWebhook()} />
                     {lastRun && nodeSteps.length > 0 && shownStep && (
                       <div className="data-panel" data-testid="data-panel">
@@ -594,7 +609,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
             {lastRun && (
               <div className="run-panel" data-testid="run-panel">
                 <div className="run-head">
-                  <strong><span className={'dot ' + (lastRun.status === 'success' ? 'on' : 'off')} />{lastRun.status === 'success' ? 'Execution successful' : 'Execution failed'}
+                  <strong><span className={'dot ' + (lastRun.status === 'success' ? 'on' : lastRun.status === 'waiting' ? 'warn' : 'off')} />{lastRun.status === 'success' ? 'Execution successful' : lastRun.status === 'waiting' ? 'Waiting to continue' : 'Execution failed'}
                     <small>{lastRun.steps.reduce((t, s) => t + (s.duration_ms ?? 0), 0).toFixed(1)} ms total</small></strong>
                   <button className="icon-button" aria-label="Close run panel" onClick={() => setLastRun(null)}><X size={17} /></button>
                 </div>
@@ -602,13 +617,13 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                   <div className="run-steps">
                     {lastRun.steps.map((s, i) => (
                       <div key={i} className={'run-step ' + s.status}>
-                        <span className="step-mark">{s.status === 'success' ? '✓' : '!'}</span>
+                        <span className="step-mark">{s.status === 'success' ? '✓' : s.status === 'waiting' ? '…' : '!'}</span>
                         <span className="step-label">{s.label}{s.iteration && <em className="iter">#{s.iteration.map(k => k + 1).join('.')}</em>}{s.pinned && <em className="pin-chip">pinned</em>}{s.branch && <em className={'branch-tag ' + s.branch}>{s.branch}</em>}</span>
                         <span className="step-ms">{s.duration_ms != null ? `${s.duration_ms} ms` : ''}</span>
                       </div>
                     ))}
                   </div>
-                  <pre>{pretty(lastRun.status === 'success' ? lastRun.output : { error: lastRun.error, steps: lastRun.steps })}</pre>
+                  <pre>{pretty(lastRun.status === 'success' ? lastRun.output : lastRun.status === 'waiting' ? { waiting_until: lastRun.wait?.resume_at, note: 'The run continues by itself. Follow it on the Executions page.' } : { error: lastRun.error, steps: lastRun.steps })}</pre>
                 </div>
               </div>
             )}
@@ -630,8 +645,8 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
             <div className="panel history">
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
-                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
-                  <div className="history-details"><strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
+                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
+                  <div className="history-details">{r.status === 'waiting' && <p className="wait-note">Resumes {formatTime(r.resume_at)}. <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
             </div>
@@ -653,13 +668,14 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
               </form>
               <p className="hint pad">Saving a name that already exists replaces its value. Values can never be viewed again, only replaced or deleted.</p>
             </section>
+            <OAuthConnect canConnect={canCreds} notify={notify} />
             <section className="card">
               <div className="card-head"><div className="seg-title"><h2>Saved credentials</h2><span className="count-chip">{creds.length}</span></div></div>
               <div className="cred-head"><span>Name</span><span>Use it in a node</span><span>Updated</span><span className="th-actions">Actions</span></div>
               {creds.length ? creds.map(c => (
                 <div className="cred-row" key={c.name} data-testid="cred-row">
-                  <strong>{c.name}</strong>
-                  <code>{`{{cred.${c.name}}}`}</code>
+                  <strong>{c.name}{c.kind === 'oauth2' && <em className="iter"> connected account{c.provider ? ` (${c.provider})` : ''}</em>}</strong>
+                  {c.kind === 'oauth2' ? <span className="muted">Choose it in a node</span> : <code>{`{{cred.${c.name}}}`}</code>}
                   <span className="muted">{formatTime(c.updated_at)}</span>
                   <span className="row-actions"><button className="icon-button danger" aria-label={`Delete credential ${c.name}`} title="Delete" disabled={!canCreds} onClick={() => void deleteCredential(c.name)}><Trash2 size={15} /></button></span>
                 </div>

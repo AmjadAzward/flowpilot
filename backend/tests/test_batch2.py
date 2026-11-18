@@ -178,12 +178,12 @@ def test_github_validates_repo(client, fake_http, repo):
 
 
 # ---------------------------------------------------------------- Wait
-def test_wait_is_capped_and_passes_data(client, monkeypatch):
+def test_short_wait_sleeps_and_passes_data(client, monkeypatch):
     slept = []
     monkeypatch.setattr(main.time, "sleep", lambda s: slept.append(s))
-    res = one(client, "wait", seconds="9999")
+    res = one(client, "wait", seconds="30")
     assert res["status"] == "success" and res["output"] == {"name": "Ada", "n": 3}
-    assert slept == [main.MAX_WAIT_SECONDS]
+    assert slept == [30.0]
 
 
 # ---------------------------------------------------------------- Respond to webhook

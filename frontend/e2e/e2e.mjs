@@ -490,7 +490,7 @@ await check('database, feed, chat, GitHub, wait and respond nodes expose their s
   await page.getByTestId('add-rss').click();
   await page.getByLabel(/^Feed URL/).waitFor();
   await page.getByTestId('add-wait').click();
-  await page.getByLabel(/^Seconds \(0 to 60\)/).waitFor();
+  await page.getByLabel('Wait for').waitFor();
   await page.getByTestId('add-telegram').click();
   await page.getByLabel('Chat ID').waitFor();
   await page.getByTestId('add-github').click();
@@ -565,6 +565,64 @@ await check('change your own password and sign in with the new one', async () =>
   await page.getByTestId('pw-new').fill(PW);
   await page.getByTestId('pw-save').click();
   await expectText(toast(), /Password changed/);
+});
+
+await check('Google Sheets, Gmail and long Wait expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-sheets').click();
+  await page.getByLabel('Spreadsheet ID').waitFor();
+  await page.getByLabel('Action').selectOption('append');
+  await page.getByLabel(/^Values/).waitFor();
+  await page.getByTestId('add-gmail').click();
+  await page.getByLabel(/^Google connection/).waitFor();
+  await page.getByTestId('add-wait').click();
+  await page.getByLabel('Unit').selectOption('hours');
+  await shot('19-sheets-gmail-wait');
+});
+
+await check('connect-an-account card builds the provider request and handles a refusal', async () => {
+  await page.getByRole('button', { name: /^Credentials/ }).click();
+  await page.getByTestId('oauth-card').waitFor();
+  await expectText(page.getByTestId('oauth-redirect'), /\/api\/oauth\/callback$/);
+  await page.getByTestId('oauth-name').fill('GOOGLE');
+  await page.getByTestId('oauth-client-id').fill('client-id-123.apps.example.com');
+  await page.getByTestId('oauth-client-secret').fill('client-secret-456');
+  await shot('20-oauth');
+  let target = '';
+  await page.route('https://accounts.google.com/**', route => { target = route.request().url(); return route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>provider</h1>' }); });
+  await page.getByTestId('oauth-connect').click();
+  await page.waitForURL(/accounts\.google\.com/);
+  const q = new URL(target).searchParams;
+  if (q.get('client_id') !== 'client-id-123.apps.example.com' || q.get('code_challenge_method') !== 'S256' || !q.get('state')) throw new Error('bad authorization URL: ' + target);
+  if (target.includes('client-secret-456')) throw new Error('the client secret must not be sent to the provider URL');
+  await page.unroute('https://accounts.google.com/**');
+  // the provider sends the browser back with a refusal: no external token call is made
+  await page.goto(BASE + '/api/oauth/callback?error=access_denied&state=' + q.get('state'));
+  await expectText(toast(), /access_denied/);
+  await expectText(page.locator('h1'), /^Credentials$/);
+  if (page.url().includes('oauth=')) throw new Error('the result should be removed from the address bar');
+});
+
+await check('a long wait shows as waiting with a resume time and can be cancelled', async () => {
+  const id = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Waiting flow', description: '', nodes: [node('t', 'trigger'), node('w', 'wait', { seconds: '3', unit: 'hours' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'w' }, { id: 'b', source: 'w', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    const run = await (await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' })).json();
+    return run.status;
+  });
+  if (id !== 'waiting') throw new Error('expected waiting, got ' + id);
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.locator('summary', { hasText: 'Waiting flow' }).first().click();
+  await expectText(page.locator('.status-chip.wait'), /waiting/i);
+  await expectText(page.locator('.wait-note'), /Resumes/);
+  await shot('21-waiting');
+  await page.getByTestId('cancel-wait').click();
+  await expectText(toast(), /cancelled/i);
+  if ((await page.locator('.status-chip.wait').count()) !== 0) throw new Error('the run should no longer be waiting');
 });
 
 await check('executions page lists runs, filters and expands', async () => {

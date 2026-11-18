@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.6
+- OAuth 2.0 connections (Google, GitHub, custom) with PKCE and automatic refresh
+- Google Sheets and Gmail nodes, OAuth option on the HTTP node
+- Durable long waits (up to 7 days) with resume, cancel and restart recovery
+- 371 API tests and a 42-check browser suite
+
 ### v0.5
 - Switch, Code (restricted Python), Stop and Fail and Wait nodes
 - Per-node retries, continue-on-error and error-handler workflows

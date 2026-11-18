@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Reply, Rss, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, MailCheck, Reply, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -66,7 +66,9 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'loop': return s('path') ? `items in ${s('path')}` : 'once per item';
     case 'sql': return s('query') ? clip(s('query').replace(/\s+/g, ' ')) : 'write a query';
     case 'rss': return s('url') ? clip(s('url').replace(/^https:\/\//, '')) : '';
-    case 'wait': return `wait ${s('seconds') || '5'}s`;
+    case 'wait': return `wait ${s('seconds') || '5'} ${s('unit') || 'seconds'}`;
+    case 'sheets': return s('spreadsheet_id') ? clip(`${s('operation') === 'append' ? 'append to' : 'read'} ${s('range')}`) : 'choose a sheet';
+    case 'gmail': return s('to') ? clip(`to ${s('to')}`) : 'choose recipients';
     case 'telegram': return clip(s('text'));
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
     case 'respond': return `reply ${s('status') || '200'}`;

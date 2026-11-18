@@ -6,6 +6,7 @@ type Props = {
   node: Node;
   update: (field: string, value: string) => void;
   credentials: string[];
+  oauth: string[];
   flows: FlowDoc[];
   currentFlowId: string;
   webhookUrl: string;
@@ -51,10 +52,19 @@ export function NodeSettings(props: Props) {
   );
 }
 
-function TypeSettings({ node, update, credentials, flows, currentFlowId, webhookUrl, isActive, onCopyWebhook, onRotateWebhook }: Props) {
+function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, webhookUrl, isActive, onCopyWebhook, onRotateWebhook }: Props) {
   const d = node.data as Record<string, unknown>;
   const v = (k: string, fallback = '') => String(d[k] ?? fallback);
   const text = (k: string) => (e: { target: { value: string } }) => update(k, e.target.value);
+  const connSelect = (field: string, label: string) => (
+    <label>{label}
+      <select value={v(field)} onChange={text(field)}>
+        <option value="">Choose a connection</option>
+        {oauth.map(c => <option key={c} value={c}>{c}</option>)}
+      </select>
+      {!oauth.length && <span className="hint">No connected accounts yet. Connect one on the Credentials page.</span>}
+    </label>
+  );
   const credSelect = (field: string, label: string) => (
     <label>{label}
       <select value={v(field)} onChange={text(field)}>
@@ -133,7 +143,37 @@ function TypeSettings({ node, update, credentials, flows, currentFlowId, webhook
         </>
       );
     case 'wait':
-      return <label>Seconds (0 to 60)<input type="number" min={0} max={60} value={v('seconds', '5')} onChange={text('seconds')} /><span className="hint">Holds the run for this long, then passes the data on. Runs are not saved across API restarts.</span></label>;
+      return (
+        <>
+          <label>Wait for<input type="number" min={0} step="any" value={v('seconds', '5')} onChange={text('seconds')} /></label>
+          <label>Unit<select value={v('unit', 'seconds')} onChange={text('unit')}><option value="seconds">seconds</option><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option></select></label>
+          <span className="hint">Up to 60 seconds holds the run and continues. Longer waits (up to 7 days) pause the run, free the server, and continue by themselves, even after the API restarts, as long as the API is running when the time comes. Not available inside a loop or a sub-workflow, and one long wait per run.</span>
+        </>
+      );
+    case 'sheets': {
+      const op = v('operation', 'read');
+      return (
+        <>
+          {connSelect('credential', 'Google connection')}
+          <label>Spreadsheet ID<input value={v('spreadsheet_id')} onChange={text('spreadsheet_id')} spellCheck={false} placeholder="the long ID in the sheet's URL" /></label>
+          <label>Range<input value={v('range')} onChange={text('range')} placeholder="Sheet1 or Sheet1!A1:D50" /></label>
+          <label>Action<select value={op} onChange={text('operation')}><option value="read">Read rows</option><option value="append">Append a row</option></select></label>
+          {op === 'read' && <label>First row is a header<select value={v('header', 'true')} onChange={text('header')}><option value="true">Yes: rows become objects</option><option value="false">No: rows become lists</option></select></label>}
+          {op === 'append' && <label>Values (JSON)<textarea rows={3} spellCheck={false} value={v('values')} onChange={text('values')} /><span className="hint">One row as a list, or a list of rows. {'{{field}}'} values are escaped for you.</span></label>}
+          <span className="hint">Reading returns up to 10000 rows. Pair it with Loop Over Items.</span>
+        </>
+      );
+    }
+    case 'gmail':
+      return (
+        <>
+          {connSelect('credential', 'Google connection')}
+          <label>To (comma separated)<input value={v('to')} onChange={text('to')} /></label>
+          <label>Subject<input value={v('subject')} onChange={text('subject')} /></label>
+          <label>Body<textarea rows={5} spellCheck={false} value={v('body')} onChange={text('body')} /></label>
+          <span className="hint">Sends from the connected Google account. The connection needs the gmail.send permission. The incoming data continues to the next node.</span>
+        </>
+      );
     case 'telegram':
       return (
         <>
@@ -205,9 +245,11 @@ function TypeSettings({ node, update, credentials, flows, currentFlowId, webhook
               <option value="bearer">Bearer token (from a credential)</option>
               <option value="basic">Basic: credential is user:password</option>
               <option value="header">API key in a custom header</option>
+              <option value="oauth2">Connected account (OAuth)</option>
             </select>
           </label>
-          {auth !== 'none' && credSelect('auth_credential', 'Credential')}
+          {auth === 'oauth2' && connSelect('auth_credential', 'Connected account')}
+          {auth !== 'none' && auth !== 'oauth2' && credSelect('auth_credential', 'Credential')}
           {auth === 'header' && <label>Header name<input value={v('auth_header')} onChange={text('auth_header')} placeholder="X-Api-Key" /></label>}
           <label>Headers (JSON object, optional)<textarea rows={3} spellCheck={false} placeholder={'{"Accept": "application/json"}'} value={v('headers')} onChange={text('headers')} /></label>
           {['POST', 'PUT', 'PATCH'].includes(method) && <label>Body (JSON or text)<textarea rows={5} spellCheck={false} placeholder={'{"name": "{{name}}"}'} value={v('body')} onChange={text('body')} /></label>}

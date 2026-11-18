@@ -3,9 +3,9 @@ import type { Edge, Node } from '@xyflow/react';
 export type TriggerKind = 'manual' | 'schedule' | 'webhook';
 export type FlowDoc = { id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
-export type Run = { id: string; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
+export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -28,11 +28,13 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'delay', label: 'Delay', desc: 'Wait up to 5 seconds', category: 'Logic', color: '#fb923c', icon: 'Timer' },
   { type: 'sql', label: 'Database Query', desc: 'Run SQL on SQLite or Postgres', category: 'Data', color: '#0891b2', icon: 'Database' },
   { type: 'rss', label: 'Read RSS Feed', desc: 'Fetch items from an RSS or Atom feed', category: 'Network', color: '#f97316', icon: 'Rss' },
-  { type: 'wait', label: 'Wait', desc: 'Pause up to 60 seconds', category: 'Logic', color: '#f59e0b', icon: 'Hourglass' },
+  { type: 'wait', label: 'Wait', desc: 'Pause for seconds, hours or days', category: 'Logic', color: '#f59e0b', icon: 'Hourglass' },
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
   { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
   { type: 'telegram', label: 'Telegram Message', desc: 'Send with a Telegram bot', category: 'Network', color: '#0ea5e9', icon: 'Send' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
+  { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
+  { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
   { type: 'email', label: 'Send Email', desc: 'Send over SMTP', category: 'Network', color: '#d946ef', icon: 'Mail' },
   { type: 'note', label: 'Pass Through', desc: 'Forward data unchanged', category: 'Logic', color: '#94a3b8', icon: 'ArrowRight' },
   { type: 'respond', label: 'Respond to Webhook', desc: 'Choose the reply a webhook caller gets', category: 'Finish', color: '#f43f5e', icon: 'Reply' },
@@ -43,7 +45,7 @@ export const startTypes: string[] = ['trigger', 'schedule', 'webhook'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
 export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss'];
 /** Nodes that support retries and continue-on-error. */
-export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github'];
+export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail'];
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -73,7 +75,9 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'code': return { code: "# 'input' holds the incoming data. Put your answer in 'result'.\nresult = {'count': len(input) if isinstance(input, list) else 1}" };
     case 'sql': return { credential: '', query: 'SELECT 1 AS ok', params: '' };
     case 'rss': return { url: 'https://hnrss.org/frontpage', limit: '10' };
-    case 'wait': return { seconds: '5' };
+    case 'wait': return { seconds: '5', unit: 'seconds' };
+    case 'sheets': return { credential: '', spreadsheet_id: '', range: 'Sheet1', operation: 'read', header: 'true', values: '["{{name}}", "{{city}}"]' };
+    case 'gmail': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };
     case 'telegram': return { credential: '', chat_id: '', text: 'Hello from FlowPilot' };
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
     case 'respond': return { status: '200', body: '{"ok": true}' };
