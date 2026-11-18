@@ -3,9 +3,9 @@ import type { Edge, Node } from '@xyflow/react';
 export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in' | 'poll_in';
 export type FlowDoc = { settings?: { timeout_seconds?: number; save_runs?: string }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
-export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
+export type Run = { waiting_for?: string | null; id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'callback' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -32,6 +32,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'file', label: 'Files', desc: 'Read, write, list or delete files', category: 'Data', color: '#64748b', icon: 'FileText' },
   { type: 'sql', label: 'Database Query', desc: 'Run SQL on SQLite or Postgres', category: 'Data', color: '#0891b2', icon: 'Database' },
   { type: 'rss', label: 'Read RSS Feed', desc: 'Fetch items from an RSS or Atom feed', category: 'Network', color: '#f97316', icon: 'Rss' },
+  { type: 'callback', label: 'Wait for Response', desc: 'Pause until someone approves or rejects', category: 'Logic', color: '#d97706', icon: 'UserCheck' },
   { type: 'wait', label: 'Wait', desc: 'Pause for seconds, hours or days', category: 'Logic', color: '#f59e0b', icon: 'Hourglass' },
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
   { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
@@ -44,7 +45,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
   { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
   { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
-  { type: 'app', label: 'App Action', desc: '18 services: Slack, Notion, Jira, Stripe, Google Calendar and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
+  { type: 'app', label: 'App Action', desc: '28 services: Slack, Shopify, Jira, Stripe, WhatsApp and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
@@ -125,6 +126,29 @@ appServices.gcalendar = { label: 'Google Calendar', credential: 'A Google connec
 appServices.gdrive = { label: 'Google Drive', credential: 'A Google connection with the Drive permission (add the scope https://www.googleapis.com/auth/drive.file when connecting)', oauth: true, operations: {
   list_files: { label: 'List files', example: '{"name_contains": "invoice", "folder_id": "", "limit": 20}', hint: 'Optional: name_contains, folder_id and limit (up to 100). Newest first. Trashed files are left out.' },
   create_folder: { label: 'Create a folder', example: '{"name": "Reports", "folder_id": ""}', hint: 'name. Optional: folder_id of the parent folder.' } } };
+appServices.shopify = { label: 'Shopify', credential: 'Admin API access token (from a custom app)', operations: {
+  list_orders: { label: 'List orders', example: '{"shop": "mystore", "status": "any", "limit": 20}', hint: 'shop (the part before .myshopify.com). Optional: status (any, open, closed, cancelled) and limit (up to 50).' },
+  list_products: { label: 'List products', example: '{"shop": "mystore", "limit": 20}', hint: 'shop. Optional: limit (up to 50).' } } };
+appServices.zendesk = { label: 'Zendesk', credential: 'email:API_TOKEN (like you@example.com:abc123)', operations: {
+  create_ticket: { label: 'Create a ticket', example: '{"subdomain": "mycompany", "subject": "{{title}}", "body": "{{message}}", "requester_email": ""}', hint: 'subdomain, subject and body. Optional: requester_email.' } } };
+appServices.pipedrive = { label: 'Pipedrive', credential: 'API token', operations: {
+  create_person: { label: 'Create a person', example: '{"name": "{{name}}", "email": "{{email}}", "phone": ""}', hint: 'name. Optional: email and phone.' },
+  create_deal: { label: 'Create a deal', example: '{"title": "{{title}}", "value": "1000", "currency": "USD", "person_id": ""}', hint: 'title. Optional: value, currency, person_id and org_id (numbers).' } } };
+appServices.clickup = { label: 'ClickUp', credential: 'Personal API token (pk_...)', operations: {
+  create_task: { label: 'Create a task', example: '{"list_id": "", "name": "{{title}}", "description": "", "priority": "3"}', hint: 'list_id (a number) and name. Optional: description and priority (1 urgent to 4 low).' } } };
+appServices.monday = { label: 'monday.com', credential: 'API token', operations: {
+  create_item: { label: 'Create an item', example: '{"board_id": "", "item_name": "{{title}}", "column_values": {}}', hint: 'board_id (a number) and item_name. Optional: column_values (an object keyed by column id).' } } };
+appServices.dropbox = { label: 'Dropbox', credential: 'Access token', operations: {
+  list_folder: { label: 'List a folder', example: '{"path": "", "limit": 50}', hint: 'Optional: path (starts with /, blank is the root) and limit (up to 200).' },
+  create_folder: { label: 'Create a folder', example: '{"path": "/Reports"}', hint: 'path, starting with /.' } } };
+appServices.resend = { label: 'Resend (email)', credential: 'API key (re_...)', operations: {
+  send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "You <you@yourdomain.com>", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified domain), subject and text.' } } };
+appServices.postmark = { label: 'Postmark (email)', credential: 'Server API token', operations: {
+  send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
+appServices.whatsapp = { label: 'WhatsApp (Cloud API)', credential: 'Access token', operations: {
+  send_text: { label: 'Send a text message', example: '{"phone_number_id": "", "to": "15551230000", "text": "Hello from FlowPilot"}', hint: 'phone_number_id (from the WhatsApp setup page), to (with country code) and text. Outside a conversation window WhatsApp only allows approved templates.' } } };
+appServices.pushover = { label: 'Pushover', credential: 'APP_TOKEN:USER_KEY', operations: {
+  send: { label: 'Send a notification', example: '{"message": "{{message}}", "title": "FlowPilot", "priority": "0"}', hint: 'message. Optional: title and priority (-2, -1, 0 or 1).' } } };
 appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
   send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
 appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {
@@ -172,6 +196,7 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'code': return { code: "# 'input' holds the incoming data. Put your answer in 'result'.\nresult = {'count': len(input) if isinstance(input, list) else 1}" };
     case 'sql': return { credential: '', query: 'SELECT 1 AS ok', params: '' };
     case 'rss': return { url: 'https://hnrss.org/frontpage', limit: '10' };
+    case 'callback': return { seconds: '1', unit: 'days', on_timeout: 'continue' };
     case 'wait': return { seconds: '5', unit: 'seconds' };
     case 'sheets': return { credential: '', spreadsheet_id: '', range: 'Sheet1', operation: 'read', header: 'true', values: '["{{name}}", "{{city}}"]' };
     case 'gmail': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };
@@ -385,6 +410,12 @@ export const templates: { id: string; name: string; description: string; tag: st
     edges: [e('t', 'i'), e('i', 'a'), e('a', 'o')],
   },
   {
+    id: 'approval-gate', name: 'Approval gate', tag: 'Approval',
+    description: 'Pauses until someone approves or rejects, using the links in the message or the buttons on the Executions page. Send the message with Slack, ntfy or email. Run workflow tries it.',
+    nodes: [n('t', 'trigger', 20, 190), n('i', 'input', 210, 190, { json: '{"request":"Buy a laptop","amount":1200}' }), n('s', 'set', 410, 190, { json: '{"request": "{{request}}", "amount": {{amount}}, "message": "Approve {{request}}: {{run.approve_url}}  Reject: {{run.reject_url}}"}' }), n('w', 'callback', 630, 190, { seconds: '1', unit: 'days', on_timeout: 'continue' }), n('c', 'condition', 850, 190, { path: 'decision', op: 'equals', equals: 'approve' }), n('y', 'template', 1090, 60, { template: 'Approved: {{data.request}}' }), n('x', 'template', 1090, 320, { template: 'Not approved ({{decision}}): {{data.request}}' }), n('o1', 'output', 1330, 60), n('o2', 'output', 1330, 320)],
+    edges: [e('t', 'i'), e('i', 's'), e('s', 'w'), e('w', 'c'), e('c', 'y', 'true'), e('c', 'x', 'false'), e('y', 'o1'), e('x', 'o2')],
+  },
+  {
     id: 'ntfy-alert', name: 'Phone alert with ntfy', tag: 'Apps',
     description: 'Send a free push notification to your phone with the ntfy app. Pick a long random topic name and subscribe to it in the app. Needs internet.',
     nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"message":"Backup finished"}' }), n('a', 'app', 440, 150, { service: 'ntfy', operation: 'publish', credential: '', fields: '{"topic": "change-me-to-a-long-random-name", "message": "{{message}}", "title": "FlowPilot", "priority": "3"}' }), n('o', 'output', 700, 150)],
@@ -397,7 +428,7 @@ const groupById: Record<string, (typeof templateGroups)[number]> = {
   greeting: 'Getting started', 'order-triage': 'Getting started', 'route-tickets': 'Getting started',
   'loop-list': 'Lists and data', 'csv-report': 'Lists and data', 'top-n': 'Lists and data', 'clean-contacts': 'Lists and data', 'sales-summary': 'Lists and data', 'due-date': 'Lists and data',
   'hash-email': 'Lists and data', 'add-field': 'Lists and data', 'unwrap-list': 'Lists and data', 'python-stats': 'Lists and data', 'combine-sources': 'Lists and data',
-  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs', 'new-posts': 'Webhooks and APIs', 'ntfy-alert': 'Apps', 'ai-agent': 'Apps', 'file-upload': 'Webhooks and APIs',
+  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs', 'new-posts': 'Webhooks and APIs', 'ntfy-alert': 'Apps', 'approval-gate': 'Reliability', 'ai-agent': 'Apps', 'file-upload': 'Webhooks and APIs',
   'resilient-call': 'Reliability', 'error-alert': 'Reliability', 'slack-alert': 'Apps',
 };
 export const templateGroup = (id: string) => groupById[id] ?? 'Getting started';

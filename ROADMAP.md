@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.18
+- Wait for Response node (approvals through signed one-time links or the Executions page)
+- Webhook authentication (secret header or Basic), HTTP Request query parameters, form bodies, timeout and pagination
+- Ten more App Action services (28 in all), an approval template (28 templates)
+- 973 API tests and a 67-check browser suite
+
 ### v0.17
 - Webhook file uploads (multipart, public form file fields, stored with safe names, cleaned up with run history)
 - AI Agent node (tool calling with a calculator, the clock, a web page reader and chosen workflows)

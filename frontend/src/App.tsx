@@ -415,6 +415,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       if (res.status === 'success') notify('Replay finished successfully'); else notify(`Replay ${res.status}${res.error ? ': ' + res.error : ''}`, 'error');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
+  const respondRun = async (id: string, decision: string) => {
+    try { await api(`/api/executions/${id}/respond`, { method: 'POST', body: JSON.stringify({ decision }) }); await refresh(); notify(`Recorded: ${decision}`); }
+    catch (e) { notify((e as Error).message, 'error'); await refresh(); }
+  };
   const cancelWait = async (id: string) => {
     try { await api(`/api/executions/${id}/cancel`, { method: 'POST' }); await refresh(); notify('Run cancelled'); }
     catch (e) { notify((e as Error).message, 'error'); }
@@ -497,7 +501,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.17</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.18</span>
         </div>
       </aside>
 
@@ -749,7 +753,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
                   <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
-                  <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'waiting' && <p className="wait-note">Resumes {formatTime(r.resume_at)}. <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
+                  <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'waiting' && r.waiting_for === 'response' && <p className="wait-note">Waiting for a response until {formatTime(r.resume_at)}. <button className="primary" data-testid="respond-approve" disabled={!canEdit} onClick={() => void respondRun(r.id, 'approve')}>Approve</button> <button className="ghost" data-testid="respond-reject" disabled={!canEdit} onClick={() => void respondRun(r.id, 'reject')}>Reject</button></p>}{r.status === 'waiting' && <p className="wait-note">{r.waiting_for === 'response' ? 'Or cancel it:' : `Resumes ${formatTime(r.resume_at)}.`} <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
             </div>

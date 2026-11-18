@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.main import app
 
-PUBLIC = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout", "/api/oauth/callback", "/api/hooks/{token}"}
+PUBLIC = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout", "/api/oauth/callback", "/api/hooks/{token}", "/api/resume/{token}"}
 OWNER_ONLY_PREFIXES = ("/api/users", "/api/backup", "/api/audit")
 ADMIN_WRITE_PREFIXES = ("/api/credentials", "/api/oauth", "/api/settings", "/api/variables")
 SKIP_METHODS = {"HEAD", "OPTIONS"}

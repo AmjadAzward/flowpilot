@@ -147,6 +147,15 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">Reads RSS and Atom. Each item has title, link, published and summary. Pair it with Loop Over Items.</span>
         </>
       );
+    case 'callback':
+      return (
+        <>
+          <label>Wait up to<input type="number" min={1} step="any" value={v('seconds', '1')} onChange={text('seconds')} /></label>
+          <label>Unit<select value={v('unit', 'days')} onChange={text('unit')}><option value="minutes">minutes</option><option value="hours">hours</option><option value="days">days</option></select></label>
+          <label>If nobody answers<select value={v('on_timeout', 'continue')} onChange={text('on_timeout')}><option value="continue">Continue with the decision "timeout"</option><option value="fail">Fail the run</option></select></label>
+          <span className="hint">The run pauses here. Put {'{{run.approve_url}}'} and {'{{run.reject_url}}'} in a message before this node and send it (Slack, ntfy, email), or answer from the Executions page. The next nodes receive {'{{decision}}'} (approve, reject, timeout or your own word via ?decision=word), {'{{data}}'} (what came in) and {'{{body}}'} (anything posted to the link). Each link works once. Anyone who has a link can answer, so send it only to people you trust. Limits: 1 minute to 7 days, one pause per run, not inside a loop or sub-workflow.</span>
+        </>
+      );
     case 'wait':
       return (
         <>
@@ -375,7 +384,20 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           {auth === 'header' && <label>Header name<input value={v('auth_header')} onChange={text('auth_header')} placeholder="X-Api-Key" /></label>}
           {method === 'GET' && <label>Save response as a file (optional)<input value={v('save_as')} onChange={text('save_as')} placeholder="downloads/{{name}}.pdf" /><span className="hint">Saves the raw response (up to 5 MB) to backend/data/files and returns its path instead of the content.</span></label>}
           <label>Headers (JSON object, optional)<textarea rows={3} spellCheck={false} placeholder={'{"Accept": "application/json"}'} value={v('headers')} onChange={text('headers')} /></label>
+          <label>Query parameters (JSON object, optional)<textarea rows={2} spellCheck={false} placeholder={'{"q": "{{name}}", "limit": 50}'} value={v('query')} onChange={text('query')} /></label>
           {['POST', 'PUT', 'PATCH'].includes(method) && <label>Body (JSON or text)<textarea rows={5} spellCheck={false} placeholder={'{"name": "{{name}}"}'} value={v('body')} onChange={text('body')} /></label>}
+          {['POST', 'PUT', 'PATCH'].includes(method) && <label>Send the body as<select value={v('body_type', 'auto')} onChange={text('body_type')}><option value="auto">JSON (or plain text if it is not JSON)</option><option value="form">Form fields (urlencoded) from a JSON object</option></select></label>}
+          <label>Timeout (seconds, 1 to 60)<input type="number" min={1} max={60} value={v('timeout', '8')} onChange={text('timeout')} /></label>
+          {method === 'GET' && !v('save_as') && <>
+            <label>Read several pages<select value={v('paginate', 'none')} onChange={text('paginate')}><option value="none">No, one request</option><option value="next_url">Follow a "next" address in each reply</option><option value="page">Count pages with a parameter</option></select></label>
+            {v('paginate', 'none') !== 'none' && <>
+              <label>Where the items are in each reply (blank when the reply is the list)<input value={v('items_path')} onChange={text('items_path')} placeholder="data.items" /></label>
+              {v('paginate') === 'next_url' && <label>Where the next address is<input value={v('next_path')} onChange={text('next_path')} placeholder="links.next" /></label>}
+              {v('paginate') === 'page' && <><label>Page parameter name<input value={v('page_param', 'page')} onChange={text('page_param')} /></label><label>First page number<input type="number" value={v('first_page', '1')} onChange={text('first_page')} /></label></>}
+              <label>Most pages (1 to 20)<input type="number" min={1} max={20} value={v('max_pages', '5')} onChange={text('max_pages')} /></label>
+              <span className="hint">The result is one list of every item. Following stays on the same site, and stops at 5000 items.</span>
+            </>}
+          </>}
           <span className="hint">Use {'{{field}}'} in the URL, headers and body to insert incoming data, {'{{}}'} for all of it, and {'{{cred.NAME}}'} for a saved credential. Private addresses and redirects are blocked.</span>
         </>
       );
@@ -445,6 +467,10 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <button type="button" className="ghost" onClick={onRotateWebhook}><RefreshCcw size={14} />Generate new URL</button>
           <label>Public form fields (optional JSON)<textarea rows={4} spellCheck={false} value={v('form_fields')} onChange={text('form_fields')} placeholder={'[{"name":"email","label":"Your email","type":"email"}]'} /></label>
           <span className="hint">Fill this in and opening the webhook URL in a browser shows a small form (types: text, email, number, textarea, file). Anyone with the URL can submit it. Values arrive as {'{{body.email}}'}.</span>
+          <label>Who may call this webhook<select value={v('auth_type', 'none')} onChange={text('auth_type')}><option value="none">Anyone who knows the address</option><option value="header">Callers must send a secret in a header</option><option value="basic">Callers must use Basic authentication (user:password)</option></select></label>
+          {v('auth_type', 'none') === 'header' && <label>Header name<input value={v('auth_header', 'X-Webhook-Token')} onChange={text('auth_header')} placeholder="X-Webhook-Token" /></label>}
+          {v('auth_type', 'none') !== 'none' && credSelect('auth_credential', v('auth_type') === 'basic' ? 'Credential holding user:password' : 'Credential holding the secret')}
+          {v('auth_type', 'none') !== 'none' && <span className="hint">Calls without the right secret get a 401 and do not run the workflow. Browsers cannot send a header, so a public form does not work together with this. The Run button is not affected.</span>}
           <label>Accept file uploads<select value={v('accept_files', 'false')} onChange={text('accept_files')}><option value="false">No (a form with a file field still accepts files)</option><option value="true">Yes: multipart uploads from any sender</option></select></label>
           <span className="hint">Uploads are limited to 5 files, 5 MB each and 10 MB in total, and are stored in the files folder under uploads/. They arrive as {'{{body.files.0.filename}}'}, {'{{body.files.0.size}}'} and {'{{body.files.0.path}}'}; the Files node can read the path. Old uploads are deleted with the run-history cleanup. Anyone with the URL can upload, so keep the address private.</span>
           <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={v('sample')} onChange={text('sample')} /></label>

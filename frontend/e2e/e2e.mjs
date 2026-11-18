@@ -800,7 +800,7 @@ await check('every template can be created, and the offline ones produce the exp
   const mod = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
   const templates = mod.templates;
   if (templates.length < 27) throw new Error('expected at least 27 templates, found ' + templates.length);
-  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert', 'ntfy-alert', 'ai-agent']);
+  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert', 'ntfy-alert', 'ai-agent', 'approval-gate']);
   const expected = {
     greeting: 'Hello Ada from London!', 'order-triage': 'PRIORITY: order A-1042 (250)', 'webhook-receiver': 'New message from Ada: Hello from a webhook',
     'top-n': ['Ada: 91', 'Di: 85', 'Cy: 77'], 'clean-contacts': [{ mail: 'a@x.com', name: 'Ada' }, { mail: 'b@x.com', name: 'Bob' }], 'sales-summary': 'Paid total: 200.5',
@@ -1057,6 +1057,77 @@ await check('a visitor uploads a file through a public form and the workflow rec
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.locator('summary', { hasText: 'Upload form' }).first().click();
   await expectText(page.locator('.history-details').first(), /Grace uploaded report final\.txt \(27 bytes\)/);
+  await page.evaluate(async id => { await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); }, made.id);
+});
+
+await check('HTTP paging, webhook protection, Wait for Response and the new services expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-fetch-todo').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Fetch and extract');
+  await node('HTTP Request').click();
+  await page.getByLabel(/^Query parameters/).waitFor();
+  await page.getByLabel('Read several pages').selectOption('next_url');
+  await page.getByLabel('Where the next address is').waitFor();
+  await page.getByLabel('Read several pages').selectOption('page');
+  await page.getByLabel('Page parameter name').waitFor();
+  await page.getByLabel(/^Timeout/).fill('20');
+  await goOverview();
+  await page.getByTestId('template-webhook-receiver').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Webhook receiver');
+  await node('Webhook Trigger').click();
+  await page.getByLabel('Who may call this webhook').selectOption('header');
+  await page.getByLabel('Header name').waitFor();
+  await page.getByLabel('Credential holding the secret').waitFor();
+  await page.getByLabel('Who may call this webhook').selectOption('basic');
+  await page.getByLabel('Credential holding user:password').waitFor();
+  await openLibrary();
+  await page.getByTestId('add-callback').click();
+  await page.getByLabel('If nobody answers').waitFor();
+  await expectText(page.locator('.inspector'), /run\.approve_url/);
+  await page.getByTestId('add-app').click();
+  for (const [service, field] of [['shopify', '"shop"'], ['zendesk', 'subdomain'], ['pipedrive', '"name"'], ['clickup', 'list_id'], ['monday', 'board_id'], ['dropbox', '"path"'], ['resend', '"from"'], ['postmark', '"from"'], ['whatsapp', 'phone_number_id'], ['pushover', '"message"']]) {
+    await page.getByLabel('Service').selectOption(service);
+    if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes(field)) throw new Error(service + ' example fields missing ' + field);
+  }
+  await shot('38-more-settings');
+});
+
+await check('a run waits for approval and continues from the button and from the emailed link', async () => {
+  const made = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Needs approval', description: '', nodes: [node('t', 'trigger'), node('i', 'input', { json: '{"request": "Buy a laptop"}' }),
+      node('s', 'set', { json: '{"request": "{{request}}", "message": "Approve: {{run.approve_url}}"}' }), node('w', 'callback', { seconds: '1', unit: 'days', on_timeout: 'continue' }),
+      node('c', 'condition', { path: 'decision', op: 'equals', equals: 'approve' }), node('y', 'template', { template: 'Approved: {{data.request}}' }), node('n', 'template', { template: 'Declined: {{decision}}' }), node('o1', 'output'), node('o2', 'output')],
+      edges: [['t', 'i'], ['i', 's'], ['s', 'w'], ['w', 'c'], ['c', 'y', 'true'], ['c', 'n', 'false'], ['y', 'o1'], ['n', 'o2']].map(([a, b, h]) => ({ id: a + b, source: a, target: b, ...(h ? { sourceHandle: h } : {}) })) };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    const run = async () => (await (await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' })).json());
+    const first = await run();
+    const second = await run();
+    const link = r => r.steps.find(s => s.node_id === 's').output.message.replace('Approve: ', '');
+    return { id: created.id, firstStatus: first.status, secondStatus: second.status, link: link(second) };
+  });
+  if (made.firstStatus !== 'waiting' || made.secondStatus !== 'waiting') throw new Error('runs should be waiting: ' + JSON.stringify(made));
+  // 1) the visitor opens the link from the message
+  const ctx = await browser.newContext();
+  const v = await ctx.newPage();
+  try {
+    await v.goto(made.link.replace('http://127.0.0.1:5173', BASE));
+    await v.getByText('Thank you').waitFor();
+    await v.goto(made.link.replace('http://127.0.0.1:5173', BASE));
+    await v.getByText('Nothing to answer').waitFor();  // a link works once
+  } finally { await ctx.close(); }
+  // 2) the other run is answered from the Executions page
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  const waiting = page.locator('summary', { hasText: 'Needs approval' }).filter({ hasText: 'waiting' }).first();
+  await waiting.click();
+  await expectText(page.locator('.wait-note').first(), /Waiting for a response/);
+  await shot('39-waiting-for-response');
+  await page.getByTestId('respond-reject').first().click();
+  await expectText(toast(), /Recorded: reject/);
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  const rows = await page.evaluate(async id => (await (await fetch('/api/executions?workflow_id=' + id)).json()).map(r => ({ status: r.status, output: r.output })), made.id);
+  const outputs = rows.map(r => r.output).sort();
+  if (JSON.stringify(outputs) !== JSON.stringify(['Approved: Buy a laptop', 'Declined: reject'])) throw new Error('unexpected outcomes: ' + JSON.stringify(rows));
   await page.evaluate(async id => { await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); }, made.id);
 });
 

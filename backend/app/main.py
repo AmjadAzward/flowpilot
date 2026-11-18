@@ -38,7 +38,7 @@ from typing import Any
 from email import message_from_bytes, policy as email_policy
 from email.parser import BytesParser
 from email.message import EmailMessage
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 
 import httpx
 from .n8n_import import convert as convert_n8n
@@ -78,7 +78,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.17.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.18.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -141,6 +141,7 @@ def initialize():
             if first: db.execute("UPDATE users SET role='owner' WHERE id=?", (first["id"],))
         db.execute("CREATE TABLE IF NOT EXISTS workflow_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, saved_at TEXT NOT NULL, saved_by TEXT, name TEXT NOT NULL, definition TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
+        if "kind" not in {r["name"] for r in db.execute("PRAGMA table_info(waits)")}: db.execute("ALTER TABLE waits ADD COLUMN kind TEXT NOT NULL DEFAULT 'timer'")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
@@ -199,7 +200,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "callback", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -346,7 +347,7 @@ class LoginIn(BaseModel):
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in PUBLIC_PATHS and path != "/api/oauth/callback" and not path.startswith("/api/hooks/") and request.method != "OPTIONS":
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and path != "/api/oauth/callback" and not path.startswith(("/api/hooks/", "/api/resume/")) and request.method != "OPTIONS":
         user = session_user(request.cookies.get(COOKIE))
         if not user:
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
@@ -356,7 +357,7 @@ async def require_login(request: Request, call_next):
         request.state.actor = user
         if user["role"] not in ("owner", "admin"):
             wf = re.match(r"^/api/workflows/([^/]+)", path)
-            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay)$", path)
+            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond)$", path)
             target = wf.group(1) if wf else None
             if ex:
                 with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
@@ -366,7 +367,7 @@ async def require_login(request: Request, call_next):
     response = await call_next(request)
     user = getattr(request.state, "actor", None)
     login = path == "/api/auth/login"
-    if path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and (response.status_code < 400 or (login and response.status_code in (401, 429))) and not path.startswith("/api/hooks/") and path != "/api/oauth/callback":
+    if path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and (response.status_code < 400 or (login and response.status_code in (401, 429))) and not path.startswith(("/api/hooks/", "/api/resume/")) and path != "/api/oauth/callback":
         try: record_audit(getattr(request.state, "audit_user", None) or (user["username"] if user else None), user["role"] if user else None, request.method, path, response.status_code)
         except Exception: log.exception("Could not write the audit log")
     return response
@@ -406,7 +407,7 @@ async def harden(request: Request, call_next):
     """Cap request sizes and add basic security headers to every response."""
     path = request.url.path
     is_api = path.startswith("/api/")
-    if is_api and request.method in ("POST", "PUT", "PATCH") and not path.startswith("/api/hooks/"):
+    if is_api and request.method in ("POST", "PUT", "PATCH") and not path.startswith(("/api/hooks/", "/api/resume/")):
         try: length = int(request.headers.get("content-length") or 0)
         except ValueError: length = 0
         if length > (MAX_RESTORE_BODY if path == "/api/backup/restore" else MAX_BODY):
@@ -415,7 +416,7 @@ async def harden(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Frame-Options", "DENY")
-    if is_api and not path.startswith("/api/hooks/"): response.headers.setdefault("Cache-Control", "no-store")
+    if is_api and not path.startswith("/api/hooks/"): response.headers.setdefault("Cache-Control", "no-store")  # resume links are never cached either
     return response
 
 
@@ -640,7 +641,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.17.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.18.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -839,6 +840,7 @@ MAX_CREDENTIALS = 100
 _fernets: dict[str, Fernet] = {}
 _secrets_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_secrets", default={})
 _vars_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_vars", default={})
+_run_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_run", default={})
 _stack_var: contextvars.ContextVar[tuple] = contextvars.ContextVar("fp_call_stack", default=())
 
 
@@ -1113,6 +1115,10 @@ def render_template(text: str, data: Any, json_escape: bool = False) -> str:
         if path.startswith("cred."):
             value = lookup_secret(path[5:])
             if oauth_config(value): raise ValueError("An OAuth connection cannot be inserted as text. Choose it in the node's Authentication or Connection setting.")
+        elif path.startswith("run.") and not (isinstance(data, dict) and "run" in data):
+            info = _run_var.get()
+            if path[4:] not in info: raise ValueError(f"{path!r} is not available. Use run.approve_url, run.reject_url or run.resume_url.")
+            value = info[path[4:]]
         elif path.startswith("vars.") and not (isinstance(data, dict) and "vars" in data):
             variables = _vars_var.get()
             if path[5:] not in variables: raise ValueError(f"The variable {path[5:]!r} is not defined. Add it in Settings, under Variables.")
@@ -1496,6 +1502,16 @@ APP_OPS = {
     "gitlab": ["create_issue"],
     "discord": ["post_message"],
     "ntfy": ["publish"],
+    "shopify": ["list_orders", "list_products"],
+    "zendesk": ["create_ticket"],
+    "pipedrive": ["create_person", "create_deal"],
+    "clickup": ["create_task"],
+    "monday": ["create_item"],
+    "dropbox": ["list_folder", "create_folder"],
+    "resend": ["send_email"],
+    "postmark": ["send_email"],
+    "whatsapp": ["send_text"],
+    "pushover": ["send"],
     "gcalendar": ["list_events", "create_event"],
     "gdrive": ["list_files", "create_folder"],
 }
@@ -1768,7 +1784,147 @@ def app_gdrive(op: str, token: str, f: dict) -> Any:
     return [{"id": x.get("id"), "name": x.get("name"), "type": x.get("mimeType"), "modified": x.get("modifiedTime"), "url": x.get("webViewLink"), "size": x.get("size")} for x in (res.get("files") if isinstance(res, dict) else None) or []]
 
 
-APP_HANDLERS = {"gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+SUBDOMAIN_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+
+
+def _subdomain(f: dict, key: str, label: str) -> str:
+    val = _text(f, key, label, maxlen=63).lower()
+    if not SUBDOMAIN_RE.fullmatch(val): raise ValueError(f"{label} is the part before the first dot, for example mystore")
+    return val
+
+
+def app_shopify(op: str, secret: str, f: dict) -> Any:
+    shop = _subdomain(f, "shop", "Shop")
+    url = f"https://{shop}.myshopify.com/admin/api/2024-10/" + ("orders.json" if op == "list_orders" else "products.json")
+    params: dict[str, Any] = {"limit": _limit(f, 20, 50)}
+    if op == "list_orders":
+        status = _text(f, "status", "Status", required=False, maxlen=20) or "any"
+        if status not in ("any", "open", "closed", "cancelled"): raise ValueError("Status must be any, open, closed or cancelled")
+        params["status"] = status
+    res = do_request("GET", url, {"X-Shopify-Access-Token": secret}, params=params)
+    if op == "list_orders":
+        return [{k: o.get(k) for k in ("id", "name", "email", "total_price", "currency", "financial_status", "created_at")} for o in (res.get("orders") if isinstance(res, dict) else None) or []]
+    return [{k: x.get(k) for k in ("id", "title", "status", "vendor")} for x in (res.get("products") if isinstance(res, dict) else None) or []]
+
+
+def app_zendesk(op: str, secret: str, f: dict) -> Any:
+    email, _, token = secret.partition(":")
+    if not EMAIL_RE.fullmatch(email) or not token: raise ValueError("The Zendesk credential must look like you@example.com:API_TOKEN")
+    sub = _subdomain(f, "subdomain", "Subdomain")
+    ticket: dict[str, Any] = {"subject": _text(f, "subject", "Subject", maxlen=250), "comment": {"body": _text(f, "body", "Body", maxlen=30000)}}
+    who = _text(f, "requester_email", "Requester email", required=False, maxlen=200)
+    if who:
+        if not EMAIL_RE.fullmatch(who): raise ValueError(f"Invalid email address: {who!r}")
+        ticket["requester"] = {"email": who}
+    res = do_request("POST", f"https://{sub}.zendesk.com/api/v2/tickets.json", {}, json={"ticket": ticket}, auth=(f"{email}/token", token))
+    t = (res.get("ticket") if isinstance(res, dict) else None) or {}
+    return {"id": t.get("id"), "url": f"https://{sub}.zendesk.com/agent/tickets/{t.get('id')}"}
+
+
+def app_pipedrive(op: str, secret: str, f: dict) -> Any:
+    headers = {"x-api-token": secret}
+    if op == "create_person":
+        body: dict[str, Any] = {"name": _text(f, "name", "Name", maxlen=200)}
+        for key in ("email", "phone"):
+            val = _text(f, key, key.title(), required=False, maxlen=200)
+            if val: body[key] = [val]
+        res = do_request("POST", "https://api.pipedrive.com/v1/persons", headers, json=body)
+    else:
+        body = {"title": _text(f, "title", "Title", maxlen=250)}
+        for key in ("value", "person_id", "org_id"):
+            val = _text(f, key, key, required=False, maxlen=30)
+            if val:
+                if not re.fullmatch(r"\d+(\.\d+)?", val): raise ValueError(f"{key} must be a number")
+                body[key] = float(val) if key == "value" else int(float(val))
+        cur = _text(f, "currency", "Currency", required=False, maxlen=3)
+        if cur: body["currency"] = cur.upper()
+        res = do_request("POST", "https://api.pipedrive.com/v1/deals", headers, json=body)
+    data = (res.get("data") if isinstance(res, dict) else None) or {}
+    return {"id": data.get("id"), "name": data.get("name") or data.get("title")}
+
+
+def app_clickup(op: str, secret: str, f: dict) -> Any:
+    list_id = _text(f, "list_id", "List ID", maxlen=20)
+    if not list_id.isdigit(): raise ValueError("List ID is a number (open the list and copy it from the address)")
+    body: dict[str, Any] = {"name": _text(f, "name", "Task name", maxlen=500), "description": _text(f, "description", "Description", required=False, maxlen=20000)}
+    prio = _text(f, "priority", "Priority", required=False, maxlen=1)
+    if prio:
+        if prio not in "1234": raise ValueError("Priority is 1 (urgent) to 4 (low)")
+        body["priority"] = int(prio)
+    res = do_request("POST", f"https://api.clickup.com/api/v2/list/{list_id}/task", {"Authorization": secret}, json=body)
+    return {"id": res.get("id"), "url": res.get("url")} if isinstance(res, dict) else res
+
+
+def app_monday(op: str, secret: str, f: dict) -> Any:
+    board = _text(f, "board_id", "Board ID", maxlen=20)
+    if not board.isdigit(): raise ValueError("Board ID is a number")
+    cols = _object(f, "column_values", "Column values")
+    query = "mutation($board: ID!, $name: String!, $cols: JSON){create_item(board_id: $board, item_name: $name, column_values: $cols){id}}"
+    res = do_request("POST", "https://api.monday.com/v2", {"Authorization": secret}, json={"query": query, "variables": {"board": board, "name": _text(f, "item_name", "Item name", maxlen=255), "cols": json.dumps(cols)}})
+    if not isinstance(res, dict) or res.get("errors"): raise ValueError("monday.com error: " + (str((res.get("errors") or [{}])[0].get("message", "unknown")) if isinstance(res, dict) else "unexpected response"))
+    return {"id": ((res.get("data") or {}).get("create_item") or {}).get("id")}
+
+
+def _dropbox_path(f: dict, key: str, allow_root: bool) -> str:
+    val = _text(f, key, "Path", required=not allow_root, maxlen=300)
+    if val and (not val.startswith("/") or any(p in ("..", ".") for p in val.split("/")) or "\x00" in val): raise ValueError("Path starts with / and cannot contain .. (for example /Reports)")
+    return val
+
+
+def app_dropbox(op: str, secret: str, f: dict) -> Any:
+    headers = {"Authorization": f"Bearer {secret}"}
+    if op == "create_folder":
+        res = do_request("POST", "https://api.dropboxapi.com/2/files/create_folder_v2", headers, json={"path": _dropbox_path(f, "path", False), "autorename": False})
+        return {"path": ((res.get("metadata") if isinstance(res, dict) else None) or {}).get("path_display")}
+    res = do_request("POST", "https://api.dropboxapi.com/2/files/list_folder", headers, json={"path": _dropbox_path(f, "path", True), "limit": _limit(f, 50, 200)})
+    return [{"name": e.get("name"), "type": e.get(".tag"), "path": e.get("path_display"), "size": e.get("size")} for e in (res.get("entries") if isinstance(res, dict) else None) or []]
+
+
+def _mail_fields(f: dict) -> tuple[str, str, str, str]:
+    to, sender = _text(f, "to", "To", maxlen=200), _text(f, "from", "From", maxlen=200)
+    for addr in (to, sender.split("<")[-1].rstrip(">").strip()):
+        if not EMAIL_RE.fullmatch(addr): raise ValueError(f"Invalid email address: {addr!r}")
+    subject = _text(f, "subject", "Subject", maxlen=200)
+    if "\n" in subject or "\r" in subject: raise ValueError("Subject must be one line")
+    return to, sender, subject, _text(f, "text", "Text", maxlen=100_000)
+
+
+def app_resend(op: str, secret: str, f: dict) -> Any:
+    to, sender, subject, text = _mail_fields(f)
+    res = do_request("POST", "https://api.resend.com/emails", {"Authorization": f"Bearer {secret}"}, json={"from": sender, "to": [to], "subject": subject, "text": text})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_postmark(op: str, secret: str, f: dict) -> Any:
+    to, sender, subject, text = _mail_fields(f)
+    res = do_request("POST", "https://api.postmarkapp.com/email", {"X-Postmark-Server-Token": secret, "Accept": "application/json"}, json={"From": sender, "To": to, "Subject": subject, "TextBody": text, "MessageStream": "outbound"})
+    return {"message_id": res.get("MessageID")} if isinstance(res, dict) else res
+
+
+def app_whatsapp(op: str, secret: str, f: dict) -> Any:
+    phone_id, to = _text(f, "phone_number_id", "Phone number ID", maxlen=30), _text(f, "to", "To", maxlen=20).lstrip("+")
+    if not phone_id.isdigit(): raise ValueError("Phone number ID is a number from the WhatsApp Cloud API setup page")
+    if not re.fullmatch(r"\d{6,15}", to): raise ValueError("To is a phone number with country code, for example 15551230000")
+    res = do_request("POST", f"https://graph.facebook.com/v19.0/{phone_id}/messages", {"Authorization": f"Bearer {secret}"}, json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": _text(f, "text", "Message", maxlen=4000)}})
+    msgs = (res.get("messages") if isinstance(res, dict) else None) or [{}]
+    return {"message_id": msgs[0].get("id")}
+
+
+def app_pushover(op: str, secret: str, f: dict) -> Any:
+    token, _, user = secret.partition(":")
+    if not token or not user: raise ValueError("The Pushover credential must look like APP_TOKEN:USER_KEY")
+    form = {"token": token, "user": user, "message": _text(f, "message", "Message", maxlen=1024)}
+    title = _text(f, "title", "Title", required=False, maxlen=250)
+    if title: form["title"] = title
+    prio = _text(f, "priority", "Priority", required=False, maxlen=2)
+    if prio:
+        if prio not in ("-2", "-1", "0", "1"): raise ValueError("Priority is -2, -1, 0 or 1")
+        form["priority"] = prio
+    res = do_request("POST", "https://api.pushover.net/1/messages.json", {}, data=form)
+    return {"status": res.get("status"), "request": res.get("request")} if isinstance(res, dict) else res
+
+
+APP_HANDLERS = {"shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:
@@ -1909,6 +2065,49 @@ def tool_crypto(d: dict, previous: Any) -> Any:
 
 
 ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto}
+
+
+def param_text(value: Any) -> str:
+    """A value as text for a query string or a form field: true and false in lower case, JSON for lists and objects."""
+    if value is None: return ""
+    if isinstance(value, bool): return "true" if value else "false"
+    return json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+
+
+MAX_PAGINATED_ITEMS = 5000
+
+
+def paginate_http(method: str, url: str, headers: dict, kwargs: dict, d: dict) -> list:
+    """Follow a paged API and return every item. Modes: next_url (the reply holds the next address) or page (a page-number parameter)."""
+    mode = str(d.get("paginate"))
+    if mode not in ("next_url", "page"): raise ValueError("Pagination must be none, next_url or page")
+    items_path, next_path = str(d.get("items_path") or "").strip(), str(d.get("next_path") or "").strip()
+    page_param = str(d.get("page_param") or "page").strip() or "page"
+    try: first_page = int(float(d.get("first_page") or 1))
+    except (TypeError, ValueError): raise ValueError("First page must be a number")
+    try: max_pages = max(1, min(int(float(d.get("max_pages") or 5)), 20))
+    except (TypeError, ValueError): raise ValueError("Maximum pages must be a number")
+    if mode == "next_url" and not next_path: raise ValueError("Tell FlowPilot where the next address is in each reply (for example next or links.next)")
+    host, current, results = urlparse(url).hostname, url, []
+    base_params = dict(kwargs.get("params") or {})
+    for page in range(max_pages):
+        kw = dict(kwargs)
+        if mode == "page": kw["params"] = {**base_params, page_param: str(first_page + page)}
+        elif page > 0: kw.pop("params", None)  # the next address already carries its own query
+        res = do_request(method, current, headers, **kw)
+        items = get_path(res, items_path) if items_path else res
+        if not isinstance(items, list): raise ValueError("Page " + str(page + 1) + " has no list" + (f" at {items_path!r}" if items_path else "") + ". Set where the items are.")
+        results.extend(items)
+        if len(results) > MAX_PAGINATED_ITEMS: raise ValueError(f"More than {MAX_PAGINATED_ITEMS} items. Lower the maximum pages.")
+        if mode == "page":
+            if not items: break
+            continue
+        nxt = get_path(res, next_path) if isinstance(res, (dict, list)) else None
+        if not nxt: break
+        nxt_url = safe_url(urljoin(current, str(nxt)))
+        if urlparse(nxt_url).hostname != host: raise ValueError("The next page is on a different site, so it was not followed")
+        current = nxt_url
+    return results
 
 
 def build_response(d: dict, previous: Any) -> dict:
@@ -2628,6 +2827,7 @@ def step_action(node: dict, previous: Any):
     if typ == "app":
         value = app_action(d, previous)
         return value, value, None
+    if typ == "callback": raise ValueError("Wait for Response must be run by the engine")
     if typ == "wait":
         seconds = wait_seconds(d)
         if seconds > MAX_WAIT_SECONDS: raise ValueError("Waits longer than 60 seconds must be run by the engine")
@@ -2663,10 +2863,22 @@ def step_action(node: dict, previous: Any):
         if raw_body.strip():
             as_json = render_template(raw_body, previous, json_escape=True)  # values are escaped so quotes cannot break the JSON
             if len(as_json) > 1_000_000: raise ValueError("Request body exceeds 1 MB")
-            try: kwargs["json"] = json.loads(as_json)
-            except ValueError:
-                kwargs["content"] = render_template(raw_body, previous).encode()
-                if not any(k.lower() == "content-type" for k in headers): headers["Content-Type"] = "text/plain; charset=utf-8"
+            if str(d.get("body_type") or "auto") == "form":
+                form = read_json(as_json)
+                if not isinstance(form, dict): raise ValueError("A form body must be a JSON object, for example {\"name\": \"{{name}}\"}")
+                kwargs["data"] = {str(k): param_text(v) for k, v in form.items()}
+            else:
+                try: kwargs["json"] = json.loads(as_json)
+                except ValueError:
+                    kwargs["content"] = render_template(raw_body, previous).encode()
+                    if not any(k.lower() == "content-type" for k in headers): headers["Content-Type"] = "text/plain; charset=utf-8"
+        query_text = str(d.get("query") or "").strip()
+        if query_text:
+            query = read_json(render_template(query_text, previous, json_escape=True))
+            if not isinstance(query, dict) or len(query) > 30: raise ValueError("Query parameters must be a JSON object with at most 30 entries, for example {\"page\": 1}")
+            kwargs["params"] = {str(k): param_text(v) for k, v in query.items()}
+        try: kwargs["timeout"] = max(1.0, min(float(d.get("timeout") or 8) or 8.0, 60.0))
+        except (TypeError, ValueError): raise ValueError("Timeout must be a number of seconds")
         save_as = render_template(str(d.get("save_as") or ""), previous).strip()
         if save_as:
             got_file = do_request(method, url, headers, raw=True, **kwargs)
@@ -2674,6 +2886,9 @@ def step_action(node: dict, previous: Any):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(got_file["bytes"])
             value = {"path": save_as, "size": len(got_file["bytes"]), "content_type": got_file["content_type"]}
+            return value, value, None
+        if str(d.get("paginate") or "none") != "none":
+            value = paginate_http(method, url, headers, kwargs, d)
             return value, value, None
         value = do_request(method, url, headers, **kwargs)
         return value, value, None
@@ -2883,6 +3098,31 @@ def suspend_for_long_wait(g: Graph, nid: str, data: dict, value: Any, step: dict
     return True
 
 
+def suspend_for_callback(g: Graph, nid: str, data: dict, value: Any, step: dict) -> bool:
+    """A Wait for Response node: pause the run until someone answers through a link, a button or the API (or the time limit passes)."""
+    try: secs = wait_seconds({"seconds": data.get("seconds") or 1, "unit": data.get("unit") or "days"})
+    except ValueError as exc:
+        step.update(status="error", error=str(exc))
+        raise StepFailure(str(exc)) from exc
+    if secs < 60:
+        step.update(status="error", error="The time limit of a Wait for Response must be at least one minute")
+        raise StepFailure(step["error"])
+    if g.iter or len(_stack_var.get()) > 1:
+        step.update(status="error", error="Wait for Response cannot be used inside a loop or a sub-workflow")
+        raise StepFailure(step["error"])
+    if g.suspended:
+        step.update(status="error", error="Only one long Wait or Wait for Response per run is supported")
+        raise StepFailure(step["error"])
+    if not _run_var.get():
+        step.update(status="error", error="Wait for Response needs a saved run")
+        raise StepFailure(step["error"])
+    on_timeout = "fail" if str(data.get("on_timeout") or "continue") == "fail" else "continue"
+    resume_at = (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
+    g.suspended = {"node_id": nid, "value": {"data": value, "on_timeout": on_timeout}, "resume_at": resume_at, "kind": "callback"}
+    step.update(status="waiting", output={"waiting_for": "a response", "expires_at": resume_at, **{k: v for k, v in _run_var.get().items() if k != "resume_url"}}, duration_ms=0)
+    return True
+
+
 def run_batch(g: Graph, prepared: list) -> list:
     """Run nodes that are ready at the same time. Several network or code nodes run in parallel; the rest run alone."""
     if len(prepared) == 1:
@@ -2939,6 +3179,7 @@ def run_graph(g: Graph, allowed: set, seeds: list):
             g.steps.append(step)
             prepared.append((nid, node, typ, data, value, step))
         if len(prepared) == 1 and prepared[0][2] == "wait" and suspend_for_long_wait(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
+        if len(prepared) == 1 and prepared[0][2] == "callback" and suspend_for_callback(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
         outcomes = run_batch(g, prepared)
         for (nid, node, typ, data, value, step), (shown, passed, branch) in zip(prepared, outcomes):
             final = passed if typ in ("condition", "loop", "repeat", "switch") else shown
@@ -3014,13 +3255,39 @@ def delete_variable(name: str):
     with conn() as db: db.execute("DELETE FROM variables WHERE name=?", (name,))
 
 
-def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None) -> dict:
+def callback_secret() -> bytes:
+    with conn() as db:
+        row = db.execute("SELECT value FROM settings WHERE key='callback_secret'").fetchone()
+        if row: return row["value"].encode()
+        value = secrets.token_hex(32)
+        db.execute("INSERT OR IGNORE INTO settings (key,value) VALUES ('callback_secret', ?)", (value,))
+        return db.execute("SELECT value FROM settings WHERE key='callback_secret'").fetchone()["value"].encode()
+
+
+def callback_token(exec_id: str) -> str:
+    return f"{exec_id}.{hmac.new(callback_secret(), exec_id.encode(), hashlib.sha256).hexdigest()[:32]}"
+
+
+def callback_exec_id(token: str) -> str | None:
+    exec_id, _, sig = token.rpartition(".")
+    good = hmac.new(callback_secret(), exec_id.encode(), hashlib.sha256).hexdigest()[:32] if exec_id else ""
+    return exec_id if exec_id and hmac.compare_digest(sig.encode(), good.encode()) else None
+
+
+def run_links(exec_id: str | None) -> dict:
+    if not exec_id: return {}
+    url = f"{public_url()}/api/resume/{callback_token(exec_id)}"
+    return {"resume_url": url, "approve_url": url + "?decision=approve", "reject_url": url + "?decision=reject"}
+
+
+def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_id: str | None = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
     secrets_ = load_secrets()
     holder: dict = {}
-    t1, t2, t3, t4 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables())
+    t1, t2, t3, t4, t5 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables()), _run_var.set(run_links(exec_id))
     try: result = _execute(doc, initial, resume)
     finally:
+        _run_var.reset(t5)
         _vars_var.reset(t4)
         _secrets_var.reset(t1)
         _stack_var.reset(t2)
@@ -3032,7 +3299,7 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None) -> dic
 def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
     """Run a workflow and store the execution. `initial` may be a callable so input errors are recorded as failed runs."""
     exec_id, started = str(uuid.uuid4()), now()
-    try: result = run_flow(doc, initial() if callable(initial) else initial)
+    try: result = run_flow(doc, initial() if callable(initial) else initial, exec_id=exec_id)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     policy = (doc.get("settings") or {}).get("save_runs", "all")
     skip_save = kind not in ("manual", "replay") and result["status"] != "waiting" and (policy == "none" or (policy == "failures" and result["status"] == "success"))
@@ -3047,8 +3314,8 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
 
 
 def add_wait(db, exec_id: str, workflow_id: str, wait: dict) -> None:
-    db.execute("INSERT INTO waits (id,execution_id,workflow_id,node_id,value,resume_at,status,created_at) VALUES (?,?,?,?,?,?,'pending',?)",
-               (str(uuid.uuid4()), exec_id, workflow_id, wait["node_id"], json.dumps(wait["value"], default=str), wait["resume_at"], now()))
+    db.execute("INSERT INTO waits (id,execution_id,workflow_id,node_id,value,resume_at,status,created_at,kind) VALUES (?,?,?,?,?,?,'pending',?,?)",
+               (str(uuid.uuid4()), exec_id, workflow_id, wait["node_id"], json.dumps(wait["value"], default=str), wait["resume_at"], now(), wait.get("kind", "timer")))
 
 
 def resume_due_waits(at: datetime | None = None) -> int:
@@ -3074,14 +3341,25 @@ def resume_due_waits(at: datetime | None = None) -> int:
     return resumed
 
 
-def finish_wait(w, ex) -> None:
+def finish_wait(w, ex, answer: dict | None = None) -> None:
+    """Continue a waiting run. `answer` is {"decision", "body"} for a Wait for Response that was answered; without it a response wait has timed out."""
     old_steps = json.loads(ex["steps"] or "[]")
+    stored = json.loads(w["value"])
+    resume_value, decision = stored, None
+    if w["kind"] == "callback":
+        decision = answer["decision"] if answer else "timeout"
+        resume_value = {"decision": decision, "data": stored.get("data"), "body": (answer or {}).get("body")}
+        if answer is None and stored.get("on_timeout") == "fail":
+            with conn() as db:
+                db.execute("UPDATE executions SET status='failed', finished_at=?, error='No response arrived in time' WHERE id=?", (now(), ex["id"]))
+                db.execute("UPDATE waits SET status='done' WHERE id=?", (w["id"],))
+            return
     for st in old_steps:
         if st.get("node_id") == w["node_id"] and st.get("status") == "waiting":
-            st.update(status="success", output={"resumed_at": now()})
+            st.update(status="success", output={"resumed_at": now(), **({"decision": decision} if decision else {})})
     try:
         doc = get_workflow(w["workflow_id"])
-        result = run_flow(doc, None, resume=(w["node_id"], json.loads(w["value"])))
+        result = run_flow(doc, None, resume=(w["node_id"], resume_value), exec_id=ex["id"])
     except Exception as exc:
         doc, result = None, {"status": "failed", "output": None, "steps": [], "error": f"Could not resume: {exc}"}
     steps = old_steps + result["steps"]
@@ -3118,16 +3396,74 @@ def replay_execution(execution_id: str):
     try: doc = get_workflow(ex["workflow_id"])
     except HTTPException: raise HTTPException(404, "The workflow no longer exists")
     kept = [s for s in steps if s is not failed and s.get("status") in ("success", "skipped")]
-    try: result = run_flow(doc, None, resume=(failed["node_id"], value, True))
+    new_id = str(uuid.uuid4())
+    try: result = run_flow(doc, None, resume=(failed["node_id"], value, True), exec_id=new_id)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     all_steps = kept + result["steps"]
-    new_id = str(uuid.uuid4())
     with conn() as db:
         db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
                    (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay"))
         if result["status"] == "waiting": add_wait(db, new_id, doc["id"], result["wait"])
     if result["status"] == "failed": run_error_handler(doc, new_id, "replay", {**result, "steps": all_steps})
     return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, **{**result, "steps": all_steps}}
+
+
+DECISION_RE = re.compile(r"[a-z0-9_-]{1,30}")
+
+
+def deliver_response(exec_id: str, decision: str, body: Any) -> bool:
+    """Answer the Wait for Response a run is paused at. False when nothing is waiting (already answered, timed out or cancelled)."""
+    with conn() as db:
+        w = db.execute("SELECT * FROM waits WHERE execution_id=? AND kind='callback' AND status='pending' ORDER BY created_at DESC LIMIT 1", (exec_id,)).fetchone()
+        if not w or not db.execute("UPDATE waits SET status='running' WHERE id=? AND status='pending'", (w["id"],)).rowcount: return False  # claimed once, so a link works only once
+        ex = db.execute("SELECT * FROM executions WHERE id=?", (exec_id,)).fetchone()
+    if not ex:
+        with conn() as db: db.execute("UPDATE waits SET status='done' WHERE id=?", (w["id"],))
+        return False
+    finish_wait(w, ex, {"decision": decision, "body": body})
+    return True
+
+
+def answer_page(title: str, text: str, status: int = 200) -> HTMLResponse:
+    r = page(title, f"<h1>{html_lib.escape(title)}</h1><p>{html_lib.escape(text)}</p>")
+    r.status_code = status
+    return r
+
+
+@app.api_route("/api/resume/{token}", methods=["GET", "POST"])
+async def resume_by_link(token: str, request: Request, decision: str = "callback"):
+    """Public link for a run that is waiting for a response. The signed token proves the link came from FlowPilot; each link works once."""
+    exec_id = await run_in_threadpool(callback_exec_id, token)
+    if not exec_id: raise HTTPException(404, "Not found")
+    if not hook_allowed(token): raise HTTPException(429, "Too many requests")
+    decision = decision.strip().lower()
+    if not DECISION_RE.fullmatch(decision): raise HTTPException(400, "The decision uses letters, numbers, - and _ (up to 30 characters)")
+    body: Any = None
+    if request.method == "POST":
+        raw = await request.body()
+        if len(raw) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
+        if raw:
+            try: body = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError: body = raw.decode("utf-8", errors="replace")[:5000]
+    done = await run_in_threadpool(deliver_response, exec_id, decision, body)
+    if request.method == "GET":
+        return answer_page("Thank you" if done else "Nothing to answer", "Your answer was recorded." if done else "This request was already answered, has expired or was cancelled.", 200 if done else 409)
+    if not done: raise HTTPException(409, "This request is no longer waiting for a response")
+    return {"status": "resumed", "decision": decision}
+
+
+class RespondIn(BaseModel):
+    decision: str = Field(default="approve", max_length=30)
+    body: Any = None
+
+
+@app.post("/api/executions/{execution_id}/respond")
+def respond_to_run(execution_id: str, body: RespondIn):
+    """Answer a Wait for Response from the Executions page."""
+    decision = body.decision.strip().lower()
+    if not DECISION_RE.fullmatch(decision): raise HTTPException(400, "The decision uses letters, numbers, - and _ (up to 30 characters)")
+    if not deliver_response(execution_id, decision, body.body): raise HTTPException(409, "This run is not waiting for a response")
+    return {"id": execution_id, "decision": decision}
 
 
 @app.post("/api/executions/{execution_id}/cancel")
@@ -3277,7 +3613,9 @@ def activation_next_run(doc: dict, after: datetime | None = None) -> str | None:
     if len(starts) != 1: raise ValueError("A workflow needs exactly one trigger to be activated")
     node = starts[0]
     if node["type"] == "trigger": raise ValueError("Add a Schedule or Webhook trigger to activate this workflow")
-    if node["type"] == "webhook": return None
+    if node["type"] == "webhook":
+        hook_auth_settings(node.get("data", {}) or {})
+        return None
     if node["type"] == "email_in":
         inbox_credential(node.get("data", {}))
         return (( after or datetime.now(timezone.utc)) + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
@@ -3374,6 +3712,34 @@ FORM_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; b
 FORM_STYLE = ("body{font:16px system-ui,sans-serif;background:#f6f7f9;margin:0;padding:32px 16px;color:#1b1f27}main{max-width:520px;margin:0 auto;background:#fff;border:1px solid #e3e6ec;border-radius:14px;padding:28px}"
               "h1{margin:0 0 6px;font-size:22px}p{color:#5b6472}label{display:block;margin:16px 0 6px;font-weight:600}input,textarea{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #cbd1da;border-radius:8px;font:inherit}"
               "button{margin-top:20px;padding:11px 20px;border:0;border-radius:8px;background:#e9522a;color:#fff;font:inherit;font-weight:600;cursor:pointer}")
+
+
+def hook_auth_settings(data: dict) -> tuple[str, str, str]:
+    kind = str(data.get("auth_type") or "none")
+    if kind not in ("none", "header", "basic"): raise ValueError("Webhook authentication must be none, header or basic")
+    if kind == "none": return kind, "", ""
+    header = str(data.get("auth_header") or "X-Webhook-Token").strip()
+    if kind == "header" and (not HEADER_NAME_RE.fullmatch(header) or header.lower() in BLOCKED_HEADERS): raise ValueError(f"Invalid header name: {header!r}")
+    cred = str(data.get("auth_credential") or "").strip()
+    if not cred: raise ValueError("Choose a credential that holds the secret for webhook authentication")
+    return kind, header, cred
+
+
+def hook_denied(node: dict | None, headers: Any) -> bool:
+    """True when the webhook asks for authentication and the request does not supply it. Compares in constant time."""
+    data = (node or {}).get("data") or {}
+    try: kind, header, cred = hook_auth_settings(data)
+    except ValueError: return True  # a broken setting must never open the door
+    if kind == "none": return False
+    secret = load_secrets().get(cred)
+    if not secret: return True
+    if kind == "header": supplied = headers.get(header, "")
+    else:
+        auth = headers.get("authorization", "")
+        if not auth.lower().startswith("basic "): return True
+        try: supplied = base64.b64decode(auth[6:].strip(), validate=True).decode("utf-8")
+        except Exception: return True
+    return not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
 
 
 def form_fields(node: dict | None) -> list[dict]:
@@ -3479,6 +3845,8 @@ async def receive_webhook(token: str, request: Request):
     doc = await run_in_threadpool(lookup_hook, token)
     if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
+    if await run_in_threadpool(hook_denied, start_node(doc), request.headers):
+        raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="webhook"'} if str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "basic" else None)
     fields = form_fields(start_node(doc))
     if request.method == "GET" and fields: return render_form(doc, fields)
     ctype = request.headers.get("content-type", "")
@@ -3681,8 +4049,9 @@ def executions(request: Request, workflow_id: str | None = None):
         else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 1000").fetchall()
         if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
         rows = rows[:100]
-        resume = {w["execution_id"]: w["resume_at"] for w in db.execute("SELECT execution_id, resume_at FROM waits WHERE status='pending'").fetchall()}
-    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),"resume_at":resume.get(r["id"])} for r in rows]
+        waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
+    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
+             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None} for r in rows]
 
 
 def mount_ui(target, dist: Path) -> bool:
