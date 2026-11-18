@@ -20,7 +20,7 @@ const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
 const pageErrors = [];
 page.on('pageerror', e => pageErrors.push(e.message));
-page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_|status of 401/.test(m.text())) pageErrors.push(m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_|status of (400|401)/.test(m.text())) pageErrors.push(m.text()); });
 
 let passed = 0, failed = 0;
 const check = async (name, fn) => {
@@ -196,13 +196,109 @@ await check('text template and http templates load; http failure shows error', a
   await page.getByLabel('Template', { exact: false }).first().fill('x');
   await page.getByLabel('Back to overview').click();
   await page.getByTestId('template-fetch-todo').click();
-  await page.locator('.react-flow__node', { hasText: 'HTTP GET' }).click();
+  await page.locator('.react-flow__node', { hasText: 'HTTP Request' }).click();
   await page.getByLabel('Public HTTPS URL').fill('https://127.0.0.1/blocked');
   await page.getByRole('button', { name: /Run workflow/ }).click();
   await expectText(runPanel(), /Execution failed/);
   await expectText(runPanel().locator('pre'), /Local\/private|public/i);
   if ((await page.locator('.fp-node-badge.error').count()) !== 1) throw new Error('expected 1 error badge');
   await shot('05-failed-run');
+});
+
+const activeSwitch = () => page.getByRole('switch', { name: 'Workflow active' });
+const waitChecked = (want) => page.waitForFunction(w => document.querySelector('[aria-label="Workflow active"]')?.getAttribute('aria-checked') === String(w), want);
+const toast = () => page.locator('.toast');
+
+await check('dashboard marks manual workflows and disables their activate switch', async () => {
+  await page.getByRole('button', { name: /^Overview/ }).click();
+  const row = page.getByTestId('workflow-row').filter({ hasText: 'My first automation' }).first();
+  await expectText(row.locator('.trig-chip'), /Manual/);
+  if (!(await page.getByLabel('Activate My first automation', { exact: true }).isDisabled())) throw new Error('switch should be disabled');
+});
+
+await check('webhook: test run, activate, public call, history, rotate, deactivate', async () => {
+  await page.getByTestId('template-webhook-receiver').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  if (await activeSwitch().isDisabled()) throw new Error('webhook workflow should be activatable');
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /New message from Ada: Hello from a webhook/);
+
+  await page.locator('.react-flow__node', { hasText: 'Webhook Trigger' }).click();
+  const url = await page.getByTestId('webhook-url').innerText();
+  if (!/\/api\/hooks\/[\w-]{20,}$/.test(url)) throw new Error('unexpected webhook url: ' + url);
+  await shot('08-webhook-inspector');
+
+  const outsider = await browser.newContext(); // no cookies: simulates another service calling in
+  let res = await outsider.request.post(url, { data: { name: 'Grace', message: 'Hi there' } });
+  if (res.status() !== 404) throw new Error('inactive webhook should 404, got ' + res.status());
+
+  await activeSwitch().click();
+  await waitChecked(true);
+  res = await outsider.request.post(url, { data: { name: 'Grace', message: 'Hi there' } });
+  const body = await res.json();
+  if (res.status() !== 200 || body.status !== 'success') throw new Error('webhook call failed: ' + res.status());
+  if ('output' in body) throw new Error('webhook response must not leak output');
+
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  const row = page.getByTestId('history-row').first();
+  await expectText(row.locator('.trig-chip'), /Webhook/);
+  await row.locator('summary').click();
+  await expectText(row.locator('pre').first(), /New message from Grace: Hi there/);
+
+  await page.getByRole('button', { name: /^Workflow Studio/ }).click();
+  await page.locator('.react-flow__node', { hasText: 'Webhook Trigger' }).click();
+  page.once('dialog', d => d.accept());
+  await page.getByRole('button', { name: /Generate new URL/ }).click();
+  await page.waitForFunction(old => document.querySelector('[data-testid=webhook-url]')?.textContent !== old, url);
+  res = await outsider.request.post(url, { data: {} });
+  if (res.status() !== 404) throw new Error('old URL should stop working after rotation, got ' + res.status());
+
+  await activeSwitch().click();
+  await waitChecked(false);
+  const fresh = await page.getByTestId('webhook-url').innerText();
+  res = await outsider.request.post(fresh, { data: {} });
+  if (res.status() !== 404) throw new Error('deactivated webhook should 404, got ' + res.status());
+  await outsider.close();
+});
+
+await check('schedule: validation, activation and next run time', async () => {
+  await page.getByLabel('Back to overview').click();
+  await page.getByTestId('template-scheduled-check').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.locator('.react-flow__node', { hasText: 'Schedule Trigger' }).click();
+  await page.getByLabel('Repeat').selectOption('daily');
+  await page.getByLabel(/^Time/).waitFor();
+  await page.getByLabel('Repeat').selectOption('interval');
+  await page.getByLabel(/Minutes between runs/).fill('0');
+  await activeSwitch().click();
+  await expectText(toast(), /between 1 and 10080/);
+  if ((await activeSwitch().getAttribute('aria-checked')) !== 'false') throw new Error('should stay inactive');
+  await page.getByLabel(/Minutes between runs/).fill('5');
+  await activeSwitch().click();
+  await waitChecked(true);
+  await expectText(page.locator('.sub'), /Next run/);
+  await shot('09-schedule-active');
+  await page.getByLabel('Back to overview').click();
+  const row = page.getByTestId('workflow-row').filter({ hasText: 'Hourly API check' }).first();
+  await expectText(row.locator('.trig-chip'), /Schedule/);
+  await expectText(row.getByRole('switch'), /Active/);
+  await row.getByRole('switch').click();
+  await expectText(row.getByRole('switch'), /Off/);
+});
+
+await check('HTTP node: method, headers and body fields', async () => {
+  await page.getByTestId('template-post-api').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.locator('.react-flow__node', { hasText: 'HTTP Request' }).click();
+  const method = page.getByLabel('Method');
+  if ((await method.inputValue()) !== 'POST') throw new Error('template should use POST');
+  await page.getByLabel(/^Body/).waitFor();
+  if (!/X-Source/.test(await page.getByLabel(/^Headers/).inputValue())) throw new Error('headers missing');
+  await method.selectOption('GET');
+  if ((await page.getByLabel(/^Body/).count()) !== 0) throw new Error('body field should hide for GET');
+  await method.selectOption('DELETE');
+  if ((await page.getByLabel(/^Body/).count()) !== 0) throw new Error('body field should hide for DELETE');
+  await shot('10-http-node');
 });
 
 await check('executions page lists runs, filters and expands', async () => {

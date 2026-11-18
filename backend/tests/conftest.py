@@ -5,6 +5,7 @@ from pathlib import Path
 # Point the app at a throwaway database before it is imported.
 _tmp = tempfile.mkdtemp(prefix="flowpilot-test-")
 os.environ["FLOWPILOT_DB"] = str(Path(_tmp) / "test.db")
+os.environ["FLOWPILOT_SCHEDULER"] = "0"  # tests drive scheduler_tick() directly
 
 import pytest
 from fastapi.testclient import TestClient

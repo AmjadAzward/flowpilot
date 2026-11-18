@@ -4,7 +4,7 @@ import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
   LayoutDashboard, LogOut, Moon, Play, Plus, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
-import { blankEdges, blankNodes, catalog, defaultData, operators, templates, type FlowDoc, type Run } from './catalog';
+import { blankEdges, blankNodes, catalog, defaultData, operators, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
 import { MiniFlow } from './MiniFlow';
 import { Login } from './Login';
@@ -24,7 +24,8 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const formatTime = (date?: string) => (date ? new Date(date).toLocaleString() : '—');
+const triggerLabel: Record<TriggerKind, string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook' };
+const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
 const cleanNodes = (ns: Node[]) => ns.map(({ id, type, position, data }) => ({ id, type, position, data }));
@@ -89,6 +90,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
   const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
   const [showCatalog, setShowCatalog] = useState(() => window.innerWidth >= 1500);
   const [apiOnline, setApiOnline] = useState(true);
+  const [webhookToken, setWebhookToken] = useState('');
   const [savedSnap, setSavedSnap] = useState('');
   const toastTimer = useRef<number>();
   const flowRef = useRef<ReactFlowInstance | null>(null);
@@ -119,7 +121,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
 
   const loadDoc = (doc: FlowDoc) => {
     const ns = doc.nodes, es = doc.edges;
-    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description);
+    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
     setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, n: cleanNodes(ns), e: cleanEdges(es) }));
     setPage('editor');
@@ -137,8 +139,11 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
   const saveFlow = useCallback(async (silent = false) => {
     if (!selectedId) return false;
     try {
-      await api(`/api/workflows/${selectedId}`, { method: 'PUT', body: payload() });
-      setSavedSnap(snapshot); await refresh(); if (!silent) notify('Workflow saved'); return true;
+      const res = await api<{ deactivated_reason?: string | null }>(`/api/workflows/${selectedId}`, { method: 'PUT', body: payload() });
+      setSavedSnap(snapshot); await refresh();
+      if (res.deactivated_reason) notify(`Workflow deactivated: ${res.deactivated_reason}`, 'error');
+      else if (!silent) notify('Workflow saved');
+      return true;
     } catch (e) { notify((e as Error).message, 'error'); return false; }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, snapshot, flowName, description, nodes, edges, refresh, notify]);
@@ -151,6 +156,24 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
       setLastRun(result); await refresh();
       notify(result.status === 'success' ? 'Workflow completed' : 'Workflow failed: see the run panel', result.status === 'success' ? 'ok' : 'error');
     } catch (e) { notify((e as Error).message, 'error'); } finally { setBusy(false); }
+  };
+  const setActive = async (id: string, on: boolean) => {
+    try {
+      if (id === selectedId && dirty && !(await saveFlow(true))) return;
+      const res = await api<{ next_run_at: string | null }>(`/api/workflows/${id}/active`, { method: 'POST', body: JSON.stringify({ active: on }) });
+      await refresh();
+      notify(on ? (res.next_run_at ? `Active. Next run ${formatTime(res.next_run_at)}` : 'Active. The webhook is now listening') : 'Workflow deactivated');
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const webhookUrl = `${window.location.origin}/api/hooks/${webhookToken}`;
+  const copyWebhook = async () => {
+    try { await navigator.clipboard.writeText(webhookUrl); notify('Webhook URL copied'); }
+    catch { notify('Copy failed. Select the URL and copy it manually.', 'error'); }
+  };
+  const rotateWebhook = async () => {
+    if (!window.confirm('Generate a new URL? The old URL stops working immediately.')) return;
+    try { const r = await api<{ webhook_token: string }>(`/api/workflows/${selectedId}/webhook/rotate`, { method: 'POST' }); setWebhookToken(r.webhook_token); notify('New webhook URL generated'); }
+    catch (e) { notify((e as Error).message, 'error'); }
   };
   const runFromDashboard = async (id: string) => {
     try {
@@ -221,6 +244,13 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
     return Object.fromEntries(nodes.map(n => [n.id, done.get(n.id) ?? 'skipped'])) as Record<string, 'success' | 'error' | 'skipped'>;
   }, [lastRun, nodes]);
 
+  const startKind = useMemo(() => {
+    const starts = nodes.filter(n => startTypes.includes(n.type ?? ''));
+    return starts.length === 1 ? starts[0].type : 'manual';
+  }, [nodes]);
+  const canActivate = startKind === 'schedule' || startKind === 'webhook';
+  const meta = flows.find(f => f.id === selectedId);
+  const isActive = !!meta?.active;
   const lastRunOf = useMemo(() => {
     const m: Record<string, Run> = {};
     for (const r of runs) if (r.workflow_id && !m[r.workflow_id]) m[r.workflow_id] = r;
@@ -277,7 +307,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
             </div>
 
             <section className="stats">
-              <Stat label="Workflows" value={flows.length} hint="Total automations" icon={<Layers3 size={16} />} tone="violet" />
+              <Stat label="Workflows" value={flows.length} hint={`${flows.filter(f => f.active).length} active`} icon={<Layers3 size={16} />} tone="violet" />
               <Stat label="Executions" value={runs.length} hint="Stored locally" icon={<Activity size={16} />} tone="blue" />
               <Stat label="Succeeded" value={success} hint="Completed runs" icon={<CheckCircle2 size={16} />} tone="green" />
               <Stat label="Success rate" value={`${rate}%`} hint="Across all runs" icon={<TrendingUp size={16} />} tone="amber" />
@@ -291,7 +321,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                   <button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => void refresh()}><RefreshCcw size={15} /></button>
                 </div>
               </div>
-              {filtered.length > 0 && <div className="table-head"><span>Name</span><span>Last run</span><span>Updated</span><span className="th-actions">Actions</span></div>}
+              {filtered.length > 0 && <div className="table-head"><span>Name</span><span>Trigger</span><span>Status</span><span>Last run</span><span>Updated</span><span className="th-actions">Actions</span></div>}
               <div className="workflow-list">
                 {filtered.length ? filtered.map(f => {
                   const last = lastRunOf[f.id];
@@ -301,6 +331,10 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                         <span className="flow-tile"><Workflow size={17} /></span>
                         <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span></span>
                       </button>
+                      <span className={'trig-chip ' + (f.trigger ?? 'manual')}>{triggerLabel[f.trigger ?? 'manual']}</span>
+                      <button role="switch" aria-checked={!!f.active} aria-label={`Activate ${f.name}`} className={'switch-row compact ' + (f.active ? 'on' : '')}
+                        disabled={(f.trigger ?? 'manual') === 'manual'} title={(f.trigger ?? 'manual') === 'manual' ? 'Add a Schedule or Webhook trigger to activate' : f.active ? 'Click to deactivate' : 'Click to activate'}
+                        onClick={() => void setActive(f.id, !f.active)}><span className="switch"><span /></span>{f.active ? 'Active' : 'Off'}</button>
                       <span className={'run-chip ' + (last ? (last.status === 'success' ? 'ok' : 'fail') : 'none')}>{last ? (last.status === 'success' ? 'Succeeded' : 'Failed') : 'Never run'}</span>
                       <span className="muted">{formatTime(f.updated_at)}</span>
                       <span className="row-actions">
@@ -341,10 +375,13 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                 <button className="icon-button" aria-label="Back to overview" onClick={() => setPage('dashboard')}><ArrowLeft size={18} /></button>
                 <div>
                   <input className="workflow-title" value={flowName} onChange={e => setFlowName(e.target.value)} aria-label="Workflow title" />
-                  <span className="sub">{dirty ? <><span className="dot warn" />Unsaved changes</> : <><span className="dot on" />All changes saved</>}</span>
+                  <span className="sub">{dirty ? <><span className="dot warn" />Unsaved changes</> : <><span className="dot on" />All changes saved</>}{isActive && meta?.next_run_at && <> · Next run {formatTime(meta.next_run_at)}</>}</span>
                 </div>
               </div>
               <div className="editor-actions">
+                <button role="switch" aria-checked={isActive} aria-label="Workflow active" className={'switch-row ' + (isActive ? 'on' : '')} disabled={!canActivate || busy}
+                  title={canActivate ? 'Run automatically when this workflow is active' : 'Add a Schedule or Webhook trigger to activate'} onClick={() => void setActive(selectedId, !isActive)}>
+                  <span className="switch"><span /></span>{isActive ? 'Active' : 'Inactive'}</button>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy} title="Ctrl+S"><Save size={15} />Save</button>
@@ -405,7 +442,35 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                       </>
                     )}
                     {currentNode.type === 'delay' && <label>Seconds (0 to 5)<input type="number" min={0} max={5} step={0.5} value={String(currentNode.data.seconds ?? '1')} onChange={e => updateData('seconds', e.target.value)} /></label>}
-                    {currentNode.type === 'http' && <label>Public HTTPS URL<input value={String(currentNode.data.url || '')} onChange={e => updateData('url', e.target.value)} /><p className="hint">GET only. Private IPs and redirects are blocked.</p></label>}
+                    {currentNode.type === 'http' && (
+                      <>
+                        <label>Method<select value={String(currentNode.data.method || 'GET')} onChange={e => updateData('method', e.target.value)}>{['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => <option key={m}>{m}</option>)}</select></label>
+                        <label>Public HTTPS URL<input value={String(currentNode.data.url || '')} onChange={e => updateData('url', e.target.value)} /></label>
+                        <label>Headers (JSON object, optional)<textarea rows={3} spellCheck={false} placeholder={'{"Authorization": "Bearer ..."}'} value={String(currentNode.data.headers || '')} onChange={e => updateData('headers', e.target.value)} /></label>
+                        {['POST', 'PUT', 'PATCH'].includes(String(currentNode.data.method || 'GET')) && <label>Body (JSON or text)<textarea rows={5} spellCheck={false} placeholder={'{"name": "{{name}}"}'} value={String(currentNode.data.body || '')} onChange={e => updateData('body', e.target.value)} /></label>}
+                        <p className="hint">Use {'{{field}}'} in the URL, headers and body to insert incoming data. {'{{}}'} inserts all of it. Private addresses and redirects are blocked.</p>
+                      </>
+                    )}
+                    {currentNode.type === 'schedule' && (
+                      <>
+                        <label>Repeat<select value={String(currentNode.data.mode || 'interval')} onChange={e => updateData('mode', e.target.value)}><option value="interval">Every N minutes</option><option value="daily">Every day at a set time</option></select></label>
+                        {String(currentNode.data.mode) === 'daily'
+                          ? <label>Time (24-hour, this computer's time zone)<input type="time" value={String(currentNode.data.time || '09:00')} onChange={e => updateData('time', e.target.value)} /></label>
+                          : <label>Minutes between runs (1 to 10080)<input type="number" min={1} max={10080} value={String(currentNode.data.minutes ?? '15')} onChange={e => updateData('minutes', e.target.value)} /></label>}
+                        <p className="hint">Runs only while the FlowPilot API is running and this workflow is Active. Use Run workflow to test it with a sample event.</p>
+                      </>
+                    )}
+                    {currentNode.type === 'webhook' && (
+                      <>
+                        <div className="field"><span className="field-label">Webhook URL</span>
+                          <span className="url-box"><code data-testid="webhook-url">{webhookUrl}</code><button type="button" className="icon-button" aria-label="Copy webhook URL" onClick={() => void copyWebhook()}><Copy size={14} /></button></span>
+                        </div>
+                        <p className="hint">Send a POST or GET request to this URL. The URL is the secret, so anyone who has it can run this workflow. {isActive ? 'This workflow is active and listening.' : 'Activate the workflow for the URL to respond.'} It is reachable from this computer only unless you expose it yourself.</p>
+                        <button type="button" className="ghost" onClick={() => void rotateWebhook()}><RefreshCcw size={14} />Generate new URL</button>
+                        <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={String(currentNode.data.sample || '')} onChange={e => updateData('sample', e.target.value)} /></label>
+                        <p className="hint">Later nodes can read {'{{body.field}}'}, {'{{query.name}}'} and {'{{method}}'}.</p>
+                      </>
+                    )}
                     <button className="delete-node" onClick={deleteNode}><Trash2 size={14} />Delete node</button>
                   </div>
                 ) : (
@@ -456,7 +521,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
             <div className="panel history">
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
-                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
+                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
                   <div className="history-details"><strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
@@ -469,6 +534,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
             <div className="section-title"><div><div className="eyebrow">Environment</div><h1>Settings</h1><p>FlowPilot Community Edition, self-hosted on your computer.</p></div></div>
             <div className="settings-grid">
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span></div>
+              <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>
               <div className="panel settings-card"><Database size={22} /><h2>Local database</h2><p>SQLite file: backend/flowpilot.db</p><span>Data persists between restarts.</span></div>
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Privacy</h2><p>No analytics or tracking services.</p><span>Only configured HTTP nodes contact outside services.</span></div>
               <div className="panel settings-card"><Code2 size={22} /><h2>Developer API</h2><p>FastAPI docs at localhost:8000/docs</p><span>Designed for single-user local use, not public internet exposure.</span></div>

@@ -172,9 +172,9 @@ def test_http_node_blocks_unsafe_urls(client, url):
     assert res["status"] == "failed"
 
 
-def test_http_node_rejects_non_get(client):
-    res = run(client, [node("t", "trigger"), node("h", "http", url="https://example.com", method="POST")], [edge("t", "h")])
-    assert res["status"] == "failed" and "GET" in res["error"]
+def test_http_node_rejects_unsupported_method(client):
+    res = run(client, [node("t", "trigger"), node("h", "http", url="https://example.com", method="TRACE")], [edge("t", "h")])
+    assert res["status"] == "failed" and "Unsupported HTTP method" in res["error"]
 
 
 def test_executions_listed_filtered_and_cleared(client):

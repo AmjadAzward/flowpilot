@@ -98,8 +98,9 @@ def test_logout_invalidates_session(anon):
 
 def test_expired_session_rejected(anon):
     anon.post("/api/auth/login", json=OWNER)
-    with main.conn() as db:
-        db.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00+00:00'")
+    mine = main.token_hash(anon.cookies.get("fp_session"))
+    with main.conn() as db:  # expire only this test's own session, not the shared one
+        db.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00+00:00' WHERE token_hash=?", (mine,))
     assert anon.get("/api/workflows").status_code == 401
 
 

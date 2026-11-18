@@ -5,14 +5,17 @@ import hashlib
 import hmac
 import json
 import os
+import logging
 import secrets
+import threading
 import re
 import time
 import sqlite3
 import socket
 import ipaddress
 import uuid
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -21,14 +24,31 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 BASE = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("FLOWPILOT_DB", str(BASE / "flowpilot.db")))
 MAX_NODES = 60
 MAX_DELAY_SECONDS = 5.0
+START_TYPES = {"trigger", "schedule", "webhook"}
+SCHEDULER_ENABLED = os.getenv("FLOWPILOT_SCHEDULER", "1") != "0"
+SCHEDULER_TICK_SECONDS = 10
+WEBHOOK_MAX_BODY = 256 * 1024
+WEBHOOK_RATE_PER_MINUTE = 60
+log = logging.getLogger("flowpilot")
 
-app = FastAPI(title="FlowPilot API", version="0.2.0", description="Local visual automation engine")
+
+@asynccontextmanager
+async def lifespan(_app):
+    stop = threading.Event()
+    if SCHEDULER_ENABLED:
+        threading.Thread(target=scheduler_loop, args=(stop,), daemon=True, name="flowpilot-scheduler").start()
+    yield
+    stop.set()
+
+
+app = FastAPI(title="FlowPilot API", version="0.3.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -57,16 +77,33 @@ def sample_workflow():
         ]
     }
 
+def new_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def insert_workflow(db, wid: str, name: str, description: str, doc: dict, ts: str):
+    db.execute("INSERT INTO workflows (id,name,description,definition,created_at,updated_at,webhook_token) VALUES (?,?,?,?,?,?,?)",
+               (wid, name, description, json.dumps(doc), ts, ts, new_token()))
+
+
 def initialize():
     with conn() as db:
         db.execute("CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', definition TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS executions (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, output TEXT, steps TEXT, error TEXT)")
+        wf_cols = {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}
+        if "active" not in wf_cols: db.execute("ALTER TABLE workflows ADD COLUMN active INTEGER NOT NULL DEFAULT 0")
+        if "webhook_token" not in wf_cols: db.execute("ALTER TABLE workflows ADD COLUMN webhook_token TEXT")
+        if "next_run_at" not in wf_cols: db.execute("ALTER TABLE workflows ADD COLUMN next_run_at TEXT")
+        if "trigger_kind" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
+            db.execute("ALTER TABLE executions ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'")
+        for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
+            db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
         db.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
             obj = sample_workflow()
             ts = now()
-            db.execute("INSERT INTO workflows VALUES (?,?,?,?,?,?)", (obj["id"], obj["name"], obj["description"], json.dumps(obj), ts, ts))
+            insert_workflow(db, obj["id"], obj["name"], obj["description"], obj, ts)
 
 initialize()
 
@@ -82,7 +119,7 @@ def validate_flow(body: WorkflowIn):
     ids = [n.get("id") for n in body.nodes]
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
-    valid = {"trigger", "input", "transform", "condition", "output", "http", "note", "template", "delay"}
+    valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -91,8 +128,16 @@ def validate_flow(body: WorkflowIn):
 
 def workflow_row(row):
     result = json.loads(row["definition"])
-    result.update(id=row["id"], name=row["name"], description=row["description"], updated_at=row["updated_at"])
+    result.update(id=row["id"], name=row["name"], description=row["description"], updated_at=row["updated_at"],
+                  active=bool(row["active"]), webhook_token=row["webhook_token"], next_run_at=row["next_run_at"])
+    result["trigger"] = trigger_kind(result)
     return result
+
+
+def trigger_kind(doc: dict) -> str:
+    kinds = [n.get("type") for n in doc.get("nodes", []) if n.get("type") in START_TYPES]
+    if len(kinds) == 1 and kinds[0] in ("schedule", "webhook"): return kinds[0]
+    return "manual"
 
 # ---------------------------------------------------------------------------
 # Authentication: one owner account, PBKDF2 password hashing, server-side sessions
@@ -160,7 +205,7 @@ class LoginIn(BaseModel):
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path not in PUBLIC_PATHS and request.method != "OPTIONS":
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and not path.startswith("/api/hooks/") and request.method != "OPTIONS":
         if not session_username(request.cookies.get(COOKIE)):
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
     return await call_next(request)
@@ -214,12 +259,18 @@ def auth_logout(request: Request, response: Response):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.2.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.3.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows():
     with conn() as db:
-        return [{"id":r["id"], "name":r["name"], "description":r["description"], "updated_at":r["updated_at"]} for r in db.execute("SELECT * FROM workflows ORDER BY updated_at DESC")]
+        rows = db.execute("SELECT * FROM workflows ORDER BY updated_at DESC").fetchall()
+    out = []
+    for r in rows:
+        doc = json.loads(r["definition"])
+        out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"],
+                    "active": bool(r["active"]), "trigger": trigger_kind(doc), "next_run_at": r["next_run_at"]})
+    return out
 
 @app.get("/api/workflows/{workflow_id}")
 def get_workflow(workflow_id: str):
@@ -234,9 +285,8 @@ def create_workflow(body: WorkflowIn):
     workflow_id = str(uuid.uuid4())
     doc = body.model_dump()
     doc["id"] = workflow_id
-    timestamp = now()
     with conn() as db:
-        db.execute("INSERT INTO workflows VALUES (?,?,?,?,?,?)", (workflow_id,body.name,body.description,json.dumps(doc),timestamp,timestamp))
+        insert_workflow(db, workflow_id, body.name, body.description, doc, now())
     return {"id":workflow_id}
 
 @app.put("/api/workflows/{workflow_id}")
@@ -244,11 +294,17 @@ def update_workflow(workflow_id: str, body: WorkflowIn):
     validate_flow(body)
     doc = body.model_dump()
     doc["id"] = workflow_id
+    deactivated = None
     with conn() as db:
-        row = db.execute("SELECT id FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+        row = db.execute("SELECT active FROM workflows WHERE id=?", (workflow_id,)).fetchone()
         if not row: raise HTTPException(404, "Workflow not found")
-        db.execute("UPDATE workflows SET name=?,description=?,definition=?,updated_at=? WHERE id=?", (body.name,body.description,json.dumps(doc),now(),workflow_id))
-    return {"id":workflow_id, "saved":True}
+        active, next_run = bool(row["active"]), None
+        if active:
+            try: next_run = activation_next_run(doc)
+            except ValueError as exc: active, deactivated = False, str(exc)
+        db.execute("UPDATE workflows SET name=?,description=?,definition=?,updated_at=?,active=?,next_run_at=? WHERE id=?",
+                   (body.name, body.description, json.dumps(doc), now(), int(active), next_run, workflow_id))
+    return {"id": workflow_id, "saved": True, "active": active, "deactivated_reason": deactivated}
 
 @app.delete("/api/workflows/{workflow_id}", status_code=204)
 def delete_workflow(workflow_id: str):
@@ -262,11 +318,10 @@ def duplicate_workflow(workflow_id: str):
     source = get_workflow(workflow_id)
     new_id = str(uuid.uuid4())
     name = f"{source['name']} (copy)"[:120]
-    doc = {**source, "id": new_id, "name": name}
-    doc.pop("updated_at", None)
-    timestamp = now()
+    doc = {k: v for k, v in source.items() if k not in ("updated_at", "active", "webhook_token", "next_run_at", "trigger")}
+    doc.update(id=new_id, name=name)
     with conn() as db:
-        db.execute("INSERT INTO workflows VALUES (?,?,?,?,?,?)", (new_id, name, source["description"], json.dumps(doc), timestamp, timestamp))
+        insert_workflow(db, new_id, name, source["description"], doc, now())
     return {"id": new_id, "name": name}
 
 
@@ -333,11 +388,33 @@ def render_template(text: str, data: Any) -> str:
     return re.sub(r"\{\{(.*?)\}\}", repl, text)
 
 
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+BLOCKED_HEADERS = {"host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection"}
+
+
+def parse_headers(text: str) -> dict[str, str]:
+    """Parse the HTTP node's headers field: a JSON object of header names to values."""
+    if not text.strip(): return {}
+    raw = read_json(text)
+    if not isinstance(raw, dict): raise ValueError('Headers must be a JSON object, for example {"Authorization": "Bearer token"}')
+    if len(raw) > 20: raise ValueError("At most 20 headers are allowed")
+    out = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", name): raise ValueError(f"Invalid header name: {name!r}")
+        if name.lower() in BLOCKED_HEADERS: raise ValueError(f"Header not allowed: {name}")
+        if isinstance(value, (dict, list)) or value is None: raise ValueError(f"Header {name} must be text or a number")
+        text_value = str(value)
+        if len(text_value) > 2000 or "\r" in text_value or "\n" in text_value: raise ValueError(f"Invalid value for header {name}")
+        out[name] = text_value
+    return out
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
     d = node.get("data", {})
-    if typ in ("trigger", "note", "output"): return previous, previous, None
+    if typ in START_TYPES or typ in ("note", "output"): return previous, previous, None
     if typ == "input":
         value = read_json(d.get("json", "{}"))
         return value, value, None
@@ -359,11 +436,20 @@ def step_action(node: dict, previous: Any):
         return {"matched": matched, "value": previous}, previous, "true" if matched else "false"
     if typ == "http":
         method = str(d.get("method", "GET")).upper()
-        if method != "GET": raise ValueError("Starter release only supports GET HTTP actions")
-        url = safe_url(str(d.get("url", "")))
+        if method not in HTTP_METHODS: raise ValueError(f"Unsupported HTTP method: {method}")
+        url = safe_url(render_template(str(d.get("url", "")), previous))
+        headers = {k: render_template(v, previous) for k, v in parse_headers(str(d.get("headers", ""))).items()}
+        kwargs: dict[str, Any] = {}
+        body_text = render_template(str(d.get("body", "")), previous) if method in ("POST", "PUT", "PATCH") else ""
+        if body_text.strip():
+            if len(body_text) > 1_000_000: raise ValueError("Request body exceeds 1 MB")
+            try: kwargs["json"] = json.loads(body_text)
+            except ValueError:
+                kwargs["content"] = body_text.encode()
+                if not any(k.lower() == "content-type" for k in headers): headers["Content-Type"] = "text/plain; charset=utf-8"
         # Never follow redirects, so a public URL cannot bounce to an internal address.
         with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=False) as client:
-            response = client.get(url)
+            response = client.request(method, url, headers=headers, **kwargs)
             response.raise_for_status()
             if len(response.content) > 1_000_000: raise ValueError("HTTP response exceeds 1 MB")
             try: value = response.json()
@@ -372,7 +458,7 @@ def step_action(node: dict, previous: Any):
     raise ValueError(f"Unsupported node: {typ}")
 
 
-def run_flow(doc: dict):
+def run_flow(doc: dict, initial: Any = None):
     nodes = {n["id"]: n for n in doc["nodes"]}
     if not nodes: raise ValueError("Workflow has no nodes")
     incoming = {i: [] for i in nodes}
@@ -381,13 +467,13 @@ def run_flow(doc: dict):
         if e["source"] in nodes and e["target"] in nodes:
             incoming[e["target"]].append(e["source"])
             outgoing[e["source"]].append(e)
-    triggers = [nid for nid, n in nodes.items() if n["type"] == "trigger"]
-    if len(triggers) != 1: raise ValueError("Workflow must contain exactly one Manual Trigger")
-    if incoming[triggers[0]]: raise ValueError("Manual Trigger cannot have incoming connections")
+    triggers = [nid for nid, n in nodes.items() if n["type"] in START_TYPES]
+    if len(triggers) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
+    if incoming[triggers[0]]: raise ValueError("A trigger cannot have incoming connections")
     if any(len(incoming[n]) > 1 for n in nodes): raise ValueError("Engine supports only one incoming connection per node")
     visited, steps = set(), []
     final = {"value": None}
-    stack = [(triggers[0], None)]
+    stack = [(triggers[0], initial)]
     while stack:
         cursor, previous = stack.pop()
         if cursor in visited: raise ValueError("Cycles are not supported in this release")
@@ -408,16 +494,172 @@ def run_flow(doc: dict):
         for e in reversed(followed): stack.append((e["target"], passed))
     return {"status": "success", "output": final["value"], "steps": steps, "error": None}
 
-@app.post("/api/workflows/{workflow_id}/run")
-def run_workflow(workflow_id: str):
-    doc=get_workflow(workflow_id)
-    exec_id=str(uuid.uuid4())
-    started=now()
-    try: result=run_flow(doc)
-    except Exception as exc: result={"status":"failed", "output":None, "steps":[], "error":str(exc)}
+def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
+    """Run a workflow and store the execution. `initial` may be a callable so input errors are recorded as failed runs."""
+    exec_id, started = str(uuid.uuid4()), now()
+    try: result = run_flow(doc, initial() if callable(initial) else initial)
+    except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     with conn() as db:
-        db.execute("INSERT INTO executions VALUES (?,?,?,?,?,?,?,?)", (exec_id,workflow_id,result["status"],started,now(),json.dumps(result["output"]),json.dumps(result["steps"]),result["error"]))
-    return {"id":exec_id, "workflow_id":workflow_id, **result}
+        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (exec_id, doc["id"], result["status"], started, now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
+    return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
+
+
+def start_node(doc: dict) -> dict | None:
+    return next((n for n in doc["nodes"] if n.get("type") in START_TYPES), None)
+
+
+def webhook_payload(method: str, query: dict, body: Any, content_type: str = "") -> dict:
+    return {"method": method, "query": query, "body": body, "content_type": content_type}
+
+
+class RunIn(BaseModel):
+    input: Any = None
+
+
+@app.post("/api/workflows/{workflow_id}/run")
+def run_workflow(workflow_id: str, body: RunIn | None = None):
+    """Manual run. Schedule and webhook workflows are fed a test event so they can be tried before activating."""
+    doc = get_workflow(workflow_id)
+    node = start_node(doc)
+    override = body.input if body else None
+
+    def initial():
+        if override is not None: return override
+        data = (node or {}).get("data", {})
+        if node and node["type"] == "webhook":
+            sample = str(data.get("sample", "")).strip()
+            return webhook_payload("POST", {}, read_json(sample) if sample else None, "application/json")
+        if node and node["type"] == "schedule": return {"scheduled_at": now(), "manual": True}
+        return None
+    return execute_workflow(doc, "manual", initial)
+
+
+# ---------------------------------------------------------------------------
+# Activation, schedules and webhooks
+# ---------------------------------------------------------------------------
+def validate_schedule(data: dict) -> dict:
+    mode = str(data.get("mode", "interval"))
+    if mode == "interval":
+        try: minutes = int(float(data.get("minutes", 15)))
+        except (TypeError, ValueError): raise ValueError("Schedule interval must be a number of minutes")
+        if not 1 <= minutes <= 10080: raise ValueError("Schedule interval must be between 1 and 10080 minutes")
+        return {"mode": "interval", "minutes": minutes}
+    if mode == "daily":
+        m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(data.get("time", "09:00")).strip())
+        if not m: raise ValueError("Daily time must look like 09:30")
+        return {"mode": "daily", "hour": int(m.group(1)), "minute": int(m.group(2))}
+    raise ValueError(f"Unknown schedule mode: {mode}")
+
+
+def next_run_after(cfg: dict, after: datetime) -> datetime:
+    if cfg["mode"] == "interval": return after + timedelta(minutes=cfg["minutes"])
+    local = after.astimezone()  # daily times are in the computer's local time zone
+    candidate = local.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
+    if candidate <= local: candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def activation_next_run(doc: dict, after: datetime | None = None) -> str | None:
+    """Validate that a workflow can be active and return its first run time (None for webhooks)."""
+    starts = [n for n in doc["nodes"] if n.get("type") in START_TYPES]
+    if len(starts) != 1: raise ValueError("A workflow needs exactly one trigger to be activated")
+    node = starts[0]
+    if node["type"] == "trigger": raise ValueError("Add a Schedule or Webhook trigger to activate this workflow")
+    if node["type"] == "webhook": return None
+    cfg = validate_schedule(node.get("data", {}))
+    return next_run_after(cfg, after or datetime.now(timezone.utc)).isoformat()
+
+
+class ActiveIn(BaseModel):
+    active: bool
+
+
+@app.post("/api/workflows/{workflow_id}/active")
+def set_active(workflow_id: str, body: ActiveIn):
+    doc = get_workflow(workflow_id)
+    next_run = None
+    if body.active:
+        try: next_run = activation_next_run(doc)
+        except ValueError as exc: raise HTTPException(400, str(exc))
+    with conn() as db:
+        db.execute("UPDATE workflows SET active=?, next_run_at=? WHERE id=?", (int(body.active), next_run, workflow_id))
+    return {"id": workflow_id, "active": body.active, "next_run_at": next_run}
+
+
+@app.post("/api/workflows/{workflow_id}/webhook/rotate")
+def rotate_webhook(workflow_id: str):
+    get_workflow(workflow_id)
+    token = new_token()
+    with conn() as db:
+        db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (token, workflow_id))
+    return {"webhook_token": token}
+
+
+def scheduler_tick(at: datetime | None = None) -> int:
+    """Run every active scheduled workflow that is due. Returns how many were started."""
+    moment = at or datetime.now(timezone.utc)
+    with conn() as db:
+        due = db.execute("SELECT id FROM workflows WHERE active=1 AND next_run_at IS NOT NULL AND next_run_at <= ?", (moment.isoformat(),)).fetchall()
+    started = 0
+    for row in due:
+        try:
+            doc = get_workflow(row["id"])
+            node = start_node(doc)
+            if not node or node["type"] != "schedule":
+                with conn() as db: db.execute("UPDATE workflows SET active=0, next_run_at=NULL WHERE id=?", (row["id"],))
+                continue
+            # Advance first: if the server was off, a missed run happens once and then the normal rhythm resumes.
+            upcoming = next_run_after(validate_schedule(node.get("data", {})), moment).isoformat()
+            with conn() as db: db.execute("UPDATE workflows SET next_run_at=? WHERE id=?", (upcoming, row["id"]))
+            execute_workflow(doc, "schedule", {"scheduled_at": moment.isoformat(), "manual": False})
+            started += 1
+        except Exception:  # one broken workflow must never stop the scheduler
+            log.exception("Scheduled run failed for %s", row["id"])
+    return started
+
+
+def scheduler_loop(stop: threading.Event) -> None:
+    while not stop.wait(SCHEDULER_TICK_SECONDS):
+        try: scheduler_tick()
+        except Exception: log.exception("Scheduler tick failed")
+
+
+_hook_hits: dict[str, list[float]] = {}
+
+
+def hook_allowed(token: str) -> bool:
+    recent = [t for t in _hook_hits.get(token, []) if time.time() - t < 60]
+    if len(recent) >= WEBHOOK_RATE_PER_MINUTE:
+        _hook_hits[token] = recent
+        return False
+    recent.append(time.time())
+    _hook_hits[token] = recent
+    return True
+
+
+@app.api_route("/api/hooks/{token}", methods=["GET", "POST"])
+async def receive_webhook(token: str, request: Request):
+    """Public endpoint: the secret token in the URL is the credential. Only active webhook workflows respond."""
+    with conn() as db:
+        row = db.execute("SELECT * FROM workflows WHERE webhook_token=? AND active=1", (token,)).fetchone()
+    doc = workflow_row(row) if row else None
+    if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
+    if not hook_allowed(token): raise HTTPException(429, "Too many requests")
+    if int(request.headers.get("content-length") or 0) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
+    raw = await request.body()
+    if len(raw) > WEBHOOK_MAX_BODY: raise HTTPException(413, "Payload too large")
+    ctype = request.headers.get("content-type", "")
+    body: Any = None
+    if raw:
+        text = raw.decode("utf-8", errors="replace")
+        try: body = json.loads(text)
+        except ValueError: body = text
+    payload = webhook_payload(request.method, dict(request.query_params), body, ctype.split(";")[0].strip())
+    result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
+    code = 200 if result["status"] == "success" else 500
+    return JSONResponse({"status": result["status"], "execution_id": result["id"]}, status_code=code)
+
 
 @app.get("/api/executions")
 def executions(workflow_id: str | None = None):
@@ -425,4 +667,4 @@ def executions(workflow_id: str | None = None):
         if workflow_id:
             rows=db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT 100",(workflow_id,)).fetchall()
         else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 100").fetchall()
-    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null")} for r in rows]
+    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null")} for r in rows]

@@ -9,11 +9,12 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-65%20API%20%2B%2023%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-126%20API%20%2B%2027%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
+![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook-F43F5E?style=for-the-badge)
 ![Cost](https://img.shields.io/badge/cost-free-F59E0B?style=for-the-badge)
 
-**Design workflows visually. Branch on conditions. Call APIs. Inspect every run.**
+**Design workflows visually. Run them on a schedule or from a webhook. Branch on conditions. Call APIs. Inspect every run.**
 **No account, no cloud, no subscription.**
 
 </div>
@@ -32,6 +33,10 @@
     <td width="50%"><img src="docs/screenshots/05-failed-run.png" alt="Failed run"/><br/><sub><b>Failure inspection</b> with the failing node marked on the canvas</sub></td>
   </tr>
   <tr>
+    <td width="50%"><img src="docs/screenshots/08-webhook-inspector.png" alt="Webhook trigger"/><br/><sub><b>Webhook trigger</b> with a secret URL, a test payload and an Active switch</sub></td>
+    <td width="50%"><img src="docs/screenshots/10-http-node.png" alt="HTTP request node"/><br/><sub><b>HTTP Request</b> node: GET, POST, PUT, PATCH and DELETE with headers and a body</sub></td>
+  </tr>
+  <tr>
     <td width="50%"><img src="docs/screenshots/00-login.png" alt="Sign in screen"/><br/><sub><b>Sign in</b> screen protecting your workspace</sub></td>
     <td width="50%"><img src="docs/screenshots/06-executions.png" alt="Execution history"/><br/><sub><b>Execution history</b> with status filters and step details</sub></td>
   </tr>
@@ -45,15 +50,17 @@
 | :--- | :--- |
 | **Visual editor** | Drag, connect and configure nodes on a React Flow canvas with a minimap, zoom and a searchable node library |
 | **Real branching** | The Compare Value node has green *true* and red *false* outputs. Only the matching branch executes |
-| **Nine node types** | Manual Trigger, JSON Input, Extract Field, Text Template, Compare Value, Delay, HTTP GET, Pass Through, Result Output |
+| **Run on their own** | Schedule trigger (every N minutes or daily at a time) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
+| **Eleven node types** | Manual, Schedule and Webhook triggers, JSON Input, Extract Field, Text Template, Compare Value, Delay, HTTP Request, Pass Through, Result Output |
+| **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
-| **Templates** | Three ready-made workflows to start from: greeting, order triage (branching) and fetch-and-extract (HTTP) |
+| **Templates** | Six ready-made workflows: greeting, order triage (branching), fetch-and-extract, webhook receiver, hourly API check and send-data-to-an-API (POST) |
 | **Workflow management** | Create, rename, duplicate, delete, import and export as JSON, run directly from the dashboard |
 | **Execution history** | Every run stored with output and steps, filterable by status, with one-click clear |
 | **Editor comfort** | Unsaved-change indicator, Ctrl+S to save, light and dark themes, branded browser tab title and icon |
 | **Login** | Owner account created on first visit, salted PBKDF2 password hashing, 7-day sessions in an HttpOnly cookie, lockout after 5 failed attempts, every API route locked until you sign in |
-| **Safe by default** | HTTPS-only public destinations, private and metadata addresses blocked, redirects refused, 8 second timeout, 1 MB response cap |
+| **Safe by default** | HTTPS-only public destinations (checked again after placeholders are filled in), private and metadata addresses blocked, redirects refused, forbidden headers rejected, 8 second timeout, 1 MB request and response caps. Webhooks are rate limited and size limited |
 
 ---
 
@@ -105,6 +112,26 @@ Interactive API documentation is served at **http://127.0.0.1:8000/docs**.
 
 ---
 
+## <img src="https://img.shields.io/badge/-Schedules%20and%20webhooks-F43F5E?style=flat-square" alt="Triggers"/>
+
+A workflow starts from exactly one trigger. Use the **Active** switch (editor bar or dashboard row) to turn a Schedule or Webhook workflow on. Manual workflows cannot be activated.
+
+**Schedule trigger.** Choose *every N minutes* (1 to 10080) or *every day at a time* (24-hour, in this computer's time zone). The first run happens one interval after you activate it. If the API was off when a run was due, it runs once on the next start and then resumes its normal rhythm. The node receives `{{scheduled_at}}`.
+
+**Webhook trigger.** Click the node to see its URL, for example `http://127.0.0.1:5173/api/hooks/<secret>`. Once the workflow is Active, any `POST` or `GET` to that URL starts it:
+
+```bash
+curl -X POST "http://127.0.0.1:5173/api/hooks/<secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ada","message":"Hello"}'
+```
+
+Later nodes can read `{{body.name}}`, `{{query.x}}`, `{{method}}` and `{{content_type}}`. The call returns `{"status":"success","execution_id":"..."}` (HTTP 200), or HTTP 500 with `"status":"failed"` if the workflow failed. It never returns your workflow's data. Use **Generate new URL** in the node settings to replace a leaked URL. Unknown, inactive or wrong-type URLs all answer `404`.
+
+**Testing before you activate.** *Run workflow* works on any workflow. A webhook workflow runs with the node's *Test payload*; a schedule workflow runs with a sample event.
+
+---
+
 ## <img src="https://img.shields.io/badge/-Your%20first%20workflow-38BDF8?style=flat-square" alt="First workflow"/>
 
 1. On the **Overview** page choose the template **Order triage**.
@@ -130,19 +157,21 @@ flowchart LR
     classDef ext fill:#F59E0B,stroke:#b45309,color:#0a0f1c
 ```
 
-A workflow is plain JSON (`nodes` and `edges`). The engine starts at the single Manual Trigger and walks the graph. A Compare Value node follows only the edge whose `sourceHandle` matches its result (`true` or `false`); every other node passes its output to all of its outgoing edges.
+A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflow's single trigger and walks the graph. A small scheduler thread inside the API checks every 10 seconds for due schedules. A Compare Value node follows only the edge whose `sourceHandle` matches its result (`true` or `false`); every other node passes its output to all of its outgoing edges.
 
 ### Node reference
 
 | Node | Settings | Output |
 | :--- | :--- | :--- |
 | Manual Trigger | none | nothing (starts the run) |
+| Schedule Trigger | every N minutes, or daily at a time | `{scheduled_at, manual}` |
+| Webhook Trigger | test payload for manual runs | `{method, query, body, content_type}` |
 | JSON Input | JSON text | the parsed JSON |
 | Extract Field | dotted path such as `user.items.0.name` | the value at that path, or `null` |
 | Text Template | text with `{{path}}` placeholders | the rendered string |
 | Compare Value | path, operator, comparison value | `{matched, value}`; routes to *true* or *false* |
 | Delay | seconds, capped at 5 | the data it received, unchanged |
-| HTTP GET | public HTTPS URL | parsed JSON, or text if the response is not JSON |
+| HTTP Request | method, public HTTPS URL, headers (JSON), body | parsed JSON, or text if the response is not JSON |
 | Pass Through | none | the data it received, unchanged |
 | Result Output | none | the final result shown in the run panel |
 
@@ -150,7 +179,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the single 
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine and login tests** (65 tests, use a temporary database):
+**API, engine, login, trigger and HTTP tests** (126 tests, use a temporary database):
 
 ```powershell
 cd backend
@@ -158,7 +187,7 @@ cd backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-**Browser end-to-end tests** (23 checks driving a real Chrome or Edge, including account setup, sign in and sign out). These create and delete workflows, so start the API on a throwaway database first:
+**Browser end-to-end tests** (27 checks driving a real Chrome or Edge: account setup, sign in and out, activation, a webhook called from a separate session, schedules, HTTP node fields and more). These create and delete workflows, so start the API on a throwaway database first:
 
 ```powershell
 $env:FLOWPILOT_DB = "$env:TEMP\flowpilot-e2e.db"
@@ -209,9 +238,10 @@ flowpilot/
 ## <img src="https://img.shields.io/badge/-Limits%20to%20know-FB7185?style=flat-square" alt="Limits"/>
 
 - **Single user, local use.** There is one owner account and sessions run over plain HTTP on localhost. It is not hardened for the public internet: do not expose port 8000 or forward it on your router.
-- **Manual triggers only.** Scheduling, webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md), not implemented.
+- **Triggers need the API running.** Schedules and webhooks only work while the API window is open, and you should run a single API process (two would run each schedule twice). Cron expressions, signed webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md).
+- **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
 - **One incoming connection per node.** Branches cannot merge back together yet, and cycles are rejected. One node may fan out to several.
-- **HTTP node is GET only.** The URL checks are an MVP safeguard, not a hardened defence for untrusted multi-tenant use. Only run workflows you trust.
+- **HTTP checks are an MVP safeguard.** Public-HTTPS-only, private-address blocking and no redirects are not a hardened defence for untrusted multi-tenant use. Only run workflows you trust. There is no credential store yet, so API keys typed into headers are saved in the workflow.
 - **Run history can hold sensitive data.** Use sample data for now.
 - **Backups:** stop the API, then copy `backend/flowpilot.db`.
 

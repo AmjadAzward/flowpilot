@@ -19,10 +19,18 @@ This file describes planned functionality, **not current features**.
 - Owner login with hashed passwords, sessions, lockout and password reset script
 - 65 API tests and a 23-check browser end-to-end suite
 
+### v0.3
+- Schedule trigger (interval or daily) with a background scheduler and missed-run catch-up
+- Webhook trigger with secret URLs, rotation, rate and size limits
+- Active/inactive switch per workflow, trigger and next-run shown in the dashboard
+- HTTP Request node: GET, POST, PUT, PATCH, DELETE with headers, body and `{{placeholders}}`
+- Three more templates, execution history shows what triggered each run
+- 126 API tests and a 27-check browser suite
+
 ## Phase 2: True automation engine
 - Worker queue (Redis or database-backed)
-- Durable schedule/cron triggers
-- Secure signed webhook triggers and replay protection
+- Cron expressions, time zones per workflow and durable job queue for schedules
+- Signed webhook payloads and replay protection
 - Pause/resume, job retry rules, idempotency
 - Merge nodes (fan-in), subflows, loops and bounded parallel execution
 - Node-level error handling and execution versioning
