@@ -13,7 +13,7 @@ def _clean_limits(session_cookie):
 
 def test_status_is_public_and_reports_state(anon, session_cookie):
     body = anon.get("/api/auth/status").json()
-    assert body == {"setup_required": False, "authenticated": False, "username": None, "role": None}
+    assert body == {"setup_required": False, "authenticated": False, "username": None, "role": None, "projects": []}
 
 
 def test_status_when_signed_in(client):

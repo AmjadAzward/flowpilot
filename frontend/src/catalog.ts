@@ -1,17 +1,18 @@
 import type { Edge, Node } from '@xyflow/react';
 
-export type TriggerKind = 'manual' | 'schedule' | 'webhook';
-export type FlowDoc = { tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
+export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in';
+export type FlowDoc = { project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
   { type: 'trigger', label: 'Manual Trigger', desc: 'Start by clicking Run', category: 'Start', color: '#f59e0b', icon: 'Zap' },
   { type: 'schedule', label: 'Schedule Trigger', desc: 'Run on a timer', category: 'Start', color: '#eab308', icon: 'CalendarClock' },
   { type: 'webhook', label: 'Webhook Trigger', desc: 'Run when a URL is called', category: 'Start', color: '#f43f5e', icon: 'Webhook' },
+  { type: 'email_in', label: 'Email Trigger', desc: 'Run when new mail arrives', category: 'Start', color: '#0ea5e9', icon: 'MailOpen' },
   { type: 'input', label: 'JSON Input', desc: 'Provide structured data', category: 'Data', color: '#38bdf8', icon: 'Braces' },
   { type: 'transform', label: 'Extract Field', desc: 'Read a nested JSON path', category: 'Data', color: '#2dd4bf', icon: 'ListTree' },
   { type: 'template', label: 'Text Template', desc: 'Build text with {{placeholders}}', category: 'Data', color: '#a78bfa', icon: 'Type' },
@@ -19,6 +20,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'filter', label: 'Filter List', desc: 'Keep matching items', category: 'Data', color: '#84cc16', icon: 'Filter' },
   { type: 'csv', label: 'Parse CSV', desc: 'Turn CSV text into rows', category: 'Data', color: '#22c55e', icon: 'Table' },
   { type: 'loop', label: 'Loop Over Items', desc: 'Run steps once per list item', category: 'Logic', color: '#0ea5e9', icon: 'Repeat' },
+  { type: 'repeat', label: 'Repeat Until', desc: 'Repeat steps until a condition is met', category: 'Logic', color: '#6366f1', icon: 'RotateCw' },
   { type: 'merge', label: 'Merge', desc: 'Combine several branches', category: 'Logic', color: '#14b8a6', icon: 'GitMerge' },
   { type: 'subflow', label: 'Run Workflow', desc: 'Call another workflow', category: 'Logic', color: '#64748b', icon: 'Workflow' },
   { type: 'switch', label: 'Switch', desc: 'Route into up to 4 paths plus a default', category: 'Logic', color: '#ec4899', icon: 'Split' },
@@ -26,6 +28,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'fail', label: 'Stop and Fail', desc: 'End the run with an error message', category: 'Logic', color: '#ef4444', icon: 'OctagonX' },
   { type: 'condition', label: 'Compare Value', desc: 'Branch into true and false paths', category: 'Logic', color: '#f472b6', icon: 'GitBranch' },
   { type: 'delay', label: 'Delay', desc: 'Wait up to 5 seconds', category: 'Logic', color: '#fb923c', icon: 'Timer' },
+  { type: 'file', label: 'Files', desc: 'Read, write, list or delete files', category: 'Data', color: '#64748b', icon: 'FileText' },
   { type: 'sql', label: 'Database Query', desc: 'Run SQL on SQLite or Postgres', category: 'Data', color: '#0891b2', icon: 'Database' },
   { type: 'rss', label: 'Read RSS Feed', desc: 'Fetch items from an RSS or Atom feed', category: 'Network', color: '#f97316', icon: 'Rss' },
   { type: 'wait', label: 'Wait', desc: 'Pause for seconds, hours or days', category: 'Logic', color: '#f59e0b', icon: 'Hourglass' },
@@ -43,11 +46,11 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
-export const startTypes: string[] = ['trigger', 'schedule', 'webhook'];
+export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss'];
+export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
-export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail'];
+export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -85,6 +88,9 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'respond': return { status: '200', body: '{"ok": true}' };
     case 'sticky': return { text: 'Write a note here' };
     case 'ai': return { credential: '', prompt: 'Summarise this in one sentence: {{}}', system: '', temperature: '0.2', json_output: 'false' };
+    case 'email_in': return { credential: '', minutes: '5', from_filter: '', subject_filter: '' };
+    case 'repeat': return { path: 'status', op: 'equals', equals: 'done', max: '5', pause: '1', fail_if_not_met: 'false' };
+    case 'file': return { operation: 'read', path: 'notes.txt', as: 'text', content: '', encoding: 'text', mode: 'overwrite' };
     case 'fail': return { message: 'Something went wrong with {{name}}' };
     case 'subflow': return { workflow_id: '' };
     case 'notify': return { service: 'slack', url: '{{cred.SLACK_URL}}', message: 'Hello from FlowPilot' };

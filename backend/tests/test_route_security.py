@@ -67,6 +67,8 @@ def test_role_matrix(clients, method, path):
     write = method not in ("GET", "HEAD")
     if path.startswith(OWNER_ONLY_PREFIXES):
         for role in ("viewer", "editor", "admin"): assert status(role) == 403, (role, method, path)
+    elif write and path.startswith("/api/projects"):
+        for role in ("viewer", "editor", "admin"): assert status(role) == 403, (role, method, path)
     elif path == "/api/auth/password":
         for role in ("viewer", "editor", "admin"): assert status(role) != 403, (role, method, path)
     elif write and path.startswith(ADMIN_WRITE_PREFIXES):

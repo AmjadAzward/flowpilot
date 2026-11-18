@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { KeyRound, Plus, Trash2 } from 'lucide-react';
 import { request, roleHelp, type Role } from './api';
+import { ProjectsCard } from './ProjectsCard';
 
 type UserRow = { id: string; username: string; role: Role; created_at: string };
 type Notify = (msg: string, kind?: 'ok' | 'error') => void;
 
 const when = (d: string) => new Date(d).toLocaleDateString();
 
-export function UsersPage({ notify, me }: { notify: Notify; me: string }) {
+export function UsersPage({ notify, me, onProjectsChanged }: { notify: Notify; me: string; onProjectsChanged: () => void }) {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
@@ -44,7 +45,7 @@ export function UsersPage({ notify, me }: { notify: Notify; me: string }) {
   return (
     <div className="content">
       <div className="page-head">
-        <div><h1>Users</h1><p>Give teammates their own sign-in. Everyone shares the same workflows, with a role that limits what they can change.</p></div>
+        <div><h1>Users</h1><p>Give teammates their own sign-in. A role limits what they can change, and projects limit which workflows they can see.</p></div>
       </div>
       <section className="card">
         <div className="card-head"><div className="seg-title"><h2>Add a user</h2></div></div>
@@ -78,6 +79,7 @@ export function UsersPage({ notify, me }: { notify: Notify; me: string }) {
           </div>
         ))}
       </section>
+      <ProjectsCard users={users} notify={notify} onChanged={onProjectsChanged} />
       <section className="panel help-panel">
         <h2>What each role can do</h2>
         <ul>{(['owner', 'admin', 'editor', 'viewer'] as Role[]).map(r => <li key={r}><b>{r}:</b> {roleHelp[r]}</li>)}</ul>

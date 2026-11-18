@@ -30,7 +30,7 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const triggerLabel: Record<TriggerKind | 'error', string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', error: 'On error' };
+const triggerLabel: Record<TriggerKind | 'error', string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
@@ -42,15 +42,15 @@ function readTheme(): Theme {
   return 'light';
 }
 
-type AuthState = { phase: 'loading' | 'login' | 'setup' | 'ready' | 'offline'; username: string; role: string };
+type AuthState = { phase: 'loading' | 'login' | 'setup' | 'ready' | 'offline'; username: string; role: string; projects?: { id: string; name: string }[] };
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ phase: 'loading', username: '', role: '' });
   const check = useCallback(async () => {
     try {
       const res = await fetch('/api/auth/status');
-      const st = (await res.json()) as { setup_required: boolean; authenticated: boolean; username: string | null; role: string | null };
-      setAuth(st.authenticated ? { phase: 'ready', username: st.username ?? '', role: st.role ?? 'viewer' } : { phase: st.setup_required ? 'setup' : 'login', username: '', role: '' });
+      const st = (await res.json()) as { setup_required: boolean; authenticated: boolean; username: string | null; role: string | null; projects?: { id: string; name: string }[] };
+      setAuth(st.authenticated ? { phase: 'ready', username: st.username ?? '', role: st.role ?? 'viewer', projects: st.projects ?? [] } : { phase: st.setup_required ? 'setup' : 'login', username: '', role: '' });
     } catch { setAuth({ phase: 'offline', username: '', role: '' }); }
   }, []);
   useEffect(() => { void check(); }, [check]);
@@ -74,10 +74,12 @@ export default function App() {
     <div className="splash"><div className="offline-card"><h1>Cannot reach the FlowPilot API</h1><p>Make sure the backend is running on port 8000, then try again.</p><button className="primary" onClick={() => { setAuth({ phase: 'loading', username: '', role: '' }); void check(); }}>Retry</button></div></div>
   );
   if (auth.phase === 'login' || auth.phase === 'setup') return <Login mode={auth.phase} onDone={(username, role) => setAuth({ phase: 'ready', username, role })} />;
-  return <Workspace username={auth.username} role={auth.role} onSignOut={() => void signOut()} />;
+  return <Workspace username={auth.username} role={auth.role} projects={auth.projects ?? []} onSignOut={() => void signOut()} />;
 }
 
-function Workspace({ username, role, onSignOut }: { username: string; role: string; onSignOut: () => void }) {
+function Workspace({ username, role, projects, onSignOut }: { username: string; role: string; projects: { id: string; name: string }[]; onSignOut: () => void }) {
+  const [projectList, setProjectList] = useState(projects);
+  const [newProject, setNewProject] = useState('');
   const [page, setPage] = useState<Page>('dashboard');
   const [showHistory, setShowHistory] = useState(false);
   const canEdit = role !== 'viewer';
@@ -149,7 +151,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
   };
   const createFlow = async (name = 'Untitled workflow', desc = 'Build something great.', ns: Node[] = blankNodes, es: Edge[] = blankEdges) => {
     try {
-      const doc = await api<{ id: string }>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, description: desc, nodes: ns, edges: es }) });
+      const doc = await api<{ id: string }>(`/api/workflows${newProject ? `?project_id=${encodeURIComponent(newProject)}` : ''}`, { method: 'POST', body: JSON.stringify({ name, description: desc, nodes: ns, edges: es }) });
       await refresh(); await openFlow(doc.id); notify('Workflow created');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
@@ -347,6 +349,14 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
   });
 
   // ---- credentials ------------------------------------------------------------------------------
+  const refreshProjects = useCallback(async () => {
+    try { setProjectList(await api<{ id: string; name: string }[]>('/api/projects')); } catch { /* keep the list */ }
+  }, []);
+  useEffect(() => { void refreshProjects(); }, [refreshProjects]);
+  const assignProject = async (projectId: string) => {
+    try { await api(`/api/projects/assign/${selectedId}`, { method: 'PUT', body: JSON.stringify({ project_id: projectId || null }) }); await refresh(); notify(projectId ? 'Moved to the project' : 'Removed from its project'); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
   const cancelWait = async (id: string) => {
     try { await api(`/api/executions/${id}/cancel`, { method: 'POST' }); await refresh(); notify('Run cancelled'); }
     catch (e) { notify((e as Error).message, 'error'); }
@@ -392,7 +402,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
     const starts = nodes.filter(n => startTypes.includes(n.type ?? ''));
     return starts.length === 1 ? starts[0].type : 'manual';
   }, [nodes]);
-  const canActivate = startKind === 'schedule' || startKind === 'webhook';
+  const canActivate = startKind === 'schedule' || startKind === 'webhook' || startKind === 'email_in';
   const meta = flows.find(f => f.id === selectedId);
   const isActive = !!meta?.active;
   const lastRunOf = useMemo(() => {
@@ -427,7 +437,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.7</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.8</span>
         </div>
       </aside>
 
@@ -450,6 +460,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
               <div><h1>Workflows</h1><p>Build, run and monitor your automations. Everything stays on this computer.</p></div>
               <div className="page-actions">
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
+                {canEdit && projectList.length > 0 && <label className="project-pick">In project<select data-testid="new-project" value={newProject} onChange={e => setNewProject(e.target.value)}><option value="">None (visible to everyone)</option>{projectList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
                 <button className="primary" disabled={!canEdit} onClick={() => void createFlow()}><Plus size={16} />Create workflow</button>
               </div>
             </div>
@@ -478,7 +489,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                     <div key={f.id} className="workflow-row" data-testid="workflow-row">
                       <button className="flow-meta" onClick={() => void openFlow(f.id)}>
                         <span className="flow-tile"><Workflow size={17} /></span>
-                        <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span>{!!f.tags?.length && <span className="tag-row">{f.tags.map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
+                        <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span>{(!!f.tags?.length || !!f.project_name) && <span className="tag-row">{f.project_name && <em className="tag-mini project" data-testid="project-chip">{f.project_name}</em>}{(f.tags ?? []).map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
                       </button>
                       <span className={'trig-chip ' + (f.trigger ?? 'manual')}>{triggerLabel[f.trigger ?? 'manual']}</span>
                       <button role="switch" aria-checked={!!f.active} aria-label={`Activate ${f.name}`} className={'switch-row compact ' + (f.active ? 'on' : '')}
@@ -524,6 +535,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
                 <button className="icon-button" aria-label="Back to overview" onClick={() => setPage('dashboard')}><ArrowLeft size={18} /></button>
                 <div>
                   <input className="workflow-title" value={flowName} onChange={e => setFlowName(e.target.value)} aria-label="Workflow title" />
+                  {isOwner && projectList.length > 0 && <select className="project-select" aria-label="Workflow project" value={meta?.project_id ?? ''} onChange={e => void assignProject(e.target.value)}><option value="">No project</option>{projectList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
                   <input className="tags-input" value={tagsText} onChange={e => setTagsText(e.target.value)} aria-label="Workflow tags" placeholder="Add tags, separated by commas" maxLength={200} />
                   <span className="sub">{dirty ? <><span className="dot warn" />Unsaved changes</> : <><span className="dot on" />All changes saved</>}{isActive && meta?.next_run_at && <> · Next run {formatTime(meta.next_run_at)}</>}</span>
                 </div>
@@ -700,7 +712,7 @@ function Workspace({ username, role, onSignOut }: { username: string; role: stri
           </div>
         )}
 
-        {page === 'users' && isOwner && <UsersPage notify={notify} me={username} />}
+        {page === 'users' && isOwner && <UsersPage notify={notify} me={username} onProjectsChanged={() => void refreshProjects()} />}
 
         {page === 'settings' && (
           <div className="content">

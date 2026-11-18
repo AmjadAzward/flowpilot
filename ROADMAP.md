@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.8
+- Parallel execution of branches that are ready together
+- Repeat Until, Files and Email (IMAP) trigger
+- Per-user projects with visibility enforced on every route
+- 527 API tests and a 47-check browser suite
+
 ### v0.7
 - AI Prompt node for any OpenAI-compatible endpoint (Ollama and LM Studio run free locally)
 - Public forms on webhooks, sticky notes, workflow tags with filtering

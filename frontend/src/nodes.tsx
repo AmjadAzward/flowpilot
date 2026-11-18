@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Bot, MailCheck, Reply, StickyNote, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Bot, FileText, MailCheck, MailOpen, RotateCw, Reply, StickyNote, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote, FileText, MailOpen, RotateCw };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -29,7 +29,7 @@ export function WorkflowNode({ id, data, selected, type }: NodeProps) {
           {state === 'success' ? <Check size={11} /> : state === 'error' ? <X size={11} /> : <Minus size={11} />}
         </span>
       )}
-      {type === 'loop' ? (
+      {type === 'loop' || type === 'repeat' ? (
         <>
           <Handle type="source" position={Position.Right} id="each" className="handle-each" style={{ top: '30%' }} />
           <Handle type="source" position={Position.Right} id="done" className="handle-done" style={{ top: '70%' }} />
@@ -73,6 +73,9 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'telegram': return clip(s('text'));
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
     case 'respond': return `reply ${s('status') || '200'}`;
+    case 'email_in': return s('credential') ? `every ${s('minutes') || '5'} min` : 'choose an inbox';
+    case 'repeat': return `until ${s('path') || 'value'} ${s('op') || 'equals'} ${s('equals')}`.trim().slice(0, 34);
+    case 'file': return `${s('operation') || 'read'} ${s('path')}`.trim().slice(0, 34);
     case 'ai': return s('prompt') ? clip(s('prompt')) : 'write a prompt';
     case 'switch': return s('path') ? clip(`by ${s('path')}`) : 'choose a field';
     case 'code': return 'Python snippet';

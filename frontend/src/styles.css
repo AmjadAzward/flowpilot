@@ -425,3 +425,13 @@ button:disabled { cursor: not-allowed; }
 .retention-form label { display: grid; gap: 4px; font-size: 13px; }
 .backup-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
 .backup-actions a.ghost { text-decoration: none; }
+
+.project-pick { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.project-pick select, .project-select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 13px; }
+.project-select { margin: 2px 0; max-width: 220px; }
+.tag-mini.project { background: var(--accent-soft, rgba(233, 82, 42, .12)); color: var(--accent); border-color: transparent; }
+.project-row { padding: 14px 20px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+.project-head { display: flex; align-items: center; gap: 12px; }
+.project-head .icon-button { margin-left: auto; }
+.member-list { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.member { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }

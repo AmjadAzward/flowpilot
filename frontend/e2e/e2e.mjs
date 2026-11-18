@@ -700,6 +700,69 @@ await check('a webhook with form fields serves a public form that runs the workf
   await expectText(page.locator('.history-details').first(), /From ada@example.com: Hello from a visitor/);
 });
 
+await check('Repeat Until, Files, the HTTP file download and the Email trigger are available', async () => {
+  await goOverview();
+  await page.getByTestId('template-fetch-todo').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-email_in').waitFor();
+  await page.getByTestId('add-repeat').click();
+  await page.getByLabel(/^At most/).fill('3');
+  await page.getByLabel(/^If it never succeeds/).selectOption('true');
+  await page.getByTestId('add-file').click();
+  await page.getByLabel('Action').selectOption('write');
+  await page.getByLabel(/^Content is/).waitFor();
+  await node('HTTP Request').click();
+  await page.getByLabel(/^Save response as a file/).fill('downloads/todo.json');
+  await shot('25-repeat-file');
+});
+
+await check('projects limit what a member can see', async () => {
+  await page.getByRole('button', { name: /^Users/ }).click();
+  await page.getByTestId('user-name').fill('pat-editor');
+  await page.getByTestId('user-password').fill('editor-password-1');
+  await page.getByTestId('user-role').selectOption('editor');
+  await page.getByTestId('user-add').click();
+  await expectText(page.getByTestId('user-row').last(), /pat-editor/);
+  for (const name of ['Alpha', 'Beta']) {
+    await page.getByTestId('project-name').fill(name);
+    await page.getByTestId('project-add').click();
+    await expectText(page.getByTestId('project-row').last(), new RegExp(name));
+  }
+  await page.getByLabel('pat-editor in Alpha').click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="pat-editor in Alpha"]')?.checked === true);
+  await shot('26-projects');
+  const ids = await page.evaluate(async () => {
+    const j = async (u, o) => (await fetch(u, { headers: { 'Content-Type': 'application/json' }, ...o })).json();
+    const projects = await j('/api/projects');
+    const pid = n => projects.find(p => p.name === n).id;
+    const mk = async (name, project) => {
+      const body = { name, description: '', nodes: [{ id: 't', type: 'trigger', position: { x: 0, y: 0 }, data: { label: 'Manual Trigger' } }], edges: [] };
+      const created = await j('/api/workflows', { method: 'POST', body: JSON.stringify(body) });
+      await j(`/api/projects/assign/${created.id}`, { method: 'PUT', body: JSON.stringify({ project_id: pid(project) }) });
+      return created.id;
+    };
+    return { alpha: await mk('Alpha flow', 'Alpha'), beta: await mk('Beta flow', 'Beta') };
+  });
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const v = await ctx.newPage();
+  try {
+    await v.goto(BASE);
+    await v.getByLabel('Username').fill('pat-editor');
+    await v.getByLabel('Password', { exact: true }).fill('editor-password-1');
+    await v.getByRole('button', { name: /^Sign in/ }).click();
+    await v.getByTestId('workflow-row').first().waitFor();
+    const text = await v.locator('.workflow-list').innerText();
+    if (!/Alpha flow/.test(text)) throw new Error('the member should see the Alpha workflow');
+    if (/Beta flow/.test(text)) throw new Error('the member must not see the Beta workflow');
+    await v.getByTestId('project-chip').first().waitFor();
+    const code = await v.evaluate(async id => (await fetch('/api/workflows/' + id)).status, ids.beta);
+    if (code !== 404) throw new Error('a direct request for another project should be 404, got ' + code);
+    if ((await v.getByTestId('new-project').count()) !== 1) throw new Error('members should be able to choose their project when creating');
+    if (SHOTS) await v.screenshot({ path: `${SHOTS}/27-member-view.png` });
+  } finally { await ctx.close(); }
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();

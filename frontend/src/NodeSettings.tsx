@@ -204,6 +204,44 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">When this workflow is called through its webhook, the caller receives this reply instead of the default status. Use {'{{body.field}}'} to include data. Needs a Webhook trigger and an active workflow.</span>
         </>
       );
+    case 'email_in':
+      return (
+        <>
+          {credSelect('credential', 'IMAP credential')}
+          <label>Check every (minutes, 1 to 1440)<input type="number" min={1} max={1440} value={v('minutes', '5')} onChange={text('minutes')} /></label>
+          <label>Only from (contains, optional)<input value={v('from_filter')} onChange={text('from_filter')} placeholder="billing@" /></label>
+          <label>Subject contains (optional)<input value={v('subject_filter')} onChange={text('subject_filter')} placeholder="Invoice" /></label>
+          <span className="hint">Runs the workflow once for each new unread message (up to 10 per check) and marks it read. Later nodes read {'{{subject}}'}, {'{{from}}'}, {'{{text}}'}, {'{{date}}'} and {'{{attachments}}'}. Credential format: imaps://user:password@imap.example.com:993 (URL-encode special characters; Gmail needs an app password). Activate the workflow to start checking. Messages that fail are not retried, but the failed run keeps the message.</span>
+        </>
+      );
+    case 'repeat':
+      return (
+        <>
+          <label>Stop when this field<input value={v('path')} onChange={text('path')} placeholder="status (empty tests the whole value)" /></label>
+          <label>Is<select value={v('op', 'equals')} onChange={text('op')}>{operators.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
+          {!['exists', 'not_exists'].includes(v('op', 'equals')) && <label>Compare to<input value={v('equals')} onChange={text('equals')} /></label>}
+          <label>At most (1 to 20 attempts)<input type="number" min={1} max={20} value={v('max', '5')} onChange={text('max')} /></label>
+          <label>Pause between attempts (seconds, up to 3)<input type="number" min={0} max={3} step={0.5} value={v('pause', '1')} onChange={text('pause')} /></label>
+          <label>If it never succeeds<select value={v('fail_if_not_met', 'false')} onChange={text('fail_if_not_met')}><option value="false">Continue with the last result</option><option value="true">Fail the workflow</option></select></label>
+          <span className="hint">Connect the <b>each</b> handle to the steps to repeat. Each attempt receives the previous attempt's result. When the condition is met (or the limit is reached) the <b>done</b> handle continues with the last result. Use it to poll an API until a job finishes.</span>
+        </>
+      );
+    case 'file': {
+      const op = v('operation', 'read');
+      return (
+        <>
+          <label>Action<select value={op} onChange={text('operation')}><option value="read">Read a file</option><option value="write">Write a file</option><option value="list">List files</option><option value="delete">Delete a file</option></select></label>
+          {op !== 'list' && <label>Path<input value={v('path')} onChange={text('path')} placeholder="reports/{{name}}.txt" /></label>}
+          {op === 'read' && <label>Read as<select value={v('as', 'text')} onChange={text('as')}><option value="text">Text</option><option value="base64">Base64 (binary files)</option></select></label>}
+          {op === 'write' && <>
+            <label>Content<textarea rows={4} spellCheck={false} value={v('content')} onChange={text('content')} /></label>
+            <label>Content is<select value={v('encoding', 'text')} onChange={text('encoding')}><option value="text">Text</option><option value="base64">Base64 (binary)</option></select></label>
+            <label>If the file exists<select value={v('mode', 'overwrite')} onChange={text('mode')}><option value="overwrite">Replace it</option><option value="append">Add to the end</option></select></label>
+          </>}
+          <span className="hint">Files live in <b>backend/data/files</b> and cannot leave that folder. Up to 5 MB each. Pair Read (base64) with an HTTP upload, or use the HTTP node's "Save response as file" to download.</span>
+        </>
+      );
+    }
     case 'sticky':
       return <label>Note<textarea rows={6} value={v('text')} onChange={text('text')} /><span className="hint">A note for you and your team. It is not connected to anything and never runs.</span></label>;
     case 'ai':
@@ -264,6 +302,7 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           {auth === 'oauth2' && connSelect('auth_credential', 'Connected account')}
           {auth !== 'none' && auth !== 'oauth2' && credSelect('auth_credential', 'Credential')}
           {auth === 'header' && <label>Header name<input value={v('auth_header')} onChange={text('auth_header')} placeholder="X-Api-Key" /></label>}
+          {method === 'GET' && <label>Save response as a file (optional)<input value={v('save_as')} onChange={text('save_as')} placeholder="downloads/{{name}}.pdf" /><span className="hint">Saves the raw response (up to 5 MB) to backend/data/files and returns its path instead of the content.</span></label>}
           <label>Headers (JSON object, optional)<textarea rows={3} spellCheck={false} placeholder={'{"Accept": "application/json"}'} value={v('headers')} onChange={text('headers')} /></label>
           {['POST', 'PUT', 'PATCH'].includes(method) && <label>Body (JSON or text)<textarea rows={5} spellCheck={false} placeholder={'{"name": "{{name}}"}'} value={v('body')} onChange={text('body')} /></label>}
           <span className="hint">Use {'{{field}}'} in the URL, headers and body to insert incoming data, {'{{}}'} for all of it, and {'{{cred.NAME}}'} for a saved credential. Private addresses and redirects are blocked.</span>

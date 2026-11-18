@@ -6,6 +6,8 @@ import copy
 import csv
 import hashlib
 import hmac
+import imaplib
+import mimetypes
 import html as html_lib
 import json
 import os
@@ -25,10 +27,12 @@ import tempfile
 import ssl
 import uuid
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from email import message_from_bytes, policy as email_policy
 from email.message import EmailMessage
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
@@ -45,7 +49,7 @@ BASE = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("FLOWPILOT_DB", str(BASE / "flowpilot.db")))
 MAX_NODES = 60
 MAX_DELAY_SECONDS = 5.0
-START_TYPES = {"trigger", "schedule", "webhook"}
+START_TYPES = {"trigger", "schedule", "webhook", "email_in"}
 SCHEDULER_ENABLED = os.getenv("FLOWPILOT_SCHEDULER", "1") != "0"
 SCHEDULER_TICK_SECONDS = 10
 WEBHOOK_MAX_BODY = 256 * 1024
@@ -63,7 +67,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.7.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.8.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -96,9 +100,9 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-def insert_workflow(db, wid: str, name: str, description: str, doc: dict, ts: str):
-    db.execute("INSERT INTO workflows (id,name,description,definition,created_at,updated_at,webhook_token) VALUES (?,?,?,?,?,?,?)",
-               (wid, name, description, json.dumps(doc), ts, ts, new_token()))
+def insert_workflow(db, wid: str, name: str, description: str, doc: dict, ts: str, project_id: str | None = None):
+    db.execute("INSERT INTO workflows (id,name,description,definition,created_at,updated_at,webhook_token,project_id) VALUES (?,?,?,?,?,?,?,?)",
+               (wid, name, description, json.dumps(doc), ts, ts, new_token(), project_id))
 
 
 def initialize():
@@ -115,6 +119,9 @@ def initialize():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
         db.execute("CREATE TABLE IF NOT EXISTS credentials (name TEXT PRIMARY KEY, value_enc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS project_members (project_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (project_id, user_id))")
+        if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}: db.execute("ALTER TABLE workflows ADD COLUMN project_id TEXT")
         if "role" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
             db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
             first = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
@@ -158,7 +165,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -175,7 +182,7 @@ def workflow_row(row):
 
 def trigger_kind(doc: dict) -> str:
     kinds = [n.get("type") for n in doc.get("nodes", []) if n.get("type") in START_TYPES]
-    if len(kinds) == 1 and kinds[0] in ("schedule", "webhook"): return kinds[0]
+    if len(kinds) == 1 and kinds[0] in ("schedule", "webhook", "email_in"): return kinds[0]
     return "manual"
 
 # ---------------------------------------------------------------------------
@@ -236,6 +243,39 @@ def session_username(token: str | None) -> str | None:
     return user["username"] if user else None
 
 
+def sees_everything(actor: dict | None) -> bool:
+    return actor is None or actor["role"] in ("owner", "admin")
+
+
+def my_project_ids(actor: dict) -> set[str]:
+    with conn() as db:
+        return {r["project_id"] for r in db.execute("SELECT project_id FROM project_members WHERE user_id=?", (actor["id"],)).fetchall()}
+
+
+def can_see_workflow(actor: dict | None, workflow_id: str) -> bool:
+    """Owners and admins see everything. Others see unassigned workflows and those in projects they belong to."""
+    if sees_everything(actor): return True
+    with conn() as db:
+        row = db.execute("SELECT project_id FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+    return row is None or row["project_id"] is None or row["project_id"] in my_project_ids(actor)
+
+
+def visible_workflow_ids(actor: dict | None) -> set[str] | None:
+    """None means 'all'. Otherwise the ids this person may see."""
+    if sees_everything(actor): return None
+    mine = my_project_ids(actor)
+    with conn() as db:
+        rows = db.execute("SELECT id, project_id FROM workflows").fetchall()
+    return {r["id"] for r in rows if r["project_id"] is None or r["project_id"] in mine}
+
+
+def check_subflow_access(actor: dict | None, nodes: list[dict]) -> None:
+    for n in nodes:
+        target = str((n.get("data") or {}).get("workflow_id") or "").strip() if n.get("type") == "subflow" else ""
+        if target and not can_see_workflow(actor, target):
+            raise HTTPException(403, "You do not have access to the workflow chosen in a Run Workflow node")
+
+
 ROLES = ("owner", "admin", "editor", "viewer")
 ASSIGNABLE_ROLES = ("admin", "editor", "viewer")
 SELF_SERVICE = {"/api/auth/password"}
@@ -245,6 +285,7 @@ def allowed(role: str, method: str, path: str) -> bool:
     """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
     if path in SELF_SERVICE: return True
     if path.startswith(("/api/users", "/api/backup")): return role == "owner"
+    if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
     if path.startswith(("/api/credentials", "/api/oauth", "/api/settings")): return role in ("owner", "admin")
     return role in ("owner", "admin", "editor")
@@ -270,6 +311,16 @@ async def require_login(request: Request, call_next):
         if not allowed(user["role"], request.method, path):
             return JSONResponse({"detail": "Your role does not allow this action"}, status_code=403)
         request.state.user = user["username"]
+        request.state.actor = user
+        if user["role"] not in ("owner", "admin"):
+            wf = re.match(r"^/api/workflows/([^/]+)", path)
+            ex = re.match(r"^/api/executions/([^/]+)/cancel$", path)
+            target = wf.group(1) if wf else None
+            if ex:
+                with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
+                target = row["workflow_id"] if row else None
+            if target and not can_see_workflow(user, target):
+                return JSONResponse({"detail": "Not found"}, status_code=404)
     return await call_next(request)
 
 
@@ -278,7 +329,13 @@ def auth_status(request: Request):
     with conn() as db:
         has_users = db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
     user = session_user(request.cookies.get(COOKIE))
-    return {"setup_required": not has_users, "authenticated": user is not None, "username": user["username"] if user else None, "role": user["role"] if user else None}
+    projects = []
+    if user:
+        with conn() as db:
+            rows = db.execute("SELECT id, name FROM projects ORDER BY name").fetchall()
+        mine = None if sees_everything(user) else my_project_ids(user)
+        projects = [{"id": r["id"], "name": r["name"]} for r in rows if mine is None or r["id"] in mine]
+    return {"setup_required": not has_users, "authenticated": user is not None, "username": user["username"] if user else None, "role": user["role"] if user else None, "projects": projects}
 
 
 @app.post("/api/auth/setup", status_code=201)
@@ -382,6 +439,7 @@ def delete_user(user_id: str):
         if not row: raise HTTPException(404, "User not found")
         if row["role"] == "owner": raise HTTPException(400, "The owner account cannot be deleted")
         db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        db.execute("DELETE FROM project_members WHERE user_id=?", (user_id,))
         db.execute("DELETE FROM users WHERE id=?", (user_id,))
 
 
@@ -397,18 +455,103 @@ def change_password(body: PasswordIn, request: Request):
     return {"changed": True}
 
 
-@app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.7.0", "mode":"local"}
+# ---------------------------------------------------------------------------
+# Projects: groups of workflows that only their members (plus owners and admins) can see
+# ---------------------------------------------------------------------------
+MAX_PROJECTS = 100
 
-@app.get("/api/workflows")
-def workflows():
+
+class ProjectIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    user_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class AssignIn(BaseModel):
+    project_id: str | None = None
+
+
+@app.get("/api/projects")
+def list_projects(request: Request):
+    actor = getattr(request.state, "actor", None)
+    mine = None if sees_everything(actor) else my_project_ids(actor)
     with conn() as db:
-        rows = db.execute("SELECT * FROM workflows ORDER BY updated_at DESC").fetchall()
+        rows = db.execute("SELECT id, name, created_at FROM projects ORDER BY name").fetchall()
+        members = db.execute("SELECT m.project_id, m.user_id, u.username FROM project_members m JOIN users u ON u.id = m.user_id").fetchall()
+        counts = {r["project_id"]: r["c"] for r in db.execute("SELECT project_id, COUNT(*) c FROM workflows WHERE project_id IS NOT NULL GROUP BY project_id").fetchall()}
     out = []
     for r in rows:
+        if mine is not None and r["id"] not in mine: continue
+        item = {"id": r["id"], "name": r["name"], "created_at": r["created_at"], "workflows": counts.get(r["id"], 0)}
+        if mine is None: item["members"] = [{"user_id": m["user_id"], "username": m["username"]} for m in members if m["project_id"] == r["id"]]
+        out.append(item)
+    return out
+
+
+@app.post("/api/projects", status_code=201)
+def create_project(body: ProjectIn):
+    name = body.name.strip()
+    pid = str(uuid.uuid4())
+    with conn() as db:
+        if db.execute("SELECT COUNT(*) c FROM projects").fetchone()["c"] >= MAX_PROJECTS: raise HTTPException(400, f"At most {MAX_PROJECTS} projects")
+        if db.execute("SELECT 1 FROM projects WHERE lower(name)=lower(?)", (name,)).fetchone(): raise HTTPException(409, "A project with that name already exists")
+        db.execute("INSERT INTO projects (id,name,created_at) VALUES (?,?,?)", (pid, name, now()))
+    return {"id": pid, "name": name}
+
+
+@app.put("/api/projects/assign/{workflow_id}")
+def assign_workflow(workflow_id: str, body: AssignIn):
+    get_workflow(workflow_id)
+    with conn() as db:
+        if body.project_id and not db.execute("SELECT 1 FROM projects WHERE id=?", (body.project_id,)).fetchone(): raise HTTPException(404, "Project not found")
+        db.execute("UPDATE workflows SET project_id=? WHERE id=?", (body.project_id or None, workflow_id))
+    return {"id": workflow_id, "project_id": body.project_id or None}
+
+
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: str, body: ProjectPatch):
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone(): raise HTTPException(404, "Project not found")
+        if body.name is not None:
+            clash = db.execute("SELECT 1 FROM projects WHERE lower(name)=lower(?) AND id != ?", (body.name.strip(), project_id)).fetchone()
+            if clash: raise HTTPException(409, "A project with that name already exists")
+            db.execute("UPDATE projects SET name=? WHERE id=?", (body.name.strip(), project_id))
+        if body.user_ids is not None:
+            known = {r["id"] for r in db.execute("SELECT id FROM users").fetchall()}
+            if any(u not in known for u in body.user_ids): raise HTTPException(400, "Unknown user")
+            db.execute("DELETE FROM project_members WHERE project_id=?", (project_id,))
+            for u in set(body.user_ids): db.execute("INSERT INTO project_members (project_id,user_id) VALUES (?,?)", (project_id, u))
+    return {"id": project_id, "updated": True}
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+def delete_project(project_id: str):
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone(): raise HTTPException(404, "Project not found")
+        if db.execute("SELECT 1 FROM workflows WHERE project_id=? LIMIT 1", (project_id,)).fetchone(): raise HTTPException(400, "Move or delete the project's workflows first")
+        db.execute("DELETE FROM project_members WHERE project_id=?", (project_id,))
+        db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+
+
+@app.get("/api/health")
+def health(): return {"status":"ok", "version":"0.8.0", "mode":"local"}
+
+@app.get("/api/workflows")
+def workflows(request: Request):
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    with conn() as db:
+        rows = db.execute("SELECT * FROM workflows ORDER BY updated_at DESC").fetchall()
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM projects").fetchall()}
+    out = []
+    for r in rows:
+        if visible is not None and r["id"] not in visible: continue
         doc = json.loads(r["definition"])
         out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"], "tags": doc.get("tags", []),
-                    "active": bool(r["active"]), "trigger": trigger_kind(doc), "next_run_at": r["next_run_at"]})
+                    "active": bool(r["active"]), "trigger": trigger_kind(doc), "next_run_at": r["next_run_at"],
+                    "project_id": r["project_id"], "project_name": names.get(r["project_id"])})
     return out
 
 @app.get("/api/workflows/{workflow_id}")
@@ -419,13 +562,19 @@ def get_workflow(workflow_id: str):
     return workflow_row(row)
 
 @app.post("/api/workflows", status_code=201)
-def create_workflow(body: WorkflowIn):
+def create_workflow(body: WorkflowIn, request: Request, project_id: str | None = None):
     validate_flow(body)
+    actor = getattr(request.state, "actor", None)
+    check_subflow_access(actor, body.nodes)
+    if project_id:
+        with conn() as db:
+            if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone(): raise HTTPException(404, "Project not found")
+        if not sees_everything(actor) and project_id not in my_project_ids(actor): raise HTTPException(403, "You are not a member of that project")
     workflow_id = str(uuid.uuid4())
     doc = body.model_dump()
     doc["id"] = workflow_id
     with conn() as db:
-        insert_workflow(db, workflow_id, body.name, body.description, doc, now())
+        insert_workflow(db, workflow_id, body.name, body.description, doc, now(), project_id or None)
     return {"id":workflow_id}
 
 MAX_VERSIONS = 30
@@ -438,6 +587,7 @@ def canonical(doc: dict) -> str:
 @app.put("/api/workflows/{workflow_id}")
 def update_workflow(workflow_id: str, body: WorkflowIn, request: Request):
     validate_flow(body)
+    check_subflow_access(getattr(request.state, "actor", None), body.nodes)
     doc = body.model_dump()
     doc["id"] = workflow_id
     deactivated = None
@@ -505,15 +655,20 @@ def duplicate_workflow(workflow_id: str):
     doc = {k: v for k, v in source.items() if k not in ("updated_at", "active", "webhook_token", "next_run_at", "trigger")}
     doc.update(id=new_id, name=name)
     with conn() as db:
-        insert_workflow(db, new_id, name, source["description"], doc, now())
+        src = db.execute("SELECT project_id FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+        insert_workflow(db, new_id, name, source["description"], doc, now(), src["project_id"] if src else None)
     return {"id": new_id, "name": name}
 
 
 @app.delete("/api/executions", status_code=204)
-def clear_executions(workflow_id: str | None = None):
+def clear_executions(request: Request, workflow_id: str | None = None):
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
     with conn() as db:
-        if workflow_id: db.execute("DELETE FROM executions WHERE workflow_id=?", (workflow_id,))
-        else: db.execute("DELETE FROM executions")
+        if workflow_id:
+            if visible is None or workflow_id in visible: db.execute("DELETE FROM executions WHERE workflow_id=?", (workflow_id,))
+        elif visible is None: db.execute("DELETE FROM executions")
+        else:
+            for wid in visible: db.execute("DELETE FROM executions WHERE workflow_id=?", (wid,))
         db.execute("DELETE FROM waits WHERE execution_id NOT IN (SELECT id FROM executions)")
 
 
@@ -734,9 +889,13 @@ def apply_auth(headers: dict, d: dict) -> None:
 def do_request(method: str, url: str, headers: dict, **kwargs) -> Any:
     # Never follow redirects, so a public URL cannot bounce to an internal address.
     timeout = kwargs.pop("timeout", 8.0)
+    raw = kwargs.pop("raw", False)
     with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         response = client.request(method, url, headers=headers, **kwargs)
         response.raise_for_status()
+        if raw:
+            if len(response.content) > FILE_MAX: raise ValueError("The download exceeds 5 MB")
+            return {"bytes": response.content, "content_type": str(getattr(response, "headers", {}).get("content-type", ""))}
         if len(response.content) > 1_000_000: raise ValueError("HTTP response exceeds 1 MB")
         try: return response.json()
         except ValueError: return response.text
@@ -800,9 +959,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai"}
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai"}
+ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1257,6 +1416,151 @@ def run_ai(d: dict, previous: Any) -> Any:
     return {"text": text, "model": model}
 
 
+# ---------------------------------------------------------------------------
+# File node: read, write, list and delete files in one folder (backend/data/files)
+# ---------------------------------------------------------------------------
+FILE_MAX = 5_000_000
+FILE_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\- /]{0,150}$")
+
+
+def files_dir() -> Path:
+    return Path(os.getenv("FLOWPILOT_FILES_DIR", str(BASE / "data" / "files"))).resolve()
+
+
+def file_target(rel: str) -> Path:
+    rel = rel.strip().replace("\\", "/")
+    if not FILE_PATH_RE.fullmatch(rel) or ".." in rel.split("/") or rel.endswith("/") or "//" in rel:
+        raise ValueError("Use a simple relative path such as reports/today.csv")
+    folder = files_dir()
+    target = (folder / rel).resolve()
+    if folder not in target.parents: raise ValueError("Files must stay inside the files folder")
+    return target
+
+
+def file_action(d: dict, previous: Any) -> Any:
+    op = str(d.get("operation") or "read")
+    if op == "list":
+        folder = files_dir()
+        if not folder.exists(): return []
+        out = []
+        for f in sorted(folder.rglob("*")):
+            if f.is_file():
+                out.append({"path": f.relative_to(folder).as_posix(), "size": f.stat().st_size})
+                if len(out) >= 500: break
+        return out
+    target = file_target(render_template(str(d.get("path", "")), previous))
+    rel = target.relative_to(files_dir()).as_posix()
+    if op == "read":
+        if not target.is_file(): raise ValueError(f"File not found: {rel}")
+        if target.stat().st_size > FILE_MAX: raise ValueError("The file is larger than 5 MB")
+        raw = target.read_bytes()
+        out = {"path": rel, "size": len(raw), "mime": mimetypes.guess_type(rel)[0] or "application/octet-stream"}
+        if str(d.get("as") or "text") == "base64": out["base64"] = base64.b64encode(raw).decode()
+        else: out["text"] = raw.decode("utf-8", errors="replace")
+        return out
+    if op == "write":
+        content = render_template(str(d.get("content", "")), previous)
+        try: raw = base64.b64decode(content, validate=True) if str(d.get("encoding") or "text") == "base64" else content.encode()
+        except ValueError: raise ValueError("The content is not valid base64")
+        append = str(d.get("mode") or "overwrite") == "append"
+        existing = target.stat().st_size if append and target.exists() else 0
+        if len(raw) + existing > FILE_MAX: raise ValueError("Files are limited to 5 MB")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "ab" if append else "wb") as fh: fh.write(raw)
+        return {"path": rel, "size": target.stat().st_size}
+    if op == "delete":
+        if not target.is_file(): raise ValueError(f"File not found: {rel}")
+        target.unlink()
+        return {"path": rel, "deleted": True}
+    raise ValueError(f"Unknown file action: {op}")
+
+
+# ---------------------------------------------------------------------------
+# Email-in trigger: poll an IMAP inbox and run the workflow once per new message
+# ---------------------------------------------------------------------------
+SAMPLE_EMAIL = {"from": "ada@example.com", "to": "you@example.com", "subject": "Sample message", "date": "Mon, 01 Jan 2026 09:00:00 +0000", "text": "Hello from a test email.", "attachments": [], "message_id": "<sample@example.com>"}
+MAX_EMAILS_PER_POLL = 10
+
+
+def inbox_minutes(d: dict) -> int:
+    try: minutes = int(float(d.get("minutes", 5)))
+    except (TypeError, ValueError): raise ValueError("Check interval must be a number of minutes")
+    if not 1 <= minutes <= 1440: raise ValueError("Check interval must be between 1 and 1440 minutes")
+    return minutes
+
+
+def inbox_credential(d: dict) -> str:
+    name = str(d.get("credential") or "").strip()
+    if not name: raise ValueError("Choose an IMAP credential for the Email trigger")
+    return name
+
+
+def parse_message(raw: bytes) -> dict:
+    msg = message_from_bytes(raw, policy=email_policy.default)
+    body = msg.get_body(preferencelist=("plain", "html"))
+    text = ""
+    if body is not None:
+        try: text = body.get_content()
+        except Exception: text = ""
+        if body.get_content_type() == "text/html": text = re.sub(r"<[^>]+>", " ", text)
+    names = [part.get_filename() or "(unnamed)" for part in msg.iter_attachments()]
+    return {"from": str(msg.get("From", "")), "to": str(msg.get("To", "")), "subject": str(msg.get("Subject", ""))[:300], "date": str(msg.get("Date", "")),
+            "text": re.sub(r"\s+\n", "\n", text).strip()[:20_000], "attachments": names[:20], "message_id": str(msg.get("Message-ID", ""))}
+
+
+def fetch_unseen(d: dict) -> list[dict]:
+    cred = urlparse(lookup_secret(inbox_credential(d)))
+    if cred.scheme not in ("imap", "imaps") or not cred.hostname:
+        raise ValueError("The IMAP credential must look like imaps://user:password@imap.example.com:993?mailbox=INBOX (URL-encode special characters)")
+    assert_public_host(cred.hostname.lower(), relaxed=True)
+    mailbox = parse_qs(cred.query).get("mailbox", ["INBOX"])[0]
+    if not re.fullmatch(r"[A-Za-z0-9 _.\-/]{1,80}", mailbox): raise ValueError("Invalid mailbox name")
+    want_from, want_subject = str(d.get("from_filter") or "").strip().lower(), str(d.get("subject_filter") or "").strip().lower()
+    out = []
+    try:
+        client = imaplib.IMAP4_SSL(cred.hostname, cred.port or 993, timeout=15) if cred.scheme == "imaps" else imaplib.IMAP4(cred.hostname, cred.port or 143, timeout=15)
+        try:
+            if cred.scheme == "imap": client.starttls(ssl.create_default_context())
+            client.login(unquote(cred.username or ""), unquote(cred.password or ""))
+            client.select(mailbox)
+            _, found = client.search(None, "UNSEEN")
+            for mid in (found[0].split() if found and found[0] else [])[-MAX_EMAILS_PER_POLL:]:
+                _, parts = client.fetch(mid, "(BODY.PEEK[])")
+                raw = next((p[1] for p in parts if isinstance(p, tuple)), b"")
+                item = parse_message(raw[:2_000_000])
+                if want_from and want_from not in item["from"].lower(): continue
+                if want_subject and want_subject not in item["subject"].lower(): continue
+                client.store(mid, "+FLAGS", "\\Seen")
+                out.append(item)
+        finally:
+            try: client.logout()
+            except Exception: pass
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise ValueError(f"Could not read the inbox: {str(exc)[:150]}")
+    return out
+
+
+def poll_inbox(doc: dict, node: dict) -> None:
+    secrets_ = load_secrets()
+    token = _secrets_var.set(secrets_)
+    try: messages = fetch_unseen(node.get("data", {}) or {})
+    except Exception as exc:
+        err = str(redact({"e": str(exc)}, secrets_)["e"])
+        def boom(): raise ValueError(err)
+        execute_workflow(doc, "email_in", boom)  # recorded as a failed run, so the problem is visible
+        return
+    finally: _secrets_var.reset(token)
+    for m in messages: execute_workflow(doc, "email_in", m)
+
+
+# ---------------------------------------------------------------------------
+# Repeat until, and parallel execution of branches that are ready together
+# ---------------------------------------------------------------------------
+MAX_REPEATS = 20
+MAX_PARALLEL = 4
+PARALLEL_TYPES = {"http", "sql", "rss", "notify", "email", "telegram", "github", "sheets", "gmail", "ai", "code", "delay", "file"}
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
@@ -1313,6 +1617,9 @@ def step_action(node: dict, previous: Any):
         value = run_ai(d, previous)
         return value, value, None
     if typ == "sticky": return previous, previous, None
+    if typ == "file":
+        value = file_action(d, previous)
+        return value, value, None
     if typ == "telegram": return send_telegram(d, previous), previous, None
     if typ == "sheets":
         value = sheets_action(d, previous)
@@ -1360,6 +1667,14 @@ def step_action(node: dict, previous: Any):
             except ValueError:
                 kwargs["content"] = render_template(raw_body, previous).encode()
                 if not any(k.lower() == "content-type" for k in headers): headers["Content-Type"] = "text/plain; charset=utf-8"
+        save_as = render_template(str(d.get("save_as") or ""), previous).strip()
+        if save_as:
+            got_file = do_request(method, url, headers, raw=True, **kwargs)
+            target = file_target(save_as)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(got_file["bytes"])
+            value = {"path": save_as, "size": len(got_file["bytes"]), "content_type": got_file["content_type"]}
+            return value, value, None
         value = do_request(method, url, headers, **kwargs)
         return value, value, None
     if typ == "notify": return send_notify(d, previous), previous, None
@@ -1459,12 +1774,116 @@ def run_loop(g: Graph, nid: str, node: dict, value: Any):
     return {"items": len(items)}, results
 
 
+def run_repeat(g: Graph, nid: str, node: dict, value: Any):
+    d = node.get("data", {}) or {}
+    try: limit = max(1, min(int(float(d.get("max") or 5)), MAX_REPEATS))
+    except (TypeError, ValueError): raise ValueError("Maximum attempts must be a number")
+    try: pause = max(0.0, min(float(d.get("pause") or 0), MAX_RETRY_WAIT))
+    except (TypeError, ValueError): raise ValueError("Pause must be a number of seconds")
+    outs = g.out[nid]
+    if any(e.get("sourceHandle") not in ("each", "done") for e in outs): raise ValueError("Connect the node's outputs from its 'each' or 'done' handle")
+    each = [e for e in outs if e.get("sourceHandle") == "each"]
+    done = [e for e in outs if e.get("sourceHandle") == "done"]
+    if not each: raise ValueError("Connect the 'each' handle to the steps to repeat")
+    body = g.body_of(nid)
+    if body & g.reach([e["target"] for e in done]): raise ValueError("The 'each' and 'done' paths cannot join")
+    path, op, expected = str(d.get("path") or "").strip(), str(d.get("op") or "equals"), str(d.get("equals") or "")
+    current, met, attempts = value, False, 0
+    for i in range(limit):
+        attempts = i + 1
+        g.iter.append(i)
+        try: result = run_graph(g, body, [(e, current) for e in each])
+        finally: g.iter.pop()
+        if result is not None: current = result
+        if compare(get_path(current, path) if path else current, op, expected):
+            met = True
+            break
+        if i < limit - 1 and pause: time.sleep(pause)
+    if not met and str(d.get("fail_if_not_met") or "false") == "true": raise ValueError(f"The condition was not met after {limit} attempts")
+    return {"attempts": attempts, "condition_met": met}, current
+
+
+def run_one(g: Graph, nid: str, node: dict, value: Any, step: dict):
+    """Run a single node (pin, retries and continue-on-error included). Updates its step and returns (shown, passed, branch)."""
+    typ, data = node["type"], node.get("data", {}) or {}
+    t0, branch = time.perf_counter(), None
+    elapsed = lambda: round((time.perf_counter() - t0) * 1000, 1)
+    try:
+        pin = str(data.get("pin") or "").strip()
+        if pin and typ in PINNABLE:
+            shown = passed = read_json(pin)
+            step["pinned"] = True
+        elif typ == "loop": shown, passed = run_loop(g, nid, node, value)
+        elif typ == "repeat": shown, passed = run_repeat(g, nid, node, value)
+        else:
+            retries = max(0, min(int(float(data.get("retries") or 0)), MAX_RETRIES)) if typ in ERROR_SETTINGS else 0
+            wait = max(0.0, min(float(data.get("retry_wait") or 1), MAX_RETRY_WAIT))
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    shown, passed, branch = step_action(node, value)
+                    break
+                except StepFailure: raise
+                except Exception:
+                    if attempt > retries: raise
+                    time.sleep(wait)
+            if attempt > 1: step["attempts"] = attempt
+    except StepFailure as exc:
+        step.update(status="error", error=str(exc), duration_ms=elapsed())
+        raise
+    except Exception as exc:
+        if typ in ERROR_SETTINGS and str(data.get("on_error") or "stop") == "continue":
+            shown = passed = {"error": str(exc), "input": value}
+            step.update(error=str(exc), continued=True)
+        else:
+            step.update(status="error", error=str(exc), duration_ms=elapsed())
+            raise StepFailure(str(exc)) from exc
+    step.update(status="error" if step.get("continued") else "success", output=shown, branch=branch, duration_ms=elapsed())
+    return shown, passed, branch
+
+
+def suspend_for_long_wait(g: Graph, nid: str, data: dict, value: Any, step: dict) -> bool:
+    """Handle a Wait node. Returns True when the run was paused (a wait over 60 seconds)."""
+    try: secs = wait_seconds(data)
+    except ValueError as exc:
+        step.update(status="error", error=str(exc))
+        raise StepFailure(str(exc)) from exc
+    if secs <= MAX_WAIT_SECONDS: return False
+    if g.iter or len(_stack_var.get()) > 1:
+        step.update(status="error", error="A Wait longer than 60 seconds cannot be used inside a loop or a sub-workflow")
+        raise StepFailure(step["error"])
+    if g.suspended:
+        step.update(status="error", error="Only one long Wait per run is supported")
+        raise StepFailure(step["error"])
+    resume_at = (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
+    g.suspended = {"node_id": nid, "value": value, "resume_at": resume_at}
+    step.update(status="waiting", output={"resume_at": resume_at}, duration_ms=0)
+    return True
+
+
+def run_batch(g: Graph, prepared: list) -> list:
+    """Run nodes that are ready at the same time. Several network or code nodes run in parallel; the rest run alone."""
+    if len(prepared) == 1:
+        nid, node, _typ, _data, value, step = prepared[0]
+        return [run_one(g, nid, node, value, step)]
+    with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, run_one, g, p[0], p[1], p[4], p[5]) for p in prepared]
+        outcomes = []
+        for f in futures:
+            try: outcomes.append(f.result())
+            except StepFailure as exc: outcomes.append(exc)
+    for o in outcomes:
+        if isinstance(o, StepFailure): raise o
+    return outcomes
+
+
 def run_graph(g: Graph, allowed: set, seeds: list):
     """Run the nodes in `allowed`. `seeds` are (edge, value) pairs that feed the entry nodes. Returns the last value produced."""
     allowed = set(allowed)
     inner = set()
     for nid in allowed:
-        if g.nodes[nid]["type"] == "loop": inner |= g.body_of(nid)
+        if g.nodes[nid]["type"] in ("loop", "repeat"): inner |= g.body_of(nid)
     allowed -= inner
     pending = {n: sum(1 for e in g.inc[n] if e["source"] in allowed) for n in allowed}
     for edge, _ in seeds: pending[edge["target"]] += 1
@@ -1483,73 +1902,32 @@ def run_graph(g: Graph, allowed: set, seeds: list):
 
     for edge, value in seeds: deliver(edge["target"], value, False)
     while stack:
-        nid = stack.pop()
-        node = g.nodes[nid]
-        typ = node["type"]
-        data = node.get("data", {}) or {}
-        value = got[nid] if typ == "merge" else got[nid][0]
-        if len(g.steps) >= MAX_STEPS: raise StepFailure("Maximum execution steps exceeded")
-        step = {"node_id": nid, "label": data.get("label", typ), "type": typ, "input": preview(value)}
-        if g.iter: step["iteration"] = list(g.iter)
-        g.steps.append(step)
-        if typ == "wait":
-            try: secs = wait_seconds(data)
-            except ValueError as exc:
-                step.update(status="error", error=str(exc))
-                raise StepFailure(str(exc)) from exc
-            if secs > MAX_WAIT_SECONDS:
-                if g.iter or len(_stack_var.get()) > 1:
-                    step.update(status="error", error="A Wait longer than 60 seconds cannot be used inside a loop or a sub-workflow")
-                    raise StepFailure(step["error"])
-                if g.suspended:
-                    step.update(status="error", error="Only one long Wait per run is supported")
-                    raise StepFailure(step["error"])
-                resume_at = (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
-                g.suspended = {"node_id": nid, "value": value, "resume_at": resume_at}
-                step.update(status="waiting", output={"resume_at": resume_at}, duration_ms=0)
-                continue
-        t0, branch = time.perf_counter(), None
-        try:
-            pin = str(data.get("pin") or "").strip()
-            if pin and typ in PINNABLE:
-                shown = read_json(pin)
-                passed = shown
-                step["pinned"] = True
-            elif typ == "loop": shown, passed = run_loop(g, nid, node, value)
-            else:
-                retries = max(0, min(int(float(data.get("retries") or 0)), MAX_RETRIES)) if typ in ERROR_SETTINGS else 0
-                wait = max(0.0, min(float(data.get("retry_wait") or 1), MAX_RETRY_WAIT))
-                attempt = 0
-                while True:
-                    attempt += 1
-                    try:
-                        shown, passed, branch = step_action(node, value)
-                        break
-                    except StepFailure: raise
-                    except Exception:
-                        if attempt > retries: raise
-                        time.sleep(wait)
-                if attempt > 1: step["attempts"] = attempt
-        except StepFailure as exc:
-            step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
-            raise
-        except Exception as exc:
-            if typ in ERROR_SETTINGS and str(data.get("on_error") or "stop") == "continue":
-                shown = passed = {"error": str(exc), "input": value}
-                step.update(error=str(exc), continued=True)
-            else:
-                step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
-                raise StepFailure(str(exc)) from exc
-        step.update(status="error" if step.get("continued") else "success", output=shown, branch=branch, duration_ms=round((time.perf_counter() - t0) * 1000, 1))
-        final = passed if typ in ("condition", "loop", "switch") else shown
-        # Condition: only the matching branch is live. Loop: only 'done' continues here ('each' runs inside run_loop).
-        live, dead = [], []
-        for e in g.out[nid]:
-            handle = e.get("sourceHandle")
-            follows = handle in (None, branch) if typ in ("condition", "switch") else handle == "done" if typ == "loop" else True
-            (live if follows else dead).append(e)
-        for e in dead: deliver(e["target"], None, True)
-        for e in reversed(live): deliver(e["target"], passed, False)
+        batch = [stack.pop()]
+        while stack and len(batch) < MAX_PARALLEL and g.nodes[batch[0]]["type"] in PARALLEL_TYPES and g.nodes[stack[-1]]["type"] in PARALLEL_TYPES:
+            batch.append(stack.pop())
+        prepared = []
+        for nid in batch:
+            node = g.nodes[nid]
+            typ = node["type"]
+            data = node.get("data", {}) or {}
+            value = got[nid] if typ == "merge" else got[nid][0]
+            if len(g.steps) >= MAX_STEPS: raise StepFailure("Maximum execution steps exceeded")
+            step = {"node_id": nid, "label": data.get("label", typ), "type": typ, "input": preview(value)}
+            if g.iter: step["iteration"] = list(g.iter)
+            g.steps.append(step)
+            prepared.append((nid, node, typ, data, value, step))
+        if len(prepared) == 1 and prepared[0][2] == "wait" and suspend_for_long_wait(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
+        outcomes = run_batch(g, prepared)
+        for (nid, node, typ, data, value, step), (shown, passed, branch) in zip(prepared, outcomes):
+            final = passed if typ in ("condition", "loop", "repeat", "switch") else shown
+            # Condition and Switch: only the matching branch is live. Loop and Repeat: only 'done' continues here ('each' runs inside).
+            live, dead = [], []
+            for e in g.out[nid]:
+                handle = e.get("sourceHandle")
+                follows = handle in (None, branch) if typ in ("condition", "switch") else handle == "done" if typ in ("loop", "repeat") else True
+                (live if follows else dead).append(e)
+            for e in dead: deliver(e["target"], None, True)
+            for e in reversed(live): deliver(e["target"], passed, False)
     return final
 
 
@@ -1714,6 +2092,7 @@ def run_workflow(workflow_id: str, body: RunIn | None = None):
             sample = str(data.get("sample", "")).strip()
             return webhook_payload("POST", {}, read_json(sample) if sample else None, "application/json")
         if node and node["type"] == "schedule": return {"scheduled_at": now(), "manual": True}
+        if node and node["type"] == "email_in": return SAMPLE_EMAIL
         return None
     return execute_workflow(doc, "manual", initial)
 
@@ -1808,6 +2187,9 @@ def activation_next_run(doc: dict, after: datetime | None = None) -> str | None:
     node = starts[0]
     if node["type"] == "trigger": raise ValueError("Add a Schedule or Webhook trigger to activate this workflow")
     if node["type"] == "webhook": return None
+    if node["type"] == "email_in":
+        inbox_credential(node.get("data", {}))
+        return (( after or datetime.now(timezone.utc)) + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
     cfg = validate_schedule(node.get("data", {}))
     return next_run_after(cfg, after or datetime.now(timezone.utc)).isoformat()
 
@@ -1847,8 +2229,14 @@ def scheduler_tick(at: datetime | None = None) -> int:
         try:
             doc = get_workflow(row["id"])
             node = start_node(doc)
-            if not node or node["type"] != "schedule":
+            if not node or node["type"] not in ("schedule", "email_in"):
                 with conn() as db: db.execute("UPDATE workflows SET active=0, next_run_at=NULL WHERE id=?", (row["id"],))
+                continue
+            if node["type"] == "email_in":
+                upcoming = (moment + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
+                with conn() as db: db.execute("UPDATE workflows SET next_run_at=? WHERE id=?", (upcoming, row["id"]))
+                poll_inbox(doc, node)
+                started += 1
                 continue
             # Advance first: if the server was off, a missed run happens once and then the normal rhythm resumes.
             upcoming = next_run_after(validate_schedule(node.get("data", {})), moment).isoformat()
@@ -2070,10 +2458,14 @@ def backup_database():
 
 
 @app.get("/api/executions")
-def executions(workflow_id: str | None = None):
+def executions(request: Request, workflow_id: str | None = None):
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    if visible is not None and workflow_id and workflow_id not in visible: return []
     with conn() as db:
         if workflow_id:
             rows=db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT 100",(workflow_id,)).fetchall()
-        else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 100").fetchall()
+        else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 1000").fetchall()
+        if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
+        rows = rows[:100]
         resume = {w["execution_id"]: w["resume_at"] for w in db.execute("SELECT execution_id, resume_at FROM waits WHERE status='pending'").fetchall()}
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),"resume_at":resume.get(r["id"])} for r in rows]
