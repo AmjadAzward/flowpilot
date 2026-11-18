@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.12
+- "Run once for each item" mode for action nodes, so a node can process a whole list
+- App Action node with Slack, Notion, Airtable, Stripe, Twilio, Linear and HubSpot (simulated-server tests only)
+- 751 API tests and a 50-check browser suite
+
 ### v0.11
 - Responsive layout for phones and tablets (slide-out menu, stacked tables, bottom-sheet inspector)
 - Security hardening: security headers, request size limits, Secure cookies behind HTTPS, richer health check

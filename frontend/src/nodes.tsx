@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Bot, FileText, MailCheck, MailOpen, RotateCw, Reply, StickyNote, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, Database, Github, Hourglass, OctagonX, Bot, FileText, MailCheck, Plug, MailOpen, RotateCw, Reply, StickyNote, Rss, Sheet, Send, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote, FileText, MailOpen, RotateCw };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote, FileText, MailOpen, RotateCw, Plug };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -71,6 +71,7 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'sheets': return s('spreadsheet_id') ? clip(`${s('operation') === 'append' ? 'append to' : 'read'} ${s('range')}`) : 'choose a sheet';
     case 'gmail': return s('to') ? clip(`to ${s('to')}`) : 'choose recipients';
     case 'telegram': return clip(s('text'));
+    case 'app': return s('service') ? clip(`${s('service')}: ${s('operation').replace(/_/g, ' ')}`) : 'choose a service';
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
     case 'respond': return `reply ${s('status') || '200'}`;
     case 'email_in': return s('credential') ? `every ${s('minutes') || '5'} min` : 'choose an inbox';

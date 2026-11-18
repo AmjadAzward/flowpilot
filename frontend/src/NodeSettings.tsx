@@ -1,6 +1,6 @@
 import type { Node } from '@xyflow/react';
 import { Copy, RefreshCcw } from 'lucide-react';
-import { errorTypes, operators, startTypes, type FlowDoc } from './catalog';
+import { appServices, eachItemTypes, errorTypes, operators, startTypes, type FlowDoc } from './catalog';
 
 type Props = {
   node: Node;
@@ -38,6 +38,11 @@ export function NodeSettings(props: Props) {
             {flows.filter(f => f.id !== currentFlowId).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
           </select>
           <span className="hint">That workflow receives the workflow name, the error, the failed node and the execution id.</span>
+        </label>
+      )}
+      {eachItemTypes.includes(type) && (
+        <label>Input handling<select value={v('each_item', 'false')} onChange={e => update('each_item', e.target.value)}><option value="false">Run once with the whole input</option><option value="true">Run once for each item in a list</option></select>
+          <span className="hint">With "each item" the input must be a list. The node runs for every element and the results come out as a list.</span>
         </label>
       )}
       {errorTypes.includes(type) && (
@@ -183,6 +188,29 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">Create a bot with BotFather, save its token on the Credentials page, and message the bot once so it can reply to you. The incoming data continues to the next node.</span>
         </>
       );
+    case 'app': {
+      const service = v('service', 'slack');
+      const def = appServices[service] ?? appServices.slack;
+      const opKey = v('operation', Object.keys(def.operations)[0]);
+      const opDef = def.operations[opKey] ?? Object.values(def.operations)[0];
+      const pickService = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const next = appServices[e.target.value];
+        const firstOp = Object.keys(next.operations)[0];
+        update('service', e.target.value);
+        update('operation', firstOp);
+        update('fields', next.operations[firstOp].example);
+      };
+      const pickOp = (e: React.ChangeEvent<HTMLSelectElement>) => { update('operation', e.target.value); update('fields', def.operations[e.target.value].example); };
+      return (
+        <>
+          <label>Service<select value={service} onChange={pickService}>{Object.entries(appServices).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}</select></label>
+          <label>Action<select value={opKey} onChange={pickOp}>{Object.entries(def.operations).map(([k, o]) => <option key={k} value={k}>{o.label}</option>)}</select></label>
+          {credSelect('credential', `${def.label} credential`)}
+          <label>Fields (JSON)<textarea rows={6} spellCheck={false} value={v('fields')} onChange={text('fields')} /><span className="hint">{opDef.hint} {'{{field}}'} values from the previous node are escaped for you.</span></label>
+          <span className="hint">Save the credential on the Credentials page: {def.credential}. These services are tested against simulated servers, so try yours with a test account first.</span>
+        </>
+      );
+    }
     case 'github': {
       const op = v('operation', 'create_issue');
       return (

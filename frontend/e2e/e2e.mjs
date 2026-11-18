@@ -717,6 +717,22 @@ await check('Repeat Until, Files, the HTTP file download and the Email trigger a
   await shot('25-repeat-file');
 });
 
+await check('App Action switches service and action, and "each item" mode is offered', async () => {
+  await goOverview();
+  await page.getByTestId('template-fetch-todo').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-app').click();
+  await page.getByLabel('Service').selectOption('notion');
+  await page.getByLabel('Action').selectOption('query_database');
+  const fields = page.getByLabel(/^Fields \(JSON\)/);
+  if (!(await fields.inputValue()).includes('database_id')) throw new Error('fields example did not load');
+  await page.getByLabel('Service').selectOption('twilio');
+  if (!(await fields.inputValue()).includes('"to"')) throw new Error('fields did not reset for Twilio');
+  await page.getByLabel('Input handling').selectOption('true');
+  await shot('26-app-action');
+});
+
 await check('projects limit what a member can see', async () => {
   await page.getByRole('button', { name: /^Users/ }).click();
   await page.getByTestId('user-name').fill('pat-editor');

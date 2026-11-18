@@ -5,7 +5,7 @@ export type FlowDoc = { project_id?: string | null; project_name?: string | null
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -35,6 +35,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
   { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
   { type: 'telegram', label: 'Telegram Message', desc: 'Send with a Telegram bot', category: 'Network', color: '#0ea5e9', icon: 'Send' },
+  { type: 'app', label: 'App Action', desc: 'Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
@@ -48,9 +49,34 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
+export const pinnableTypes: string[] = ['app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
-export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
+/** Nodes that can run once for every element of a list. */
+export const eachItemTypes: string[] = ['app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
+export const errorTypes: string[] = ['app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
+
+type AppOp = { label: string; example: string; hint: string };
+export const appServices: Record<string, { label: string; credential: string; operations: Record<string, AppOp> }> = {
+  slack: { label: 'Slack', credential: 'Bot token starting with xoxb-', operations: {
+    post_message: { label: 'Post a message', example: '{"channel": "#general", "text": "Hello from FlowPilot"}', hint: 'channel and text. The bot must be invited to the channel.' } } },
+  notion: { label: 'Notion', credential: 'Internal integration token', operations: {
+    create_page: { label: 'Add a row to a database', example: '{"database_id": "", "title": "New item", "title_property": "Name"}', hint: 'database_id and title. Optional: title_property, properties (raw Notion properties). Share the database with your integration first.' },
+    query_database: { label: 'List database rows', example: '{"database_id": "", "limit": 20}', hint: 'database_id and an optional limit (up to 100).' } } },
+  airtable: { label: 'Airtable', credential: 'Personal access token', operations: {
+    list_records: { label: 'List records', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "limit": 20}', hint: 'base_id, table and an optional limit (up to 100).' },
+    create_record: { label: 'Create a record', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "record": {"Name": "{{name}}"}}', hint: 'base_id, table and record (an object of field values).' } } },
+  stripe: { label: 'Stripe', credential: 'Secret key starting with sk_ (use a restricted key)', operations: {
+    list_customers: { label: 'List customers', example: '{"limit": 20}', hint: 'Optional limit (up to 100).' },
+    create_customer: { label: 'Create a customer', example: '{"email": "{{email}}", "name": "{{name}}"}', hint: 'email and/or name.' },
+    list_payments: { label: 'List payments', example: '{"limit": 20}', hint: 'Optional limit (up to 100).' } } },
+  twilio: { label: 'Twilio', credential: 'AccountSID:AuthToken', operations: {
+    send_sms: { label: 'Send an SMS', example: '{"to": "+15551230000", "from": "+15559990000", "body": "Hello"}', hint: 'to, from (your Twilio number) and body. Numbers in +E.164 form.' } } },
+  linear: { label: 'Linear', credential: 'Personal API key (lin_api_...)', operations: {
+    create_issue: { label: 'Create an issue', example: '{"team_id": "", "title": "{{title}}", "description": ""}', hint: 'team_id (a UUID), title and an optional description.' } } },
+  hubspot: { label: 'HubSpot', credential: 'Private app access token', operations: {
+    create_contact: { label: 'Create a contact', example: '{"email": "{{email}}", "firstname": "{{name}}"}', hint: 'email is required. Optional: firstname, lastname, phone, company.' },
+    list_contacts: { label: 'List contacts', example: '{"limit": 20}', hint: 'Optional limit (up to 100).' } } },
+};
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -84,6 +110,7 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'sheets': return { credential: '', spreadsheet_id: '', range: 'Sheet1', operation: 'read', header: 'true', values: '["{{name}}", "{{city}}"]' };
     case 'gmail': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };
     case 'telegram': return { credential: '', chat_id: '', text: 'Hello from FlowPilot' };
+    case 'app': return { service: 'slack', operation: 'post_message', credential: '', fields: appServices.slack.operations.post_message.example };
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
     case 'respond': return { status: '200', body: '{"ok": true}' };
     case 'sticky': return { text: 'Write a note here' };

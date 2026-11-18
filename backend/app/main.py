@@ -74,7 +74,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.11.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.12.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -176,7 +176,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -580,7 +580,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.11.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.12.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -1172,9 +1172,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
+PINNABLE = {"app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
+ERROR_SETTINGS = {"app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1406,6 +1406,152 @@ def github_action(d: dict, previous: Any) -> Any:
         if not isinstance(res, list): raise ValueError("Unexpected response from GitHub")
         return [{"number": i.get("number"), "title": i.get("title"), "state": i.get("state"), "url": i.get("html_url"), "user": (i.get("user") or {}).get("login")} for i in res if "pull_request" not in i]
     raise ValueError(f"Unknown GitHub operation: {op}")
+
+
+# ---------------------------------------------------------------------------
+# App Action: one node, many services. Each service is a small function over the HTTP helper.
+# ---------------------------------------------------------------------------
+APP_OPS = {
+    "slack": ["post_message"],
+    "notion": ["create_page", "query_database"],
+    "airtable": ["list_records", "create_record"],
+    "stripe": ["list_customers", "create_customer", "list_payments"],
+    "twilio": ["send_sms"],
+    "linear": ["create_issue"],
+    "hubspot": ["create_contact", "list_contacts"],
+}
+NOTION_ID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+AIRTABLE_BASE_RE = re.compile(r"^app[A-Za-z0-9]{8,30}$")
+AIRTABLE_TABLE_RE = re.compile(r"^[A-Za-z0-9 _.\-]{1,80}$")
+PHONE_RE = re.compile(r"^\+?[0-9]{6,15}$")
+UUID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+
+
+def _text(f: dict, key: str, label: str, required: bool = True, maxlen: int = 4000) -> str:
+    val = f.get(key)
+    val = "" if val is None else str(val).strip()
+    if required and not val: raise ValueError(f"{label} is required")
+    if len(val) > maxlen: raise ValueError(f"{label} is too long (limit {maxlen} characters)")
+    return val
+
+
+def _limit(f: dict, default: int = 20, top: int = 100) -> int:
+    try: return max(1, min(int(float(f.get("limit") or default)), top))
+    except (TypeError, ValueError): raise ValueError("Limit must be a number")
+
+
+def _object(f: dict, key: str, label: str, required: bool = False) -> dict:
+    val = f.get(key)
+    if val is None or val == "":
+        if required: raise ValueError(f"{label} is required")
+        return {}
+    if not isinstance(val, dict): raise ValueError(f"{label} must be a JSON object")
+    return val
+
+
+def app_slack(op: str, secret: str, f: dict) -> Any:
+    if not secret.startswith(("xoxb-", "xoxp-")): raise ValueError("The Slack credential must be a bot token starting with xoxb-")
+    channel = _text(f, "channel", "Channel", maxlen=80)
+    if not re.fullmatch(r"[#@A-Za-z0-9_.\-]{1,80}", channel): raise ValueError("Channel must look like #general or a channel ID")
+    res = do_request("POST", "https://slack.com/api/chat.postMessage", {"Authorization": f"Bearer {secret}"}, json={"channel": channel, "text": _text(f, "text", "Text")})
+    if not isinstance(res, dict) or not res.get("ok"): raise ValueError(f"Slack error: {res.get('error', 'unknown') if isinstance(res, dict) else 'unexpected response'}")
+    return {"ok": True, "channel": res.get("channel"), "ts": res.get("ts")}
+
+
+def app_notion(op: str, secret: str, f: dict) -> Any:
+    headers = {"Authorization": f"Bearer {secret}", "Notion-Version": "2022-06-28"}
+    db = _text(f, "database_id", "Database ID", maxlen=40)
+    if not NOTION_ID_RE.fullmatch(db): raise ValueError("Database ID must be the 32-character ID from the database's URL")
+    if op == "create_page":
+        title_prop = _text(f, "title_property", "Title property", required=False, maxlen=100) or "Name"
+        props = {title_prop: {"title": [{"text": {"content": _text(f, "title", "Title", maxlen=2000)}}]}}
+        props.update(_object(f, "properties", "Properties"))
+        res = do_request("POST", "https://api.notion.com/v1/pages", headers, json={"parent": {"database_id": db}, "properties": props})
+        return {"id": res.get("id"), "url": res.get("url")} if isinstance(res, dict) else res
+    res = do_request("POST", f"https://api.notion.com/v1/databases/{db}/query", headers, json={"page_size": _limit(f)})
+    out = []
+    for r in (res.get("results") if isinstance(res, dict) else None) or []:
+        title = ""
+        for prop in (r.get("properties") or {}).values():
+            if isinstance(prop, dict) and prop.get("type") == "title":
+                title = "".join(t.get("plain_text", "") for t in prop.get("title") or [])
+                break
+        out.append({"id": r.get("id"), "url": r.get("url"), "title": title})
+    return out
+
+
+def app_airtable(op: str, secret: str, f: dict) -> Any:
+    base_id, table = _text(f, "base_id", "Base ID", maxlen=40), _text(f, "table", "Table", maxlen=80)
+    if not AIRTABLE_BASE_RE.fullmatch(base_id): raise ValueError("Base ID must look like appXXXXXXXXXXXXXX")
+    if not AIRTABLE_TABLE_RE.fullmatch(table): raise ValueError("Table name has unsupported characters")
+    url, headers = f"https://api.airtable.com/v0/{base_id}/{quote(table)}", {"Authorization": f"Bearer {secret}"}
+    if op == "list_records":
+        res = do_request("GET", f"{url}?maxRecords={_limit(f)}", headers)
+        return [{"_id": r.get("id"), **(r.get("fields") or {})} for r in (res.get("records") if isinstance(res, dict) else None) or []]
+    res = do_request("POST", url, headers, json={"fields": _object(f, "record", "Record", required=True)})
+    return {"_id": res.get("id"), **(res.get("fields") or {})} if isinstance(res, dict) else res
+
+
+def app_stripe(op: str, secret: str, f: dict) -> Any:
+    if not secret.startswith(("sk_", "rk_")): raise ValueError("The Stripe credential must be a secret key starting with sk_ or rk_")
+    headers = {"Authorization": f"Bearer {secret}"}
+    if op == "create_customer":
+        form = {k: _text(f, k, k.title(), required=False, maxlen=200) for k in ("email", "name")}
+        form = {k: v for k, v in form.items() if v}
+        if not form: raise ValueError("Provide an email or a name")
+        res = do_request("POST", "https://api.stripe.com/v1/customers", headers, data=form)
+        return {"id": res.get("id"), "email": res.get("email"), "name": res.get("name")} if isinstance(res, dict) else res
+    path = "customers" if op == "list_customers" else "payment_intents"
+    res = do_request("GET", f"https://api.stripe.com/v1/{path}?limit={_limit(f)}", headers)
+    rows = (res.get("data") if isinstance(res, dict) else None) or []
+    keys = ("id", "email", "name") if op == "list_customers" else ("id", "amount", "currency", "status")
+    return [{k: r.get(k) for k in keys} for r in rows]
+
+
+def app_twilio(op: str, secret: str, f: dict) -> Any:
+    m = re.fullmatch(r"(AC[0-9a-fA-F]{32}):([^\s:]{16,64})", secret)
+    if not m: raise ValueError("The Twilio credential must look like ACxxxxxxxx:auth_token")
+    to, sender = _text(f, "to", "To", maxlen=20), _text(f, "from", "From", maxlen=20)
+    if not PHONE_RE.fullmatch(to) or not PHONE_RE.fullmatch(sender): raise ValueError("Phone numbers must look like +15551234567")
+    body = _text(f, "body", "Message", maxlen=1600)
+    res = do_request("POST", f"https://api.twilio.com/2010-04-01/Accounts/{m.group(1)}/Messages.json", {}, data={"To": to, "From": sender, "Body": body}, auth=(m.group(1), m.group(2)))
+    return {"sid": res.get("sid"), "status": res.get("status")} if isinstance(res, dict) else res
+
+
+def app_linear(op: str, secret: str, f: dict) -> Any:
+    team = _text(f, "team_id", "Team ID", maxlen=40)
+    if not UUID_RE.fullmatch(team): raise ValueError("Team ID must be the UUID of the Linear team")
+    query = "mutation($input: IssueCreateInput!){issueCreate(input:$input){success issue{id identifier url}}}"
+    variables = {"input": {"teamId": team, "title": _text(f, "title", "Title", maxlen=250), "description": _text(f, "description", "Description", required=False, maxlen=20000)}}
+    res = do_request("POST", "https://api.linear.app/graphql", {"Authorization": secret}, json={"query": query, "variables": variables})
+    if not isinstance(res, dict) or res.get("errors"): raise ValueError("Linear error: " + (str((res.get("errors") or [{}])[0].get("message", "unknown")) if isinstance(res, dict) else "unexpected response"))
+    return ((res.get("data") or {}).get("issueCreate") or {}).get("issue")
+
+
+def app_hubspot(op: str, secret: str, f: dict) -> Any:
+    headers, url = {"Authorization": f"Bearer {secret}"}, "https://api.hubapi.com/crm/v3/objects/contacts"
+    keys = ("email", "firstname", "lastname", "phone", "company")
+    if op == "create_contact":
+        props = {k: _text(f, k, k, required=False, maxlen=200) for k in keys}
+        props = {k: v for k, v in props.items() if v}
+        if not props.get("email"): raise ValueError("Email is required")
+        res = do_request("POST", url, headers, json={"properties": props})
+        return {"id": res.get("id"), **(res.get("properties") or {})} if isinstance(res, dict) else res
+    res = do_request("GET", f"{url}?limit={_limit(f)}&properties={','.join(keys)}", headers)
+    return [{"id": r.get("id"), **{k: (r.get("properties") or {}).get(k) for k in keys}} for r in (res.get("results") if isinstance(res, dict) else None) or []]
+
+
+APP_HANDLERS = {"slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+
+
+def app_action(d: dict, previous: Any) -> Any:
+    service, op = str(d.get("service") or "").strip(), str(d.get("operation") or "").strip()
+    if service not in APP_OPS: raise ValueError(f"Choose a service ({', '.join(APP_OPS)})")
+    if op not in APP_OPS[service]: raise ValueError(f"Unknown {service} action: {op or '(none)'}")
+    secret = lookup_secret(str(d.get("credential") or "").strip())
+    fields = read_json(render_template(str(d.get("fields") or "{}"), previous, json_escape=True))
+    if not isinstance(fields, dict): raise ValueError("Fields must be a JSON object")
+    return APP_HANDLERS[service](op, secret, fields)
 
 
 def build_response(d: dict, previous: Any) -> dict:
@@ -1793,7 +1939,7 @@ def poll_inbox(doc: dict, node: dict) -> None:
 # ---------------------------------------------------------------------------
 MAX_REPEATS = 20
 MAX_PARALLEL = 4
-PARALLEL_TYPES = {"http", "sql", "rss", "notify", "email", "telegram", "github", "sheets", "gmail", "ai", "code", "delay", "file"}
+PARALLEL_TYPES = {"app", "http", "sql", "rss", "notify", "email", "telegram", "github", "sheets", "gmail", "ai", "code", "delay", "file"}
 
 
 # ---------------------------------------------------------------------------
@@ -1938,6 +2084,9 @@ def step_action(node: dict, previous: Any):
     if typ == "gmail": return send_gmail(d, previous), previous, None
     if typ == "github":
         value = github_action(d, previous)
+        return value, value, None
+    if typ == "app":
+        value = app_action(d, previous)
         return value, value, None
     if typ == "wait":
         seconds = wait_seconds(d)
@@ -2114,6 +2263,23 @@ def run_repeat(g: Graph, nid: str, node: dict, value: Any):
     return {"attempts": attempts, "condition_met": met}, current
 
 
+EACH_ITEM_TYPES = {"app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
+MAX_EACH_ITEMS = 200
+
+
+def step_each_item(node: dict, value: Any):
+    """Run a node once for every element of a list (like n8n's item-by-item mode). The results come back as a list in the same order."""
+    if not isinstance(value, list): raise ValueError("'Run once for each item' needs a list as input")
+    if len(value) > MAX_EACH_ITEMS: raise ValueError(f"'Run once for each item' is limited to {MAX_EACH_ITEMS} items")
+    shown, passed = [], []
+    for i, item in enumerate(value):
+        try: out, keep, _branch = step_action(node, item)
+        except Exception as exc: raise ValueError(f"Item {i + 1} of {len(value)}: {exc}") from exc
+        shown.append(out)
+        passed.append(keep)
+    return shown, passed, None
+
+
 def run_one(g: Graph, nid: str, node: dict, value: Any, step: dict):
     """Run a single node (pin, retries and continue-on-error included). Updates its step and returns (shown, passed, branch)."""
     typ, data = node["type"], node.get("data", {}) or {}
@@ -2133,7 +2299,8 @@ def run_one(g: Graph, nid: str, node: dict, value: Any, step: dict):
             while True:
                 attempt += 1
                 try:
-                    shown, passed, branch = step_action(node, value)
+                    each = typ in EACH_ITEM_TYPES and str(data.get("each_item") or "false") == "true"
+                    shown, passed, branch = step_each_item(node, value) if each else step_action(node, value)
                     break
                 except StepFailure: raise
                 except Exception:

@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-721%20API%20%2B%2049%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-751%20API%20%2B%2050%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -79,7 +79,9 @@
 | **Editor comfort** | Undo and redo (Ctrl+Z, Ctrl+Y), copy and paste nodes (Ctrl+C, Ctrl+V), duplicate node, one-click Tidy layout, unsaved-change indicator, Ctrl+S |
 | **Connect to services** | Send Email over SMTP, Send Message to Slack or Discord, HTTP with Bearer, Basic or API-key auth, and Run Workflow to call one workflow from another |
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
-| **Thirty-five node types** | Manual, Schedule, Webhook and Email triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
+| **Work on lists** | Most action nodes can run once for every element of a list ("Run once for each item", up to 200 items), so one HTTP, Code, Set or message node handles a whole list and returns a list of results |
+| **App Action node** | Seven services behind one node: Slack, Notion, Airtable, Stripe, Twilio, Linear and HubSpot. These are tested against simulated servers only, so try each one with a test account before relying on it |
+| **Thirty-six node types** | Manual, Schedule, Webhook and Email triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
@@ -249,7 +251,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (721 tests, use a temporary database and key):
+**API, engine, security and connector tests** (751 tests, use a temporary database and key):
 
 ```powershell
 cd backend
