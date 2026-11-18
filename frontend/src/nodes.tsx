@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ArrowRight, Bell, Braces, CalendarClock, Check, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
+import { ArrowRight, Bell, Braces, CalendarClock, Check, Code, OctagonX, Split, Filter, Flag, GitBranch, GitMerge, Globe, ListTree, Mail, Minus, Pin, PenLine, Repeat, Table, Timer, Type, Webhook, Workflow, X, Zap } from 'lucide-react';
 import { catalog, startTypes } from './catalog';
 
-export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail };
+export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
 export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
@@ -15,7 +15,7 @@ export function WorkflowNode({ id, data, selected, type }: NodeProps) {
   const state = states[id];
   const subtitle = nodeSummary(type ?? '', data as Record<string, unknown>) || meta?.desc;
   return (
-    <div className={`fp-node ${selected ? 'selected' : ''} ${state ? 'state-' + state : ''}`} style={{ ['--node-color' as string]: meta?.color }}>
+    <div className={`fp-node type-${type} ${selected ? 'selected' : ''} ${state ? 'state-' + state : ''}`} style={{ ['--node-color' as string]: meta?.color }}>
       {!startTypes.includes(type ?? '') && <Handle type="target" position={Position.Left} />}
       <span className="fp-node-icon"><Icon size={17} /></span>
       <span className="fp-node-text">
@@ -42,7 +42,14 @@ export function WorkflowNode({ id, data, selected, type }: NodeProps) {
           <span className="branch-label t">true</span>
           <span className="branch-label f">false</span>
         </>
-      ) : type !== 'output' && <Handle type="source" position={Position.Right} />}
+      ) : type === 'switch' ? (
+        <>
+          {['1', '2', '3', '4', 'default'].map((h, i) => (
+            <Handle key={h} type="source" position={Position.Right} id={h} className={h === 'default' ? 'handle-false' : 'handle-each'} style={{ top: `${14 + i * 18}%` }} />
+          ))}
+          {['1', '2', '3', '4', 'default'].map((h, i) => <span key={h} className="branch-label sw-l" style={{ top: `${14 + i * 18}%` }}>{h}</span>)}
+        </>
+      ) : type !== 'output' && type !== 'fail' && <Handle type="source" position={Position.Right} />}
     </div>
   );
 }
@@ -57,6 +64,9 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'schedule': return s('mode') === 'cron' ? clip(`cron ${s('cron')}`) : s('mode') === 'daily' ? `daily at ${s('time') || '09:00'}` : `every ${s('minutes') || '15'} min`;
     case 'webhook': return 'waits for a request';
     case 'loop': return s('path') ? `items in ${s('path')}` : 'once per item';
+    case 'switch': return s('path') ? clip(`by ${s('path')}`) : 'choose a field';
+    case 'code': return 'Python snippet';
+    case 'fail': return clip(s('message'));
     case 'merge': return `mode: ${s('mode') || 'append'}`;
     case 'set': return s('json') ? clip(s('json')) : '';
     case 'filter': return clip(`${s('path') || 'item'} ${s('op') || 'equals'} ${s('equals')}`.trim());

@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-245%20API%20%2B%2034%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-277%20API%20%2B%2035%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -58,10 +58,12 @@
 | **Credentials vault** | API keys, tokens and passwords are encrypted with Fernet (AES) on your computer, referenced as `{{cred.NAME}}` or chosen in a dropdown, never returned by the API, and replaced with `[hidden]` in outputs, inputs and error messages |
 | **Loops, lists and merging** | Loop Over Items (up to 100 per loop, nested loops work), Merge (append, combine or first), Filter List, Parse CSV and Set Fields. Branches that are not taken never block a Merge |
 | **Debug like a pro** | Click a node to see the exact input and output of its last run, with iteration counts. Pin a node's output so it is skipped while you build the rest (no repeated API calls) |
+| **Reliability** | Per-node retries (up to 5, with a wait), "continue with the error as data", and an error workflow that runs when a workflow fails and receives the error, the failed node and the execution id |
+| **Code and routing** | Switch routes into up to four paths plus a default. The Code node runs a short Python snippet in a separate restricted process with a 5 second limit, no imports, files or network |
 | **Editor comfort** | Undo and redo (Ctrl+Z, Ctrl+Y), copy and paste nodes (Ctrl+C, Ctrl+V), duplicate node, one-click Tidy layout, unsaved-change indicator, Ctrl+S |
 | **Connect to services** | Send Email over SMTP, Send Message to Slack or Discord, HTTP with Bearer, Basic or API-key auth, and Run Workflow to call one workflow from another |
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
-| **Nineteen node types** | Manual, Schedule and Webhook triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV; Compare Value, Loop Over Items, Merge, Run Workflow, Delay, Pass Through; HTTP Request, Send Message, Send Email; Result Output |
+| **Twenty-two node types** | Manual, Schedule and Webhook triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV; Compare Value, Switch, Loop Over Items, Merge, Run Workflow, Code, Stop and Fail, Delay, Pass Through; HTTP Request, Send Message, Send Email; Result Output |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
@@ -231,7 +233,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (245 tests, use a temporary database and key):
+**API, engine, security and connector tests** (277 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -291,6 +293,7 @@ flowpilot/
 ## <img src="https://img.shields.io/badge/-Limits%20to%20know-FB7185?style=flat-square" alt="Limits"/>
 
 - **Single user, local use.** There is one owner account and sessions run over plain HTTP on localhost. It is not hardened for the public internet: do not expose port 8000 or forward it on your router.
+- **Code node is restricted, not a sandbox.** It blocks imports, file access, dunder attribute tricks and runs in its own process with a time limit, but treat it as a convenience for the owner's own workflows, not as protection against hostile code.
 - **Not yet:** OAuth sign-in connectors (for example Google Sheets), database nodes, multiple users and teams, and a Postgres option. Credentials cover API keys, tokens, SMTP and webhook URLs.
 - **Triggers need the API running.** Schedules and webhooks only work while the API window is open, and you should run a single API process (two would run each schedule twice). Cron expressions, signed webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md).
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.

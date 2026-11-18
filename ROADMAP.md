@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.5 (in progress)
+- Switch, Code (restricted Python) and Stop and Fail nodes
+- Per-node retries, continue-on-error and error-handler workflows
+
 ### v0.4
 - Credentials vault: Fernet-encrypted at rest, never returned by the API, redacted from run results
 - Engine rebuilt: Loop Over Items, Merge (fan-in), Run Workflow (sub-workflows), pinned node data

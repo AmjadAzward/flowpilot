@@ -1,6 +1,6 @@
 import type { Node } from '@xyflow/react';
 import { Copy, RefreshCcw } from 'lucide-react';
-import { operators, type FlowDoc } from './catalog';
+import { errorTypes, operators, startTypes, type FlowDoc } from './catalog';
 
 type Props = {
   node: Node;
@@ -21,8 +21,37 @@ const cronPresets = [
   { label: '1st of month', value: '0 0 1 * *' },
 ];
 
-/** The type-specific settings form for the selected node. */
-export function NodeSettings({ node, update, credentials, flows, currentFlowId, webhookUrl, isActive, onCopyWebhook, onRotateWebhook }: Props) {
+/** The settings form for the selected node, followed by the retry / error-handling section. */
+export function NodeSettings(props: Props) {
+  const { node, update, flows, currentFlowId } = props;
+  const d = node.data as Record<string, unknown>;
+  const v = (k: string, fallback = '') => String(d[k] ?? fallback);
+  const type = node.type ?? '';
+  return (
+    <>
+      <TypeSettings {...props} />
+      {startTypes.includes(type) && (
+        <label>If this workflow fails, run
+          <select value={v('error_workflow')} onChange={e => update('error_workflow', e.target.value)}>
+            <option value="">Nothing</option>
+            {flows.filter(f => f.id !== currentFlowId).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <span className="hint">That workflow receives the workflow name, the error, the failed node and the execution id.</span>
+        </label>
+      )}
+      {errorTypes.includes(type) && (
+        <div className="err-box">
+          <span className="field-label">When this node fails</span>
+          <label>Retry<select value={v('retries', '0')} onChange={e => update('retries', e.target.value)}>{[0, 1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n === 0 ? 'Do not retry' : `Up to ${n} more time${n > 1 ? 's' : ''}`}</option>)}</select></label>
+          {v('retries', '0') !== '0' && <label>Wait between tries (seconds, max 3)<input type="number" min={0} max={3} step={0.5} value={v('retry_wait', '1')} onChange={e => update('retry_wait', e.target.value)} /></label>}
+          <label>After the last try<select value={v('on_error', 'stop')} onChange={e => update('on_error', e.target.value)}><option value="stop">Stop the workflow</option><option value="continue">Continue with the error as data</option></select></label>
+        </div>
+      )}
+    </>
+  );
+}
+
+function TypeSettings({ node, update, credentials, flows, currentFlowId, webhookUrl, isActive, onCopyWebhook, onRotateWebhook }: Props) {
   const d = node.data as Record<string, unknown>;
   const v = (k: string, fallback = '') => String(d[k] ?? fallback);
   const text = (k: string) => (e: { target: { value: string } }) => update(k, e.target.value);
@@ -86,6 +115,23 @@ export function NodeSettings({ node, update, credentials, flows, currentFlowId, 
           <span className="hint">Connect several branches into this node. It waits for every branch that is actually running, so a branch that was not taken never blocks it.</span>
         </>
       );
+    case 'switch':
+      return (
+        <>
+          <label>Field path<input value={v('path')} onChange={text('path')} /></label>
+          {['1', '2', '3', '4'].map(i => <label key={i}>Path {i} when it equals<input value={v('case' + i)} onChange={text('case' + i)} placeholder="leave empty to disable" /></label>)}
+          <span className="hint">The first matching path runs. If none match, the <b>default</b> path runs.</span>
+        </>
+      );
+    case 'code':
+      return (
+        <>
+          <label>Python code<textarea rows={9} spellCheck={false} value={v('code')} onChange={text('code')} /></label>
+          <span className="hint">Read the incoming data from <b>input</b> and put your answer in <b>result</b>. Provided: json, re, math, datetime and basic functions (len, sum, sorted, and so on). No imports, no files, no network, 5 second limit. Runs in a separate restricted process, so use it for your own workflows only.</span>
+        </>
+      );
+    case 'fail':
+      return <label>Error message<input value={v('message')} onChange={text('message')} /><span className="hint">Ends the run as failed. Use {'{{field}}'} to include data. Useful after a Switch path that should never happen, or to test error workflows.</span></label>;
     case 'condition':
       return (
         <>

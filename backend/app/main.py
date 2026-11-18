@@ -18,6 +18,9 @@ import socket
 import io
 import ipaddress
 import smtplib
+import subprocess
+import sys
+import tempfile
 import ssl
 import uuid
 from contextlib import asynccontextmanager
@@ -129,7 +132,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -600,11 +603,90 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow"}
+PINNABLE = {"input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code"}
+# Nodes that support retries and "continue on error".
+ERROR_SETTINGS = {"input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay"}
+MAX_RETRIES = 5
+MAX_RETRY_WAIT = 3.0
+CODE_TIMEOUT = 5
+CODE_OUTPUT_LIMIT = 1_000_000
 MAX_STEPS = 500
 MAX_LOOP_ITEMS = 100
 MAX_SUBFLOW_DEPTH = 3
 PREVIEW_LIMIT = 20_000
+
+
+# ---------------------------------------------------------------------------
+# Code node: a short Python snippet run in a separate, locked-down process with a time limit.
+# It is a convenience for the trusted owner, not a security boundary against hostile code.
+# ---------------------------------------------------------------------------
+CODE_RUNNER = r"""
+import sys, json, ast, re, math, datetime
+from types import SimpleNamespace as NS
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (768 * 2**20, 768 * 2**20))
+except Exception:
+    pass
+payload = json.loads(sys.stdin.read())
+def fail(msg):
+    sys.stdout.write(json.dumps({"error": msg}))
+    sys.exit(0)
+try:
+    tree = ast.parse(payload["code"], "code", "exec")
+except SyntaxError as exc:
+    fail("Syntax error on line %s: %s" % (exc.lineno, exc.msg))
+BLOCKED = {"format", "format_map", "mro"}
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        fail("import is not available. json, re, math and datetime are already provided.")
+    if isinstance(node, ast.Attribute) and (node.attr.startswith("_") or node.attr in BLOCKED or node.attr.startswith(("gi_", "cr_", "ag_", "tb_", "f_"))):
+        fail("Access to '%s' is not allowed" % node.attr)
+    if isinstance(node, ast.Name) and node.id.startswith("__"):
+        fail("Access to '%s' is not allowed" % node.id)
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        fail("global and nonlocal are not allowed")
+names = "abs all any bool dict enumerate filter float int len list map max min range reversed round set sorted str sum tuple zip isinstance ValueError TypeError KeyError Exception".split()
+import builtins
+safe = {n: getattr(builtins, n) for n in names}
+env = {
+    "__builtins__": safe,
+    "input": payload["input"],
+    "result": None,
+    "json": NS(loads=json.loads, dumps=json.dumps),
+    "re": NS(search=re.search, match=re.match, fullmatch=re.fullmatch, findall=re.findall, sub=re.sub, split=re.split, compile=re.compile, escape=re.escape, IGNORECASE=re.I, MULTILINE=re.M),
+    "math": NS(**{k: getattr(math, k) for k in dir(math) if not k.startswith("_")}),
+    "datetime": NS(datetime=datetime.datetime, date=datetime.date, timedelta=datetime.timedelta, timezone=datetime.timezone),
+}
+try:
+    exec(compile(tree, "code", "exec"), env)
+    out = json.dumps({"result": env.get("result")}, default=str)
+except BaseException as exc:
+    fail("%s: %s" % (type(exc).__name__, exc))
+sys.stdout.write(out)
+"""
+
+
+def run_code(d: dict, previous: Any) -> Any:
+    code = str(d.get("code") or "")
+    if not code.strip(): raise ValueError("Write some code first. Read the data from 'input' and put the answer in 'result'.")
+    if len(code) > 20_000: raise ValueError("Code is limited to 20000 characters")
+    try: payload = json.dumps({"code": code, "input": previous}, default=str)
+    except (TypeError, ValueError) as exc: raise ValueError(f"Input cannot be passed to code: {exc}")
+    if len(payload) > 1_000_000: raise ValueError("Input is too large for the Code node (limit 1 MB)")
+    env = {"PYTHONIOENCODING": "utf-8", "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+    try:
+        with tempfile.TemporaryDirectory() as cwd:
+            proc = subprocess.run([sys.executable, "-I", "-c", CODE_RUNNER], input=payload, capture_output=True, text=True,
+                                  encoding="utf-8", timeout=CODE_TIMEOUT, cwd=cwd, env=env)
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"Code took longer than {CODE_TIMEOUT} seconds and was stopped")
+    out = proc.stdout or ""
+    if len(out) > CODE_OUTPUT_LIMIT: raise ValueError("Code produced too much output (limit 1 MB)")
+    try: res = json.loads(out)
+    except ValueError: raise ValueError("Code stopped unexpectedly" + (" (out of memory?)" if proc.returncode else ""))
+    if "error" in res: raise ValueError(res["error"])
+    return res.get("result")
 
 
 def step_action(node: dict, previous: Any):
@@ -650,6 +732,20 @@ def step_action(node: dict, previous: Any):
         seconds = max(0.0, min(seconds, MAX_DELAY_SECONDS))
         time.sleep(seconds)
         return {"waited_seconds": seconds}, previous, None
+    if typ == "code":
+        value = run_code(d, previous)
+        return value, value, None
+    if typ == "fail":
+        raise ValueError(render_template(str(d.get("message") or "Workflow stopped by a Stop and Fail node"), previous))
+    if typ == "switch":
+        actual = get_path(previous, str(d.get("path", "")))
+        branch = "default"
+        for i in "1234":
+            wanted = str(d.get("case" + i) or "")
+            if wanted != "" and compare(actual, "equals", wanted):
+                branch = i
+                break
+        return {"matched": branch, "value": previous}, previous, branch
     if typ == "condition":
         actual = get_path(previous, str(d.get("path", "")))
         matched = compare(actual, str(d.get("op", "equals")), str(d.get("equals", "")))
@@ -806,20 +902,37 @@ def run_graph(g: Graph, allowed: set, seeds: list):
                 passed = shown
                 step["pinned"] = True
             elif typ == "loop": shown, passed = run_loop(g, nid, node, value)
-            else: shown, passed, branch = step_action(node, value)
+            else:
+                retries = max(0, min(int(float(data.get("retries") or 0)), MAX_RETRIES)) if typ in ERROR_SETTINGS else 0
+                wait = max(0.0, min(float(data.get("retry_wait") or 1), MAX_RETRY_WAIT))
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        shown, passed, branch = step_action(node, value)
+                        break
+                    except StepFailure: raise
+                    except Exception:
+                        if attempt > retries: raise
+                        time.sleep(wait)
+                if attempt > 1: step["attempts"] = attempt
         except StepFailure as exc:
             step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
             raise
         except Exception as exc:
-            step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
-            raise StepFailure(str(exc)) from exc
-        step.update(status="success", output=shown, branch=branch, duration_ms=round((time.perf_counter() - t0) * 1000, 1))
-        final = passed if typ in ("condition", "loop") else shown
+            if typ in ERROR_SETTINGS and str(data.get("on_error") or "stop") == "continue":
+                shown = passed = {"error": str(exc), "input": value}
+                step.update(error=str(exc), continued=True)
+            else:
+                step.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - t0) * 1000, 1))
+                raise StepFailure(str(exc)) from exc
+        step.update(status="error" if step.get("continued") else "success", output=shown, branch=branch, duration_ms=round((time.perf_counter() - t0) * 1000, 1))
+        final = passed if typ in ("condition", "loop", "switch") else shown
         # Condition: only the matching branch is live. Loop: only 'done' continues here ('each' runs inside run_loop).
         live, dead = [], []
         for e in g.out[nid]:
             handle = e.get("sourceHandle")
-            follows = handle in (None, branch) if typ == "condition" else handle == "done" if typ == "loop" else True
+            follows = handle in (None, branch) if typ in ("condition", "switch") else handle == "done" if typ == "loop" else True
             (live if follows else dead).append(e)
         for e in dead: deliver(e["target"], None, True)
         for e in reversed(live): deliver(e["target"], passed, False)
@@ -860,7 +973,23 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
     with conn() as db:
         db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
                    (exec_id, doc["id"], result["status"], started, now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
+    if result["status"] != "success" and kind != "error": run_error_handler(doc, exec_id, kind, result)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
+
+
+def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict) -> None:
+    """If the trigger names an error workflow, run it with details of the failure. Handlers never trigger handlers."""
+    node = start_node(doc)
+    handler_id = str(((node or {}).get("data") or {}).get("error_workflow") or "").strip()
+    if not handler_id or handler_id == doc["id"]: return
+    try:
+        handler = get_workflow(handler_id)
+        failed = next((st for st in reversed(result["steps"]) if st.get("status") == "error"), {})
+        payload = {"workflow": {"id": doc["id"], "name": doc.get("name")}, "execution_id": exec_id, "trigger": kind,
+                   "error": result["error"], "failed_node": failed.get("label")}
+        execute_workflow(handler, "error", payload)
+    except Exception:
+        logging.getLogger("flowpilot").exception("error workflow failed")
 
 
 def start_node(doc: dict) -> dict | None:

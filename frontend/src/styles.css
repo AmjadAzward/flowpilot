@@ -385,3 +385,11 @@ select { cursor: pointer; }
 .help-panel { display: flex; flex-direction: column; gap: 10px; }
 .help-panel h2 { font-size: 15px; font-weight: 600; }
 .help-panel ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
+
+.branch-label.sw-l { transform: translateY(-50%); right: -30px; color: var(--muted); }
+.fp-node .handle-each { background: var(--accent); }
+.err-box { display: grid; gap: 10px; padding: 12px; border: 1px dashed var(--border); border-radius: 10px; }
+.trig-chip.error { color: #b91c1c; background: rgba(239, 68, 68, .12); }
+:root[data-theme='dark'] .trig-chip.error { color: #f87171; }
+
+.fp-node.type-switch { min-height: 118px; }

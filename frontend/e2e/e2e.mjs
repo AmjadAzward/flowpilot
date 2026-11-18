@@ -457,6 +457,28 @@ await check('new nodes expose their settings: email, message, merge, filter, sub
   await shot('14-new-nodes');
 });
 
+await check('code, switch, stop-and-fail, retries and error workflow settings work in the editor', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  await page.getByTestId('add-code').click();
+  await page.getByLabel('Python code').fill("result = {'shout': input['name'].upper()}");
+  await page.getByLabel('Retry').selectOption('2');
+  await page.getByLabel('After the last try').selectOption('continue');
+  await page.getByTestId('add-switch').click();
+  await page.getByLabel('Field path').fill('name');
+  await page.getByLabel('Path 1 when it equals').fill('Ada');
+  await page.getByTestId('add-fail').click();
+  await page.getByLabel('Error message').waitFor();
+  await node('Manual Trigger').click();
+  await page.getByLabel('If this workflow fails, run').waitFor();
+  await node('Code').click();
+  await page.getByLabel('Python code').waitFor();
+  if ((await page.getByLabel('Retry').inputValue()) !== '2') throw new Error('retry setting was not kept');
+  await shot('15-logic-nodes');
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();

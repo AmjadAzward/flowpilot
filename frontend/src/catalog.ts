@@ -2,10 +2,10 @@ import type { Edge, Node } from '@xyflow/react';
 
 export type TriggerKind = 'manual' | 'schedule' | 'webhook';
 export type FlowDoc = { id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
-export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean };
-export type Run = { id: string; trigger?: TriggerKind; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
+export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
+export type Run = { id: string; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -21,6 +21,9 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'loop', label: 'Loop Over Items', desc: 'Run steps once per list item', category: 'Logic', color: '#0ea5e9', icon: 'Repeat' },
   { type: 'merge', label: 'Merge', desc: 'Combine several branches', category: 'Logic', color: '#14b8a6', icon: 'GitMerge' },
   { type: 'subflow', label: 'Run Workflow', desc: 'Call another workflow', category: 'Logic', color: '#64748b', icon: 'Workflow' },
+  { type: 'switch', label: 'Switch', desc: 'Route into up to 4 paths plus a default', category: 'Logic', color: '#ec4899', icon: 'Split' },
+  { type: 'code', label: 'Code', desc: 'Run a short Python snippet', category: 'Logic', color: '#10b981', icon: 'Code' },
+  { type: 'fail', label: 'Stop and Fail', desc: 'End the run with an error message', category: 'Logic', color: '#ef4444', icon: 'OctagonX' },
   { type: 'condition', label: 'Compare Value', desc: 'Branch into true and false paths', category: 'Logic', color: '#f472b6', icon: 'GitBranch' },
   { type: 'delay', label: 'Delay', desc: 'Wait up to 5 seconds', category: 'Logic', color: '#fb923c', icon: 'Timer' },
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
@@ -32,7 +35,9 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow'];
+export const pinnableTypes: string[] = ['input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code'];
+/** Nodes that support retries and continue-on-error. */
+export const errorTypes: string[] = ['input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay'];
 
 export const operators = [
   { value: 'equals', label: 'equals' },
@@ -58,6 +63,9 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'csv': return { path: '', header: 'true' };
     case 'loop': return { path: '' };
     case 'merge': return { mode: 'append' };
+    case 'switch': return { path: 'status', case1: 'new', case2: 'paid', case3: '', case4: '' };
+    case 'code': return { code: "# 'input' holds the incoming data. Put your answer in 'result'.\nresult = {'count': len(input) if isinstance(input, list) else 1}" };
+    case 'fail': return { message: 'Something went wrong with {{name}}' };
     case 'subflow': return { workflow_id: '' };
     case 'notify': return { service: 'slack', url: '{{cred.SLACK_URL}}', message: 'Hello from FlowPilot' };
     case 'email': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };

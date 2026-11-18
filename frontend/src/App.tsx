@@ -26,7 +26,7 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const triggerLabel: Record<TriggerKind, string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook' };
+const triggerLabel: Record<TriggerKind | 'error', string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
@@ -563,7 +563,7 @@ function Workspace({ username, onSignOut }: { username: string; onSignOut: () =>
                         <div className="data-head"><span>Last run</span>{nodeSteps.length > 1 && <em className="iter">{nodeSteps.length} runs</em>}{shownStep.pinned && <em className="pin-chip">pinned</em>}</div>
                         {shownStep.error && <p className="error">{shownStep.error}</p>}
                         <div className="data-block"><span className="field-label">Input</span><pre>{pretty(shownStep.input)}</pre></div>
-                        {shownStep.status === 'success' && <div className="data-block"><span className="field-label">Output</span><pre>{pretty(shownStep.output)}</pre></div>}
+                        {shownStep.output !== undefined && <div className="data-block"><span className="field-label">Output</span><pre>{pretty(shownStep.output)}</pre></div>}
                       </div>
                     )}
                     {pinnableTypes.includes(currentNode.type ?? '') && (isPinned
