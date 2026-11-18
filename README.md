@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-550%20API%20%2B%2047%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-707%20API%20%2B%2048%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -58,6 +58,7 @@
 | **Credentials vault** | API keys, tokens and passwords are encrypted with Fernet (AES) on your computer, referenced as `{{cred.NAME}}` or chosen in a dropdown, never returned by the API, and replaced with `[hidden]` in outputs, inputs and error messages |
 | **Loops, lists and merging** | Loop Over Items (up to 100 per loop, nested loops work), Merge (append, combine or first), Filter List, Parse CSV and Set Fields. Branches that are not taken never block a Merge |
 | **Debug like a pro** | Click a node to see the exact input and output of its last run, with iteration counts. Pin a node's output so it is skipped while you build the rest (no repeated API calls) |
+| **Expressions** | Any `{{ }}` can hold a calculation, not just a field name: `{{ price * qty }}`, `{{ name.upper() }}`, `{{ items[0].title }}`, `{{ 'big' if total > 100 else 'small' }}`. Evaluated by a restricted interpreter that never runs code, with size and step limits |
 | **Queue mode and workers** | Start the API with `FLOWPILOT_QUEUE=1` and run one or more worker processes (`start-worker-windows.bat`, or `python -m app.worker`). Webhooks, schedules and email triggers are queued and run by workers, so a slow or heavy run never blocks the API. Jobs are claimed atomically (never run twice) and survive an API restart |
 | **Parallel branches** | Branches that become ready together run at the same time (up to 4 at once) when they are network, database, AI, code or file nodes. Results are recorded for every branch, and a failure still finishes its siblings |
 | **Repeat until** | Repeat steps until a condition is met, for example polling an API until a job is done, with a limit of 20 attempts |
@@ -248,7 +249,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (550 tests, use a temporary database and key):
+**API, engine, security and connector tests** (707 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -316,6 +317,7 @@ flowpilot/
 - **AI nodes:** local models use plain http, so start the API with `FLOWPILOT_ALLOW_PRIVATE_HOSTS=1` for them (this never applies to the HTTP node). A reply can take up to 90 seconds.
 - **Forms are public** to anyone who has the webhook URL, and are rate limited like any webhook. Do not put secrets in them.
 - **Backups:** the workflow file holds no credentials. The database copy includes password hashes and encrypted credentials, so keep it private and keep `backend/flowpilot.key` with it.
+- **Expressions** support arithmetic, comparisons, `and` / `or` / `not`, `a if cond else b`, indexing and slicing, `.field` access, lists and objects, the functions `len str int float round min max sum abs sorted bool list any all now today`, and the text methods `upper lower strip title capitalize replace split join startswith endswith find count zfill` plus `get keys values items` on objects. There are no loops, comprehensions, lambdas, imports or calls to anything else, `cred` is not reachable, and incoming data is never re-read as an expression. A name with no spaces such as `{{a-b}}` is still a plain field path, so existing workflows behave exactly as before. Missing fields are empty rather than errors.
 - **Queue mode** is optional and off by default. Turn it on by setting `FLOWPILOT_QUEUE=1` before starting the API, then start workers on the same computer with the same `FLOWPILOT_DB` and `FLOWPILOT_KEY_FILE`. Webhooks reply `202 queued` straight away, except workflows with a Respond to Webhook node, which wait up to 25 seconds for a worker. Manual runs from the editor always run directly. A job whose worker disappeared is closed as failed instead of being run again, so side effects are never repeated. `GET /api/queue` shows the queue length.
 - **What queue mode is for, honestly:** it keeps the API responsive, survives restarts and spreads work over processes. It is not faster on one computer. In a measurement of 400 webhook calls each waiting 0.3 seconds, the single-process default finished about 85 runs per second, while queue mode with workers finished about 20 per second, because SQLite allows one writer at a time and every job writes to the database. Use queue mode when runs are heavy or long, not to chase throughput.
 - **Scale ceiling:** FlowPilot stores everything in one SQLite file (now in WAL mode, so the API and workers do not block each other for reads). That is plenty for one team on one computer. For several machines or much higher throughput it needs a client-server database, which is not built yet.

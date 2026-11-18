@@ -763,6 +763,19 @@ await check('projects limit what a member can see', async () => {
   } finally { await ctx.close(); }
 });
 
+await check('expressions calculate inside a text template', async () => {
+  await goOverview();
+  await page.getByTestId('template-greeting').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await node('Text Template').click();
+  await page.getByLabel(/^Template/).fill("Hello {{ name.upper() }} from {{ city.title() }}, {{ len(name) * 2 }} chars doubled");
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel().locator('pre'), /Hello ADA from London, 6 chars doubled/);
+  await page.getByLabel(/^Template/).fill("Broken {{ 1 / 0 }}");
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel(), /Expression error[\s\S]*division by zero/);
+});
+
 await check('executions page lists runs, filters and expands', async () => {
   await page.getByRole('button', { name: /^Executions/ }).click();
   await page.getByTestId('history-row').first().waitFor();

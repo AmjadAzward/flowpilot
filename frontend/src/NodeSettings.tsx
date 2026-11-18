@@ -81,7 +81,7 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
     case 'transform':
       return <label>Field path (for example user.name)<input value={v('path')} onChange={text('path')} /></label>;
     case 'template':
-      return <label>Template<textarea rows={5} spellCheck={false} value={v('template')} onChange={text('template')} /><span className="hint">Use {'{{field}}'} to insert values from the incoming data.</span></label>;
+      return <label>Template<textarea rows={5} spellCheck={false} value={v('template')} onChange={text('template')} /><span className="hint">Use {'{{field}}'} to insert values from the incoming data. You can also calculate: {'{{ price * qty }}'}, {'{{ name.upper() }}'}, {'{{ "big" if total > 100 else "small" }}'}. Works in every text field that accepts {'{{ }}'}.</span></label>;
     case 'set':
       return (
         <label>JSON template<textarea rows={7} spellCheck={false} value={v('json')} onChange={text('json')} />

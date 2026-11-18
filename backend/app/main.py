@@ -2,7 +2,9 @@
 from __future__ import annotations
 import base64
 import contextvars
+import ast
 import copy
+import operator
 import csv
 import hashlib
 import hmac
@@ -67,7 +69,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.9.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.10.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -541,7 +543,7 @@ def delete_project(project_id: str):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.9.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.10.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -836,6 +838,146 @@ def delete_credential(name: str):
         db.execute("DELETE FROM credentials WHERE name=?", (name,))
 
 
+# ---------------------------------------------------------------------------
+# Expressions inside {{ }}: {{ price * qty }}, {{ name.upper() }}, {{ "big" if total > 100 else "small" }}
+# They are evaluated by walking a parsed syntax tree and allowing only a small safe set of operations. Nothing is
+# ever executed as code, there is no attribute access beyond reading data, and there are size and step limits.
+# ---------------------------------------------------------------------------
+PLAIN_PATH_RE = re.compile(r"^[A-Za-z0-9_.\-]*$")
+EXPR_MAX_NODES = 200
+EXPR_MAX_ITEMS = 1000
+EXPR_MAX_TEXT = 200_000
+
+
+class ExprError(ValueError):
+    pass
+
+
+def _expr_now() -> str: return datetime.now(timezone.utc).isoformat()
+def _expr_today() -> str: return datetime.now(timezone.utc).date().isoformat()
+
+
+EXPR_FUNCS = {"len": len, "str": str, "int": int, "float": float, "round": round, "min": min, "max": max, "sum": sum, "abs": abs, "sorted": sorted,
+              "bool": bool, "list": list, "any": any, "all": all, "now": _expr_now, "today": _expr_today}
+EXPR_METHODS = {"upper", "lower", "strip", "lstrip", "rstrip", "title", "capitalize", "replace", "split", "join", "startswith", "endswith", "find",
+                "count", "zfill", "get", "keys", "values", "items", "index", "isdigit", "isalpha"}
+EXPR_BIN = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow}
+EXPR_CMP = {ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt, ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge,
+            ast.In: lambda a, b: a in b, ast.NotIn: lambda a, b: a not in b, ast.Is: operator.is_, ast.IsNot: operator.is_not}
+
+
+def eval_expression(expr: str, data: Any) -> Any:
+    if len(expr) > 1000: raise ExprError("the expression is too long")
+    try: tree = ast.parse(expr.strip(), mode="eval")
+    except SyntaxError as exc: raise ExprError(f"syntax error ({exc.msg})")
+    except (RecursionError, ValueError, MemoryError): raise ExprError("the expression cannot be read")
+    count = [0]
+
+    def ev(n: ast.AST) -> Any:
+        count[0] += 1
+        if count[0] > EXPR_MAX_NODES: raise ExprError("the expression is too complex")
+        if isinstance(n, ast.Constant):
+            if isinstance(n.value, (str, int, float, bool)) or n.value is None: return n.value
+            raise ExprError("unsupported value")
+        if isinstance(n, ast.Name):
+            if n.id == "data": return data
+            if n.id in ("cred", "__builtins__") or n.id.startswith("_"): raise ExprError(f"'{n.id}' is not available in expressions")
+            return data.get(n.id) if isinstance(data, dict) else None
+        if isinstance(n, ast.Attribute):
+            if n.attr.startswith("_"): raise ExprError("names starting with _ are not allowed")
+            base = ev(n.value)
+            return base.get(n.attr) if isinstance(base, dict) else None
+        if isinstance(n, ast.Subscript):
+            base = ev(n.value)
+            if isinstance(n.slice, ast.Slice):
+                lo, hi = (ev(x) if x is not None else None for x in (n.slice.lower, n.slice.upper))
+                if n.slice.step is not None: raise ExprError("slice steps are not supported")
+                if not isinstance(base, (str, list)) or not all(v is None or isinstance(v, int) for v in (lo, hi)): raise ExprError("invalid slice")
+                return base[lo:hi]
+            key = ev(n.slice)
+            try:
+                if isinstance(base, dict): return base.get(key)
+                if isinstance(base, (list, str)) and isinstance(key, int) and not isinstance(key, bool): return base[key] if -len(base) <= key < len(base) else None
+            except TypeError: pass
+            return None
+        if isinstance(n, ast.BinOp):
+            op = EXPR_BIN.get(type(n.op))
+            if op is None: raise ExprError("unsupported operator")
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Pow) and (not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or abs(b) > 64 or abs(a) > 1e6): raise ExprError("that power is too large")
+            if isinstance(n.op, ast.Mult) and isinstance(a, (str, list)) and isinstance(b, int) and len(a) * max(b, 0) > EXPR_MAX_TEXT: raise ExprError("the result is too large")
+            if isinstance(n.op, ast.Mult) and isinstance(b, (str, list)) and isinstance(a, int) and len(b) * max(a, 0) > EXPR_MAX_TEXT: raise ExprError("the result is too large")
+            if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+                if not (isinstance(n.op, ast.Add) and isinstance(a, str) and isinstance(b, str)): raise ExprError("cannot calculate with true, false or empty values")
+            try: return op(a, b)
+            except ZeroDivisionError: raise ExprError("division by zero")
+            except TypeError: raise ExprError("these values cannot be combined that way")
+        if isinstance(n, ast.UnaryOp):
+            v = ev(n.operand)
+            if isinstance(n.op, ast.Not): return not v
+            if isinstance(n.op, (ast.USub, ast.UAdd)) and isinstance(v, (int, float)) and not isinstance(v, bool): return -v if isinstance(n.op, ast.USub) else v
+            raise ExprError("unsupported operator")
+        if isinstance(n, ast.BoolOp):
+            result = None
+            for v in n.values:
+                result = ev(v)
+                if isinstance(n.op, ast.And) and not result: return result
+                if isinstance(n.op, ast.Or) and result: return result
+            return result
+        if isinstance(n, ast.Compare):
+            left = ev(n.left)
+            for op, comp in zip(n.ops, n.comparators):
+                right = ev(comp)
+                fn = EXPR_CMP.get(type(op))
+                if fn is None: raise ExprError("unsupported comparison")
+                try: ok = fn(left, right)
+                except TypeError: raise ExprError("these values cannot be compared")
+                if not ok: return False
+                left = right
+            return True
+        if isinstance(n, ast.IfExp): return ev(n.body) if ev(n.test) else ev(n.orelse)
+        if isinstance(n, (ast.List, ast.Tuple)):
+            if len(n.elts) > EXPR_MAX_ITEMS: raise ExprError("too many items")
+            return [ev(x) for x in n.elts]
+        if isinstance(n, ast.Dict):
+            if len(n.keys) > EXPR_MAX_ITEMS or any(k is None for k in n.keys): raise ExprError("unsupported dictionary")
+            return {ev(k): ev(v) for k, v in zip(n.keys, n.values)}
+        if isinstance(n, ast.Call):
+            if n.keywords or any(isinstance(a, ast.Starred) for a in n.args): raise ExprError("keyword and starred arguments are not supported")
+            args = [ev(a) for a in n.args]
+            if isinstance(n.func, ast.Name):
+                fn = EXPR_FUNCS.get(n.func.id)
+                if fn is None: raise ExprError(f"unknown function {n.func.id}()")
+                try: out = fn(*args)
+                except (TypeError, ValueError) as exc: raise ExprError(f"{n.func.id}() could not be applied: {str(exc)[:80]}")
+                if isinstance(out, (str, list)) and len(out) > EXPR_MAX_TEXT: raise ExprError("the result is too large")
+                return out
+            if isinstance(n.func, ast.Attribute):
+                name = n.func.attr
+                if name not in EXPR_METHODS: raise ExprError(f"unknown method .{name}()")
+                recv = ev(n.func.value)
+                if not isinstance(recv, (str, list, dict)): raise ExprError(f".{name}() cannot be used on this value")
+                if isinstance(recv, dict) and name not in ("get", "keys", "values", "items"): raise ExprError(f".{name}() cannot be used on an object")
+                if isinstance(recv, list) and name not in ("count", "index", "join"): raise ExprError(f".{name}() cannot be used on a list")
+                if isinstance(recv, str) and name in ("get", "keys", "values", "items"): raise ExprError(f".{name}() cannot be used on text")
+                try:
+                    if name == "join":
+                        sep = recv if isinstance(recv, str) else ","
+                        items = args[0] if args else []
+                        if not isinstance(items, list): raise ExprError("join() needs a list")
+                        return sep.join(str(x) for x in items)
+                    out = getattr(recv, name)(*args)
+                except (TypeError, ValueError, KeyError) as exc: raise ExprError(f".{name}() could not be applied: {str(exc)[:80]}")
+                if name in ("keys", "values", "items"): out = [list(x) if isinstance(x, tuple) else x for x in out]
+                if isinstance(out, (str, list)) and len(out) > EXPR_MAX_TEXT: raise ExprError("the result is too large")
+                return out
+            raise ExprError("unsupported call")
+        raise ExprError(f"{type(n).__name__} is not allowed in expressions")
+
+    try: return ev(tree.body)
+    except RecursionError: raise ExprError("the expression is nested too deeply")
+
+
 def render_template(text: str, data: Any, json_escape: bool = False) -> str:
     """Replace {{path}} with values from the incoming data and {{cred.NAME}} with a stored credential."""
     def repl(match):
@@ -843,7 +985,10 @@ def render_template(text: str, data: Any, json_escape: bool = False) -> str:
         if path.startswith("cred."):
             value = lookup_secret(path[5:])
             if oauth_config(value): raise ValueError("An OAuth connection cannot be inserted as text. Choose it in the node's Authentication or Connection setting.")
-        else: value = get_path(data, path)
+        elif PLAIN_PATH_RE.fullmatch(path): value = get_path(data, path)
+        else:
+            try: value = eval_expression(path, data)
+            except ExprError as exc: raise ValueError(f"Expression error in {{{{ {path[:60]} }}}}: {exc}")
         if value is None: return ""
         if isinstance(value, str): return json.dumps(value)[1:-1] if json_escape else value
         return json.dumps(value)
