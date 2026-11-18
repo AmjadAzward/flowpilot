@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-790%20API%20%2B%2054%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-801%20API%20%2B%2058%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -85,6 +85,9 @@
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
 | **Activity log** | The owner sees who changed what (every successful change, plus sign-ins and failed sign-ins by account name). Passwords and bodies are never recorded. The latest 5000 entries are kept |
+| **Twenty-three templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
+| **First-run tour** | A four-step walkthrough shown once, and again from the Tour link in the sidebar |
+| **Export runs to CSV** | The Executions page exports the run history (all, or only the failed or successful ones). Cells that could be read as spreadsheet formulas are neutralised |
 | **Forty-four node types** | Manual, Schedule, Webhook and Email triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
@@ -129,6 +132,18 @@ npm run dev
 ```
 
 Interactive API documentation is served at **http://127.0.0.1:8000/docs**.
+
+### Run it for real: one window, Docker, or start at sign-in
+
+The steps above are for building and developing. To simply use FlowPilot, run it in production mode, where the API serves the built interface itself on **one port** (8000):
+
+- **Windows, one window:** double-click `start-production-windows.bat`. It builds the interface the first time, then starts FlowPilot at http://127.0.0.1:8000. After updating the code, run it with `--rebuild`.
+- **Windows, start at sign-in:** after the step above, run `install-startup-windows.bat`. It adds a scheduled task for your own account (no administrator rights) that starts FlowPilot hidden whenever you sign in, so schedules, webhooks and email checks keep working. `uninstall-startup-windows.bat` removes it.
+- **Docker:** `docker compose up -d --build`, then open http://127.0.0.1:8000. Everything lives in the `flowpilot-data` volume, so back that volume up. The port is published to this computer only; put an HTTPS reverse proxy in front before exposing it, and set `FLOWPILOT_PUBLIC_URL` so webhook addresses show your public name.
+- **Any platform, by hand:** build once with `npm run build` in `frontend`, then start the API with `FLOWPILOT_SERVE_UI=1`.
+
+The Docker files and the sign-in task were written carefully but have not been run in this project's test setup (no Docker engine was available, and a scheduled task changes the computer it is installed on). The production serving itself is tested.
+
 
 ---
 
@@ -255,7 +270,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (790 tests, use a temporary database and key):
+**API, engine, security and connector tests** (801 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -288,7 +303,11 @@ npm run build
 
 ```text
 flowpilot/
-  start-windows.bat          one-click launcher for Windows
+  start-windows.bat          one-click launcher for Windows (development)
+  start-production-windows.bat   one-window production mode (API serves the built interface)
+  install-startup-windows.bat    start FlowPilot at sign-in (uninstall-startup-windows.bat removes it)
+  run-flowpilot.ps1          what the two scripts above run
+  Dockerfile, docker-compose.yml
   start-mac-linux.sh         launcher for macOS and Linux
   backend/
     app/main.py              API, login, credentials vault, scheduler, webhooks and the execution engine
@@ -324,6 +343,8 @@ Everything works with no configuration. These optional environment variables cha
 | `FLOWPILOT_KEY_FILE` | next to the database | The credential encryption key file |
 | `FLOWPILOT_SCHEDULER` | `1` | Set `0` to turn off schedules, email triggers and waiting-run resumption in this process |
 | `FLOWPILOT_QUEUE` | off | Set `1` for queue mode (see Limits to know) |
+| `FLOWPILOT_SERVE_UI` | off | Set `1` to make the API serve the built interface from `frontend/dist` (production mode) |
+| `FLOWPILOT_UI_DIR` | `frontend/dist` | Where the built interface is, when serving it |
 | `FLOWPILOT_WEBHOOK_RATE` | `60` | Webhook calls allowed per minute per URL |
 | `FLOWPILOT_PUBLIC_URL` | `http://127.0.0.1:5173` | Address used for the OAuth redirect URL |
 | `FLOWPILOT_ALLOW_PRIVATE_HOSTS` | off | Set `1` to allow SMTP, IMAP, Postgres and AI endpoints on private networks or `http` (never applies to the HTTP node) |

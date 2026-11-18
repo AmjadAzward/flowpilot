@@ -12,3 +12,7 @@ frontend/dist/
 docs/screenshots/fail-*.png
 *.key
 backend/data/
+*.db-shm
+*.db-wal
+*.tsbuildinfo
+frontend/dist/

@@ -1,0 +1,18 @@
+# docker compose up -d --build
+# Only this computer can reach it (127.0.0.1). To publish it, put a reverse proxy with HTTPS in front
+# and set FLOWPILOT_PUBLIC_URL so webhook addresses show your public name.
+services:
+  flowpilot:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - flowpilot-data:/data
+    environment:
+      # FLOWPILOT_PUBLIC_URL: "https://flows.example.com"
+      # FLOWPILOT_WEBHOOK_RATE: "60"
+      FLOWPILOT_SCHEDULER: "1"
+    restart: unless-stopped
+
+volumes:
+  flowpilot-data:

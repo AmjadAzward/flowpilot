@@ -190,3 +190,16 @@ def test_webhooks_and_schedules_ignore_projects(client, anon, world):
 def test_existing_databases_gain_the_project_column():
     with main.conn() as db:
         assert "project_id" in {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}
+
+
+def test_export_and_replay_respect_project_visibility(client, world):
+    import csv, io
+    for key in ("alpha", "beta", "shared"): client.post(f"/api/workflows/{world['w'][key]}/run")
+    seen = lambda c: {r["workflow"] for r in csv.DictReader(io.StringIO(c.get("/api/executions/export").text))}
+    assert {"Alpha flow", "Shared"} <= seen(world["ann"]) and "Beta flow" not in seen(world["ann"])
+    assert seen(world["cat"]) >= {"Shared"} and not ({"Alpha flow", "Beta flow"} & seen(world["cat"]))
+    failing = flow(client, "Beta failing", world["b"], [node("f", "fail", message="x")], [edge("t", "f")])
+    run = client.post(f"/api/workflows/{failing}/run").json()
+    assert run["status"] == "failed"
+    assert world["ann"].post(f"/api/executions/{run['id']}/replay").status_code == 404  # another project's run looks like it does not exist
+    assert world["bob"].post(f"/api/executions/{run['id']}/replay").status_code == 200

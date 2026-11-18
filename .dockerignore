@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/dist
+backend/.venv
+backend/**/__pycache__
+backend/.pytest_cache
+backend/data
+*.db
+*.db-shm
+*.db-wal
+*.key
+frontend/e2e
+**/*.png

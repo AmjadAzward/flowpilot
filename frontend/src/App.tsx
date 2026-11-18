@@ -4,7 +4,7 @@ import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
   History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
-import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
+import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templateGroup, templateGroups, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
 import { MiniFlow } from './MiniFlow';
 import { NodeSettings } from './NodeSettings';
@@ -14,6 +14,7 @@ import { HistoryPanel } from './HistoryPanel';
 import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
 import { AuditPanel } from './AuditPanel';
+import { Tour } from './Tour';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
@@ -104,6 +105,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'error' } | null>(null);
   const [query, setQuery] = useState('');
   const [libQuery, setLibQuery] = useState('');
+  const [tplGroup, setTplGroup] = useState<(typeof templateGroups)[number]>('All');
+  const [tourOpen, setTourOpen] = useState(() => { try { return localStorage.getItem('fp-tour') !== 'done'; } catch { return false; } });
+  const closeTour = () => { setTourOpen(false); try { localStorage.setItem('fp-tour', 'done'); } catch { /* private mode */ } };
   const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
   const [showCatalog, setShowCatalog] = useState(() => window.innerWidth >= 1500);
   const [apiOnline, setApiOnline] = useState(true);
@@ -360,6 +364,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     try { await api(`/api/projects/assign/${selectedId}`, { method: 'PUT', body: JSON.stringify({ project_id: projectId || null }) }); await refresh(); notify(projectId ? 'Moved to the project' : 'Removed from its project'); }
     catch (e) { notify((e as Error).message, 'error'); }
   };
+  const exportRuns = async () => {
+    try {
+      const res = await fetch(`/api/executions/export${runFilter === 'all' ? '' : '?status=' + (runFilter === 'failed' ? 'failed' : 'success')}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('Could not export the runs');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = 'flowpilot-runs.csv'; a.click(); URL.revokeObjectURL(a.href);
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
   const replayRun = async (id: string) => {
     try {
       const res = await api<{ status: string; error: string | null }>(`/api/executions/${id}/replay`, { method: 'POST' });
@@ -432,6 +443,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   return (
     <div className="app">
+      {tourOpen && <Tour onClose={closeTour} />}
       <aside className={'sidebar ' + (navOpen ? 'open' : '')} onClick={() => setNavOpen(false)}>
         <div className="brand">
           <div className="brand-mark"><Workflow size={18} strokeWidth={2.4} /></div>
@@ -447,7 +459,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.13</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.14</span>
         </div>
       </aside>
 
@@ -522,8 +534,11 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
             <section>
               <div className="section-label"><h2>Start from a template</h2><p>Ready-made workflows you can run immediately and adapt</p></div>
+              <div className="chip-row" role="tablist" aria-label="Template groups">
+                {templateGroups.map(g => <button key={g} role="tab" aria-selected={tplGroup === g} data-testid={`tpl-group-${g.toLowerCase().replace(/\W+/g, '-')}`} className={'chip ' + (tplGroup === g ? 'on' : '')} onClick={() => setTplGroup(g)}>{g}</button>)}
+              </div>
               <div className="template-grid">
-                {templates.map(t => (
+                {templates.filter(t => tplGroup === 'All' || templateGroup(t.id) === tplGroup).map(t => (
                   <button key={t.id} className="template-card" data-testid={`template-${t.id}`} onClick={() => void createFlow(t.name, t.description, t.nodes, t.edges)}>
                     <span className="template-preview"><MiniFlow nodes={t.nodes} edges={t.edges} /></span>
                     <span className="template-body">
@@ -674,6 +689,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   {(['all', 'success', 'failed'] as const).map(f => <button key={f} role="tab" aria-selected={runFilter === f} className={runFilter === f ? 'on' : ''} onClick={() => setRunFilter(f)}>{f}</button>)}
                 </div>
                 <button className="ghost" onClick={() => void refresh()}><RefreshCcw size={15} />Refresh</button>
+                <button className="ghost" data-testid="export-runs" onClick={() => void exportRuns()} disabled={!runs.length}><Download size={15} />Export CSV</button>
                 <button className="ghost danger" onClick={() => void clearRuns()} disabled={!runs.length}><Trash2 size={15} />Clear</button>
               </div>
             </div>

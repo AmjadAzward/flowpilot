@@ -3,6 +3,8 @@
 // backend at a throwaway database first:  FLOWPILOT_DB=/tmp/e2e.db uvicorn app.main:app   Run with:  npm run test:e2e
 import { chromium } from 'playwright-core';
 import { existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { build } from 'esbuild';
 
 const BASE = process.env.FLOWPILOT_URL || 'http://127.0.0.1:5173';
 const SHOTS = process.env.SHOT_DIR || '';
@@ -45,7 +47,7 @@ const expectText = async (loc, re, timeout = 8000) => {
 const runPanel = () => page.getByTestId('run-panel');
 
 await page.goto(BASE);
-await page.evaluate(() => localStorage.clear());
+await page.evaluate(() => { localStorage.clear(); localStorage.setItem('fp-tour', 'done'); });
 await page.goto(BASE);
 
 const U = 'e2e-owner', PW = 'e2e-password-123';
@@ -790,6 +792,89 @@ await check('the owner sees an activity log of changes', async () => {
   if (!/POST \/api\/workflows/.test(text)) throw new Error('workflow creation not in the activity log');
   if (/e2e-password|password/i.test(text.replace(/\/api\/auth\/password/g, ''))) throw new Error('a password appears in the activity log');
   await shot('30-activity-log');
+});
+
+await check('every template can be created, and the offline ones produce the expected result', async () => {
+  const built = await build({ entryPoints: ['src/catalog.ts'], bundle: true, format: 'esm', platform: 'node', write: false, external: ['@xyflow/react'] });
+  const mod = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+  const templates = mod.templates;
+  if (templates.length < 20) throw new Error('expected at least 20 templates, found ' + templates.length);
+  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert']);
+  const expected = {
+    greeting: 'Hello Ada from London!', 'order-triage': 'PRIORITY: order A-1042 (250)', 'webhook-receiver': 'New message from Ada: Hello from a webhook',
+    'top-n': ['Ada: 91', 'Di: 85', 'Cy: 77'], 'clean-contacts': [{ mail: 'a@x.com', name: 'Ada' }, { mail: 'b@x.com', name: 'Bob' }], 'sales-summary': 'Paid total: 200.5',
+    'due-date': 'Friday 14 February 2025', 'hash-email': createHash('sha256').update('ada@example.com').digest('hex'),
+    'add-field': [{ item: 'Pen', price: 10, price_with_tax: 12 }, { item: 'Book', price: 24.5, price_with_tax: 29.4 }], 'unwrap-list': [{ id: 1 }, { id: 2 }],
+    'route-tickets': 'Page the on-call: T-77', 'webhook-reply': { greeting: 'Hello Ada' }, 'error-alert': 'ALERT: Nightly import failed at HTTP Request: Database timed out',
+    'python-stats': { count: 3, average: 72, best: 'Ada' }, 'combine-sources': { name: 'Ada', plan: 'pro' },
+  };
+  const results = await page.evaluate(async ({ templates, online }) => {
+    const out = {};
+    for (const t of templates) {
+      const created = await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'TPL ' + t.id, description: '', nodes: t.nodes, edges: t.edges }) });
+      if (created.status !== 201) { out[t.id] = { error: 'save failed: ' + (await created.text()) }; continue; }
+      const { id } = await created.json();
+      if (online.includes(t.id)) { out[t.id] = { saved: true }; await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); continue; }
+      const run = await (await fetch(`/api/workflows/${id}/run`, { method: 'POST' })).json();
+      out[t.id] = { status: run.status, output: run.output, error: run.error };
+      await fetch(`/api/workflows/${id}`, { method: 'DELETE' });
+    }
+    return out;
+  }, { templates, online: [...online] });
+  const bad = [];
+  for (const t of templates) {
+    const r = results[t.id];
+    if (online.has(t.id)) { if (!r?.saved) bad.push(`${t.id}: ${r?.error}`); continue; }
+    if (r.status !== 'success') { bad.push(`${t.id}: ${r.status} ${r.error}`); continue; }
+    if (t.id in expected && JSON.stringify(r.output) !== JSON.stringify(expected[t.id])) bad.push(`${t.id}: got ${JSON.stringify(r.output)}`);
+  }
+  if (bad.length) throw new Error(bad.join(' | '));
+});
+
+await check('template groups filter the gallery', async () => {
+  await goOverview();
+  const all = await page.locator('.template-card').count();
+  await page.getByTestId('tpl-group-apps').click();
+  const apps = await page.locator('.template-card').count();
+  if (!(apps >= 1 && apps < all)) throw new Error(`apps ${apps} of ${all}`);
+  await page.getByTestId('template-slack-alert').waitFor();
+  await page.getByTestId('tpl-group-all').click();
+  if ((await page.locator('.template-card').count()) !== all) throw new Error('All did not restore the list');
+});
+
+await check('the first-run tour appears once, can be stepped through and replayed', async () => {
+  await page.evaluate(() => localStorage.removeItem('fp-tour'));
+  await page.reload();
+  await page.getByTestId('tour').waitFor();
+  await expectText(page.getByTestId('tour'), /step 1 of 4/i);
+  await page.getByTestId('tour-next').click();
+  await expectText(page.getByTestId('tour'), /step 2 of 4/i);
+  await page.getByTestId('tour').getByRole('button', { name: 'Back' }).click();
+  await expectText(page.getByTestId('tour'), /step 1 of 4/i);
+  for (let k = 0; k < 3; k++) await page.getByTestId('tour-next').click();
+  await expectText(page.getByTestId('tour'), /step 4 of 4/i);
+  await shot('31-tour');
+  await page.getByTestId('tour-next').click();
+  if (await page.getByTestId('tour').count()) throw new Error('the tour should close at the end');
+  await page.reload();
+  await page.getByRole('button', { name: /^Overview/ }).waitFor();
+  if (await page.getByTestId('tour').count()) throw new Error('the tour should not return after it was finished');
+  await page.getByRole('button', { name: 'Tour' }).click();
+  await page.getByTestId('tour').waitFor();
+  await page.keyboard.press('Escape');
+  if (await page.getByTestId('tour').count()) throw new Error('Escape should close the tour');
+});
+
+await check('run history exports as CSV', async () => {
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.getByTestId('history-row').first().waitFor();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-runs').click()]);
+  if (download.suggestedFilename() !== 'flowpilot-runs.csv') throw new Error('unexpected file name ' + download.suggestedFilename());
+  const stream = await download.createReadStream();
+  let text = '';
+  for await (const chunk of stream) text += chunk;
+  if (!text.startsWith('execution_id,workflow,status,trigger')) throw new Error('unexpected header: ' + text.slice(0, 60));
+  if (text.trim().split('\n').length < 2) throw new Error('no rows exported');
 });
 
 await check('projects limit what a member can see', async () => {

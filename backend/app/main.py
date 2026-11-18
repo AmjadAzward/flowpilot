@@ -44,6 +44,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from starlette.background import BackgroundTask
+from starlette.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
@@ -74,7 +75,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.13.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.14.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -622,7 +623,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.13.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.14.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -3165,6 +3166,34 @@ def backup_database():
     return FileResponse(tmp, filename="flowpilot-backup.db", media_type="application/octet-stream", background=BackgroundTask(lambda: (tmp.unlink(missing_ok=True), tmp.parent.rmdir())))
 
 
+def csv_safe(value: Any) -> str:
+    """Stop spreadsheets from treating a cell as a formula."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+@app.get("/api/executions/export")
+def export_executions(request: Request, workflow_id: str | None = None, status: str | None = None):
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    with conn() as db:
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM workflows").fetchall()}
+        rows = db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 20000").fetchall()
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(["execution_id", "workflow", "status", "trigger", "started_at", "finished_at", "duration_seconds", "steps", "error"])
+    count = 0
+    for r in rows:
+        if visible is not None and r["workflow_id"] not in visible: continue
+        if workflow_id and r["workflow_id"] != workflow_id: continue
+        if status and r["status"] != status: continue
+        try: seconds = round((datetime.fromisoformat(r["finished_at"]) - datetime.fromisoformat(r["started_at"])).total_seconds(), 3) if r["finished_at"] else ""
+        except ValueError: seconds = ""
+        writer.writerow([csv_safe(x) for x in (r["id"], names.get(r["workflow_id"], "(deleted workflow)"), r["status"], r["trigger_kind"], r["started_at"], r["finished_at"], seconds, len(json.loads(r["steps"] or "[]")), r["error"])])
+        count += 1
+        if count >= 5000: break
+    return Response(out.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="flowpilot-runs.csv"'})
+
+
 @app.get("/api/executions")
 def executions(request: Request, workflow_id: str | None = None):
     visible = visible_workflow_ids(getattr(request.state, "actor", None))
@@ -3177,3 +3206,25 @@ def executions(request: Request, workflow_id: str | None = None):
         rows = rows[:100]
         resume = {w["execution_id"]: w["resume_at"] for w in db.execute("SELECT execution_id, resume_at FROM waits WHERE status='pending'").fetchall()}
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),"resume_at":resume.get(r["id"])} for r in rows]
+
+
+def mount_ui(target, dist: Path) -> bool:
+    """Serve a built frontend (index.html and assets) from the API itself. Unknown paths fall back to index.html for the single-page app."""
+    index = dist / "index.html"
+    if not index.is_file(): return False
+    root = dist.resolve()
+    if (root / "assets").is_dir(): target.mount("/assets", StaticFiles(directory=root / "assets"), name="ui-assets")
+
+    @target.get("/{path:path}", include_in_schema=False)
+    def ui(path: str):
+        if path == "api" or path.startswith("api/"): raise HTTPException(404, "Not found")
+        file = (root / path).resolve()
+        if path and file.is_file() and root in file.parents: return FileResponse(file)
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
+
+    return True
+
+
+if os.getenv("FLOWPILOT_SERVE_UI", "0") == "1":
+    if not mount_ui(app, Path(os.getenv("FLOWPILOT_UI_DIR", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")))):
+        log.warning("FLOWPILOT_SERVE_UI is on but no built interface was found. Run npm run build in the frontend folder.")

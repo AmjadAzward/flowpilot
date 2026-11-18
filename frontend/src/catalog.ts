@@ -237,4 +237,114 @@ export const templates: { id: string; name: string; description: string; tag: st
     nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '"name,score\\nAda,90\\nBob,40\\nCy,75"' }), n('c', 'csv', 440, 150), n('f', 'filter', 650, 150, { path: 'score', op: 'gt', equals: '50' }), n('l', 'loop', 860, 150), n('m', 'template', 1100, 40, { template: '{{name}}: {{score}}' }), n('o', 'output', 1100, 260)],
     edges: [e('t', 'i'), e('i', 'c'), e('c', 'f'), e('f', 'l'), e('l', 'm', 'each'), e('l', 'o', 'done')],
   },
+  {
+    id: 'top-n', name: 'Top three by score', tag: 'Lists',
+    description: 'Sort a list from highest to lowest, keep the first three and write one line for each.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '[{"name":"Ada","score":91},{"name":"Bob","score":48},{"name":"Cy","score":77},{"name":"Di","score":85},{"name":"Ed","score":62}]' }), n('s', 'sort', 430, 150, { path: 'score', order: 'desc' }), n('l', 'limit', 630, 150, { count: '3', from: 'first' }), n('m', 'template', 830, 150, { template: '{{name}}: {{score}}', each_item: 'true' }), n('o', 'output', 1040, 150)],
+    edges: [e('t', 'i'), e('i', 's'), e('s', 'l'), e('l', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'clean-contacts', name: 'Clean a contact list', tag: 'Data',
+    description: 'Rename a field and remove contacts that appear twice, keeping the first of each.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '[{"email":"a@x.com","name":"Ada"},{"email":"a@x.com","name":"Ada L."},{"email":"b@x.com","name":"Bob"}]' }), n('r', 'rename', 450, 150, { mapping: '{"email":"mail"}' }), n('d', 'dedupe', 670, 150, { path: 'mail' }), n('o', 'output', 890, 150)],
+    edges: [e('t', 'i'), e('i', 'r'), e('r', 'd'), e('d', 'o')],
+  },
+  {
+    id: 'sales-summary', name: 'Paid sales total', tag: 'Data',
+    description: 'Keep only paid orders, add up their amounts and write a one-line summary.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '[{"id":1,"status":"paid","amount":120},{"id":2,"status":"refunded","amount":40},{"id":3,"status":"paid","amount":80.5}]' }), n('f', 'filter', 430, 150, { path: 'status', op: 'equals', equals: 'paid' }), n('a', 'aggregate', 640, 150, { operation: 'sum', path: 'amount' }), n('m', 'template', 850, 150, { template: 'Paid total: {{}}' }), n('o', 'output', 1060, 150)],
+    edges: [e('t', 'i'), e('i', 'f'), e('f', 'a'), e('a', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'due-date', name: 'Due date calculator', tag: 'Dates',
+    description: 'Add 14 days to a start date, then show the result as a readable date.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '{"start":"2025-01-31"}' }), n('d', 'datetime', 450, 150, { operation: 'add', value: '{{start}}', amount: '14', unit: 'days' }), n('f', 'datetime', 680, 150, { operation: 'format', value: '{{}}', format: '%A %d %B %Y' }), n('o', 'output', 910, 150)],
+    edges: [e('t', 'i'), e('i', 'd'), e('d', 'f'), e('f', 'o')],
+  },
+  {
+    id: 'hash-email', name: 'Fingerprint an email', tag: 'Crypto',
+    description: 'Lower-case and trim an email, then hash it with SHA-256 so records can be matched without storing the address.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '{"email":" Ada@Example.com "}' }), n('m', 'template', 450, 150, { template: '{{ email.lower().strip() }}' }), n('c', 'crypto', 680, 150, { operation: 'sha256', value: '{{}}', key: '' }), n('o', 'output', 900, 150)],
+    edges: [e('t', 'i'), e('i', 'm'), e('m', 'c'), e('c', 'o')],
+  },
+  {
+    id: 'add-field', name: 'Add a field to every item', tag: 'Lists',
+    description: 'One Set Fields node, switched to "each item", works out a price with tax for a whole list.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '[{"item":"Pen","price":10},{"item":"Book","price":24.5}]' }), n('s', 'set', 460, 150, { json: '{"item":"{{item}}","price":{{price}},"price_with_tax":{{ round(price * 1.2, 2) }}}', each_item: 'true' }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'i'), e('i', 's'), e('s', 'o')],
+  },
+  {
+    id: 'unwrap-list', name: 'Unwrap an API list', tag: 'Lists',
+    description: 'Many APIs return a list inside an object. Split Out takes it out so the next steps see a plain list.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"data":{"rows":[{"id":1},{"id":2},{"id":3}]},"page":1}' }), n('s', 'split', 450, 150, { path: 'data.rows' }), n('l', 'limit', 660, 150, { count: '2', from: 'first' }), n('o', 'output', 870, 150)],
+    edges: [e('t', 'i'), e('i', 's'), e('s', 'l'), e('l', 'o')],
+  },
+  {
+    id: 'route-tickets', name: 'Route support tickets', tag: 'Branching',
+    description: 'Send high, normal and any other priority down different paths with a Switch node.',
+    nodes: [
+      n('t', 'trigger', 20, 190), n('i', 'input', 220, 190, { json: '{"ticket":"T-77","priority":"high"}' }),
+      n('s', 'switch', 440, 190, { path: 'priority', case1: 'high', case2: 'normal', case3: '', case4: '' }),
+      n('h', 'template', 720, 20, { template: 'Page the on-call: {{ticket}}' }), n('q', 'template', 720, 190, { template: 'Queue for today: {{ticket}}' }), n('r', 'template', 720, 360, { template: 'Needs review: {{ticket}}' }),
+      n('o1', 'output', 970, 20), n('o2', 'output', 970, 190), n('o3', 'output', 970, 360),
+    ],
+    edges: [e('t', 'i'), e('i', 's'), e('s', 'h', '1'), e('s', 'q', '2'), e('s', 'r', 'default'), e('h', 'o1'), e('q', 'o2'), e('r', 'o3')],
+  },
+  {
+    id: 'webhook-reply', name: 'Webhook with a custom reply', tag: 'Webhook',
+    description: 'Build a response from the request body and send it back to the caller. Activate it, then POST to its URL.',
+    nodes: [n('w', 'webhook', 20, 150, { sample: '{"name":"Ada"}' }), n('s', 'set', 250, 150, { json: '{"greeting":"Hello {{body.name}}"}' }), n('r', 'respond', 480, 150, { status: '200', body: '{"message": "{{greeting}}"}' }), n('o', 'output', 710, 150)],
+    edges: [e('w', 's'), e('s', 'r'), e('r', 'o')],
+  },
+  {
+    id: 'resilient-call', name: 'API call that retries', tag: 'Reliability',
+    description: 'Retry a flaky API up to three times. If it still fails, carry on with a friendly message instead of stopping. Needs internet.',
+    nodes: [
+      n('t', 'trigger', 20, 150), n('h', 'http', 230, 150, { url: 'https://jsonplaceholder.typicode.com/todos/1', method: 'GET', retries: '3', retry_wait: '1', on_error: 'continue' }),
+      n('c', 'condition', 470, 150, { path: 'error', op: 'not_exists', equals: '' }),
+      n('x', 'transform', 720, 40, { path: 'title' }), n('m', 'template', 720, 260, { template: 'Request failed: {{error}}' }),
+      n('o1', 'output', 950, 40), n('o2', 'output', 950, 260),
+    ],
+    edges: [e('t', 'h'), e('h', 'c'), e('c', 'x', 'true'), e('c', 'm', 'false'), e('x', 'o1'), e('m', 'o2')],
+  },
+  {
+    id: 'error-alert', name: 'Error alert workflow', tag: 'Reliability',
+    description: 'Pick this as the "If this workflow fails, run" workflow on any trigger. It receives the workflow name, node and error. Swap the output for Send Message or Slack.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 230, 150, { json: '{"workflow":"Nightly import","error":"Database timed out","node":"HTTP Request","execution_id":"abc-123"}' }), n('m', 'template', 460, 150, { template: 'ALERT: {{workflow}} failed at {{node}}: {{error}}' }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'i'), e('i', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'rss-digest', name: 'News digest from a feed', tag: 'Network',
+    description: 'Read an RSS feed, keep the latest five items and write one line for each. Needs internet.',
+    nodes: [n('t', 'trigger', 20, 150), n('r', 'rss', 220, 150, { url: 'https://hnrss.org/frontpage', limit: '10' }), n('l', 'limit', 430, 150, { count: '5', from: 'first' }), n('m', 'template', 630, 150, { template: '{{title}} ({{link}})', each_item: 'true' }), n('o', 'output', 850, 150)],
+    edges: [e('t', 'r'), e('r', 'l'), e('l', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'slack-alert', name: 'Slack alert', tag: 'Apps',
+    description: 'Post a message to a Slack channel with an App Action node. Save a bot token on the Credentials page and choose it in the node.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"service":"API","status":"down"}' }), n('a', 'app', 440, 150, { service: 'slack', operation: 'post_message', credential: '', fields: '{"channel": "#alerts", "text": "{{service}} is {{status}}"}' }), n('o', 'output', 680, 150)],
+    edges: [e('t', 'i'), e('i', 'a'), e('a', 'o')],
+  },
+  {
+    id: 'python-stats', name: 'Python statistics', tag: 'Code',
+    description: 'A short Python snippet works out the count, average and best score of a list.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '[{"name":"Ada","score":91},{"name":"Bob","score":48},{"name":"Cy","score":77}]' }), n('c', 'code', 450, 150, { code: "best = input[0]\nfor p in input:\n    if p['score'] > best['score']:\n        best = p\nresult = {'count': len(input), 'average': round(sum(p['score'] for p in input) / len(input), 1), 'best': best['name']}" }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'i'), e('i', 'c'), e('c', 'o')],
+  },
+  {
+    id: 'combine-sources', name: 'Combine two sources', tag: 'Data',
+    description: 'Two inputs run side by side, then a Merge node combines them into one record.',
+    nodes: [n('t', 'trigger', 20, 150), n('a', 'input', 240, 60, { json: '{"name":"Ada"}' }), n('b', 'input', 240, 250, { json: '{"plan":"pro"}' }), n('m', 'merge', 480, 150, { mode: 'combine' }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'a'), e('t', 'b'), e('a', 'm'), e('b', 'm'), e('m', 'o')],
+  },
 ];
+
+export const templateGroups = ['All', 'Getting started', 'Lists and data', 'Webhooks and APIs', 'Reliability', 'Apps'] as const;
+const groupById: Record<string, (typeof templateGroups)[number]> = {
+  greeting: 'Getting started', 'order-triage': 'Getting started', 'route-tickets': 'Getting started',
+  'loop-list': 'Lists and data', 'csv-report': 'Lists and data', 'top-n': 'Lists and data', 'clean-contacts': 'Lists and data', 'sales-summary': 'Lists and data', 'due-date': 'Lists and data',
+  'hash-email': 'Lists and data', 'add-field': 'Lists and data', 'unwrap-list': 'Lists and data', 'python-stats': 'Lists and data', 'combine-sources': 'Lists and data',
+  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs',
+  'resilient-call': 'Reliability', 'error-alert': 'Reliability', 'slack-alert': 'Apps',
+};
+export const templateGroup = (id: string) => groupById[id] ?? 'Getting started';
