@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.13
+- Eight data tools: Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding
+- Per-workflow time limit and run-keeping policy, replay of a failed run from the failed node, owner activity log
+- 790 API tests and a 54-check browser suite
+
 ### v0.12
 - "Run once for each item" mode for action nodes, so a node can process a whole list
 - App Action node with Slack, Notion, Airtable, Stripe, Twilio, Linear and HubSpot (simulated-server tests only)

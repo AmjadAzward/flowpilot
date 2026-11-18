@@ -1,11 +1,11 @@
 import type { Edge, Node } from '@xyflow/react';
 
 export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in';
-export type FlowDoc = { project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
+export type FlowDoc = { settings?: { timeout_seconds?: number; save_runs?: string }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
-export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
+export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -35,6 +35,14 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'http', label: 'HTTP Request', desc: 'Call a public HTTPS API', category: 'Network', color: '#818cf8', icon: 'Globe' },
   { type: 'notify', label: 'Send Message', desc: 'Slack, Discord or a webhook', category: 'Network', color: '#a855f7', icon: 'Bell' },
   { type: 'telegram', label: 'Telegram Message', desc: 'Send with a Telegram bot', category: 'Network', color: '#0ea5e9', icon: 'Send' },
+  { type: 'sort', label: 'Sort', desc: 'Order a list by a field', category: 'Data', color: '#0d9488', icon: 'ArrowUpDown' },
+  { type: 'limit', label: 'Limit', desc: 'Keep the first or last N items', category: 'Data', color: '#0d9488', icon: 'ListEnd' },
+  { type: 'dedupe', label: 'Remove Duplicates', desc: 'Drop repeated items', category: 'Data', color: '#0d9488', icon: 'CopyMinus' },
+  { type: 'split', label: 'Split Out', desc: 'Take a list from inside the data', category: 'Data', color: '#0d9488', icon: 'Ungroup' },
+  { type: 'aggregate', label: 'Summarize', desc: 'Count, sum, average, min, max or collect', category: 'Data', color: '#0d9488', icon: 'Sigma' },
+  { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
+  { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
+  { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
   { type: 'app', label: 'App Action', desc: 'Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
@@ -49,11 +57,11 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
+export const pinnableTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
 /** Nodes that can run once for every element of a list. */
-export const eachItemTypes: string[] = ['app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
-export const errorTypes: string[] = ['app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
+export const eachItemTypes: string[] = ['datetime', 'crypto', 'app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
+export const errorTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
 
 type AppOp = { label: string; example: string; hint: string };
 export const appServices: Record<string, { label: string; credential: string; operations: Record<string, AppOp> }> = {
@@ -76,6 +84,37 @@ export const appServices: Record<string, { label: string; credential: string; op
   hubspot: { label: 'HubSpot', credential: 'Private app access token', operations: {
     create_contact: { label: 'Create a contact', example: '{"email": "{{email}}", "firstname": "{{name}}"}', hint: 'email is required. Optional: firstname, lastname, phone, company.' },
     list_contacts: { label: 'List contacts', example: '{"limit": 20}', hint: 'Optional limit (up to 100).' } } },
+};
+
+type ToolField = { key: string; label: string; kind: 'text' | 'select' | 'area'; options?: [string, string][]; placeholder?: string; hint?: string; when?: Record<string, string[]> };
+/** Settings forms for the small data nodes. `when` shows a field only for the listed values of another field. */
+export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = {
+  sort: { hint: 'Needs a list. Numbers sort as numbers, text sorts without regard to capitals, empty values go last.', fields: [
+    { key: 'path', label: 'Sort by field (blank sorts the values themselves)', kind: 'text', placeholder: 'price' },
+    { key: 'order', label: 'Order', kind: 'select', options: [['asc', 'Smallest first'], ['desc', 'Largest first']] }] },
+  limit: { hint: 'Needs a list.', fields: [
+    { key: 'count', label: 'How many items', kind: 'text' },
+    { key: 'from', label: 'Keep from the', kind: 'select', options: [['first', 'Start of the list'], ['last', 'End of the list']] }] },
+  dedupe: { hint: 'Needs a list. The first item of each kind is kept.', fields: [
+    { key: 'path', label: 'Compare by field (blank compares whole items)', kind: 'text', placeholder: 'email' }] },
+  split: { hint: 'Use this when an API wraps its list inside an object, for example data.rows.', fields: [
+    { key: 'path', label: 'Field that holds the list', kind: 'text', placeholder: 'data.rows' }] },
+  aggregate: { hint: 'Needs a list. Sum, average, minimum and maximum need numbers.', fields: [
+    { key: 'operation', label: 'Result', kind: 'select', options: [['count', 'Number of items'], ['sum', 'Sum'], ['avg', 'Average'], ['min', 'Smallest'], ['max', 'Largest'], ['collect', 'List of one field']] },
+    { key: 'path', label: 'Field (blank uses the values themselves)', kind: 'text', placeholder: 'amount' }] },
+  rename: { hint: 'Works on one object or on every object in a list. Fields not listed keep their names.', fields: [
+    { key: 'mapping', label: 'Names to change (JSON)', kind: 'area' }] },
+  datetime: { hint: 'Dates look like 2025-01-31 or 2025-01-31T10:00:00Z (UTC is assumed without a zone). Format codes: %Y year, %m month, %d day, %H hour, %M minute.', fields: [
+    { key: 'operation', label: 'Action', kind: 'select', options: [['now', 'Current date and time'], ['add', 'Add time'], ['subtract', 'Subtract time'], ['diff', 'Time between two dates'], ['format', 'Format a date']] },
+    { key: 'value', label: 'Date (blank means now)', kind: 'text', placeholder: '{{created_at}}', when: { operation: ['add', 'subtract', 'diff', 'format'] } },
+    { key: 'amount', label: 'Amount', kind: 'text', when: { operation: ['add', 'subtract'] } },
+    { key: 'unit', label: 'Unit', kind: 'select', options: [['seconds', 'Seconds'], ['minutes', 'Minutes'], ['hours', 'Hours'], ['days', 'Days'], ['weeks', 'Weeks']], when: { operation: ['add', 'subtract', 'diff'] } },
+    { key: 'other', label: 'Second date', kind: 'text', when: { operation: ['diff'] } },
+    { key: 'format', label: 'Format', kind: 'text', placeholder: '%Y-%m-%d', when: { operation: ['format'] } }] },
+  crypto: { hint: 'Hashes are one-way. For a signature, save the key on the Credentials page and write {{cred.NAME}} as the key.', fields: [
+    { key: 'operation', label: 'Action', kind: 'select', options: [['sha256', 'SHA-256 hash'], ['sha512', 'SHA-512 hash'], ['sha1', 'SHA-1 hash'], ['md5', 'MD5 hash'], ['hmac_sha256', 'HMAC-SHA256 signature'], ['base64_encode', 'Base64 encode'], ['base64_decode', 'Base64 decode'], ['uuid', 'Random unique ID'], ['random', 'Random text']] },
+    { key: 'value', label: 'Text (for Random text: the length)', kind: 'text', when: { operation: ['sha256', 'sha512', 'sha1', 'md5', 'hmac_sha256', 'base64_encode', 'base64_decode', 'random'] } },
+    { key: 'key', label: 'Secret key', kind: 'text', placeholder: '{{cred.SIGNING_KEY}}', when: { operation: ['hmac_sha256'] } }] },
 };
 
 export const operators = [
@@ -110,6 +149,14 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'sheets': return { credential: '', spreadsheet_id: '', range: 'Sheet1', operation: 'read', header: 'true', values: '["{{name}}", "{{city}}"]' };
     case 'gmail': return { credential: '', to: '', subject: 'Hello', body: 'Hi {{name}}' };
     case 'telegram': return { credential: '', chat_id: '', text: 'Hello from FlowPilot' };
+    case 'sort': return { path: '', order: 'asc' };
+    case 'limit': return { count: '10', from: 'first' };
+    case 'dedupe': return { path: '' };
+    case 'split': return { path: 'items' };
+    case 'aggregate': return { operation: 'count', path: '' };
+    case 'rename': return { mapping: '{"old_name": "new_name"}' };
+    case 'datetime': return { operation: 'add', value: '', amount: '1', unit: 'days', other: '', format: '%Y-%m-%d' };
+    case 'crypto': return { operation: 'sha256', value: '{{}}', key: '' };
     case 'app': return { service: 'slack', operation: 'post_message', credential: '', fields: appServices.slack.operations.post_message.example };
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };
     case 'respond': return { status: '200', body: '{"ok": true}' };

@@ -1,6 +1,6 @@
 import type { Node } from '@xyflow/react';
 import { Copy, RefreshCcw } from 'lucide-react';
-import { appServices, eachItemTypes, errorTypes, operators, startTypes, type FlowDoc } from './catalog';
+import { appServices, eachItemTypes, toolForms, errorTypes, operators, startTypes, type FlowDoc } from './catalog';
 
 type Props = {
   node: Node;
@@ -406,7 +406,23 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">Later nodes can read {'{{body.field}}'}, {'{{query.name}}'} and {'{{method}}'}.</span>
         </>
       );
-    default:
-      return null;
+    default: {
+      const form = toolForms[node.type ?? ''];
+      if (!form) return null;
+      return (
+        <>
+          {form.fields.filter(f => !f.when || Object.entries(f.when).every(([k, vals]) => vals.includes(v(k, k === 'operation' ? (node.type === 'crypto' ? 'sha256' : node.type === 'aggregate' ? 'count' : 'add') : '')))).map(f => (
+            <label key={f.key}>{f.label}
+              {f.kind === 'select'
+                ? <select value={v(f.key, f.options?.[0][0])} onChange={text(f.key)}>{f.options?.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}</select>
+                : f.kind === 'area'
+                  ? <textarea rows={4} spellCheck={false} value={v(f.key)} onChange={text(f.key)} />
+                  : <input value={v(f.key)} onChange={text(f.key)} spellCheck={false} placeholder={f.placeholder} />}
+            </label>
+          ))}
+          <span className="hint">{form.hint}</span>
+        </>
+      );
+    }
   }
 }

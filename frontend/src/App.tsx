@@ -13,6 +13,7 @@ import { ChangePassword, UsersPage } from './UsersPage';
 import { HistoryPanel } from './HistoryPanel';
 import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
+import { AuditPanel } from './AuditPanel';
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
@@ -30,7 +31,7 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const triggerLabel: Record<TriggerKind | 'error', string> = { manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', error: 'On error' };
+const triggerLabel: Record<TriggerKind | 'error' | 'replay', string> = { replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
@@ -92,6 +93,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [flowName, setFlowName] = useState('Untitled workflow');
   const [description, setDescription] = useState('');
   const [tagsText, setTagsText] = useState('');
+  const [wfSettings, setWfSettings] = useState({ timeout: '', save: 'all' });
   const [tagFilter, setTagFilter] = useState('');
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -134,16 +136,16 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   }, [notify]);
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const snapshot = useMemo(() => JSON.stringify({ flowName, description, tagsText, n: cleanNodes(nodes), e: cleanEdges(edges) }), [flowName, description, tagsText, nodes, edges]);
+  const snapshot = useMemo(() => JSON.stringify({ flowName, description, tagsText, wfSettings, n: cleanNodes(nodes), e: cleanEdges(edges) }), [flowName, description, tagsText, wfSettings, nodes, edges]);
   const dirty = page === 'editor' && !!selectedId && snapshot !== savedSnap;
 
   const onConnect = useCallback((c: Connection) => setEdges(es => addEdge({ ...c, style: edgeStyle }, es)), [setEdges]);
 
   const loadDoc = (doc: FlowDoc) => {
     const ns = doc.nodes, es = doc.edges;
-    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWebhookToken(doc.webhook_token ?? '');
+    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWfSettings({ timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all' }); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
-    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), n: cleanNodes(ns), e: cleanEdges(es) }));
+    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), wfSettings: { timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all' }, n: cleanNodes(ns), e: cleanEdges(es) }));
     hist.current = { stack: [JSON.stringify({ n: cleanNodes(ns), e: cleanEdges(es) })], idx: 0 };
     setPage('editor');
   };
@@ -156,7 +158,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       await refresh(); await openFlow(doc.id); notify('Workflow created');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
-  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
+  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
   const saveFlow = useCallback(async (silent = false) => {
     if (!selectedId) return false;
     try {
@@ -358,6 +360,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     try { await api(`/api/projects/assign/${selectedId}`, { method: 'PUT', body: JSON.stringify({ project_id: projectId || null }) }); await refresh(); notify(projectId ? 'Moved to the project' : 'Removed from its project'); }
     catch (e) { notify((e as Error).message, 'error'); }
   };
+  const replayRun = async (id: string) => {
+    try {
+      const res = await api<{ status: string; error: string | null }>(`/api/executions/${id}/replay`, { method: 'POST' });
+      await refresh();
+      if (res.status === 'success') notify('Replay finished successfully'); else notify(`Replay ${res.status}${res.error ? ': ' + res.error : ''}`, 'error');
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
   const cancelWait = async (id: string) => {
     try { await api(`/api/executions/${id}/cancel`, { method: 'POST' }); await refresh(); notify('Run cancelled'); }
     catch (e) { notify((e as Error).message, 'error'); }
@@ -438,7 +447,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.11</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.13</span>
         </div>
       </aside>
 
@@ -539,6 +548,11 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 <div>
                   <input className="workflow-title" value={flowName} onChange={e => setFlowName(e.target.value)} aria-label="Workflow title" />
                   {isOwner && projectList.length > 0 && <select className="project-select" aria-label="Workflow project" value={meta?.project_id ?? ''} onChange={e => void assignProject(e.target.value)}><option value="">No project</option>{projectList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+                  <details className="run-settings"><summary>Run settings</summary><div className="run-pop">
+                    <label>Time limit<select value={wfSettings.timeout} onChange={e => setWfSettings(s => ({ ...s, timeout: e.target.value }))} aria-label="Workflow time limit"><option value="">No limit</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label>
+                    <label>Keep run history<select value={wfSettings.save} onChange={e => setWfSettings(s => ({ ...s, save: e.target.value }))} aria-label="Which runs to keep"><option value="all">Every run</option><option value="failures">Only failed runs</option><option value="none">No automatic runs</option></select></label>
+                    <span className="hint">The time limit is checked between steps. Test runs from the Run button are always kept.</span>
+                  </div></details>
                   <input className="tags-input" value={tagsText} onChange={e => setTagsText(e.target.value)} aria-label="Workflow tags" placeholder="Add tags, separated by commas" maxLength={200} />
                   <span className="sub">{dirty ? <><span className="dot warn" />Unsaved changes</> : <><span className="dot on" />All changes saved</>}{isActive && meta?.next_run_at && <> · Next run {formatTime(meta.next_run_at)}</>}</span>
                 </div>
@@ -667,7 +681,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
                   <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
-                  <div className="history-details">{r.status === 'waiting' && <p className="wait-note">Resumes {formatTime(r.resume_at)}. <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
+                  <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'waiting' && <p className="wait-note">Resumes {formatTime(r.resume_at)}. <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
             </div>
@@ -722,12 +736,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             <div className="section-title"><div><div className="eyebrow">Environment</div><h1>Settings</h1><p>FlowPilot Community Edition, self-hosted on your computer.</p></div></div>
             <div className="settings-grid">
               <DataSettings role={role} notify={notify} onChanged={() => void refresh()} />
+              {isOwner && <AuditPanel notify={notify} />}
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
               <div className="panel settings-card"><Clock3 size={22} /><h2>Schedules and webhooks</h2><p>They run while the API window is open.</p><span>Keep the API terminal running for active workflows. Run one API process only.</span></div>
               <div className="panel settings-card"><Database size={22} /><h2>Local database</h2><p>SQLite file: backend/flowpilot.db</p><span>Data persists between restarts.</span></div>
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Privacy</h2><p>No analytics or tracking services.</p><span>Only configured HTTP nodes contact outside services.</span></div>
               <div className="panel settings-card"><Code2 size={22} /><h2>Developer API</h2><p>FastAPI docs at localhost:8000/docs</p><span>Designed for single-user local use, not public internet exposure.</span></div>
-              <div className="panel settings-card"><Clock3 size={22} /><h2>Coming next</h2><p>OAuth connectors, queues and per-user projects.</p><span>See ROADMAP.md for planned modules.</span></div>
+              <div className="panel settings-card"><Clock3 size={22} /><h2>Coming next</h2><p>SSO, Postgres storage and more connectors.</p><span>See ROADMAP.md for planned modules.</span></div>
             </div>
           </div>
         )}

@@ -500,3 +500,14 @@ button:disabled { cursor: not-allowed; }
   .editor-actions .ghost span, .editor-actions .primary span { display: inline; }
   .member-list { flex-direction: column; gap: 8px; }
 }
+
+.run-settings { position: relative; margin: 2px 0; font-size: 12px; color: var(--muted); }
+.run-settings summary { cursor: pointer; width: max-content; }
+.run-pop { position: absolute; top: 100%; left: 0; z-index: 40; width: 270px; margin-top: 4px; padding: 10px 12px; display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .22); }
+.run-pop label { display: grid; gap: 4px; }
+.audit-card { grid-column: 1 / -1; }
+.audit-card > .ghost { justify-self: start; width: auto; }
+.audit-list { display: grid; gap: 2px; max-height: 340px; overflow: auto; margin-top: 8px; font-size: 13px; }
+.audit-row { display: grid; grid-template-columns: 170px 120px 1fr; gap: 10px; padding: 5px 2px; border-bottom: 1px solid var(--border); align-items: baseline; }
+.audit-row code { overflow-wrap: anywhere; font-size: 12px; }
+@media (max-width: 900px) { .audit-row { grid-template-columns: 1fr; gap: 0; } }

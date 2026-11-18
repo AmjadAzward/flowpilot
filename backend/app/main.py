@@ -74,7 +74,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.12.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.13.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -139,6 +139,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, username TEXT, role TEXT, method TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL, claimed_by TEXT, claimed_at TEXT, finished_at TEXT, execution_id TEXT, response TEXT, error TEXT)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions (workflow_id, id)")
@@ -156,6 +157,21 @@ class WorkflowIn(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     tags: list[str] = Field(default_factory=list)
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("settings")
+    @classmethod
+    def clean_settings(cls, value: dict) -> dict:
+        out: dict[str, Any] = {}
+        if "timeout_seconds" in value and value["timeout_seconds"] not in (None, "", 0, "0"):
+            try: secs = int(float(value["timeout_seconds"]))
+            except (TypeError, ValueError): raise ValueError("The time limit must be a number of seconds")
+            if not 5 <= secs <= 3600: raise ValueError("The time limit must be between 5 and 3600 seconds")
+            out["timeout_seconds"] = secs
+        mode = str(value.get("save_runs") or "all")
+        if mode not in ("all", "failures", "none"): raise ValueError("Save runs must be all, failures or none")
+        if mode != "all": out["save_runs"] = mode
+        return out
 
     @field_validator("tags")
     @classmethod
@@ -176,7 +192,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -299,7 +315,7 @@ SELF_SERVICE = {"/api/auth/password"}
 def allowed(role: str, method: str, path: str) -> bool:
     """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
     if path in SELF_SERVICE: return True
-    if path.startswith(("/api/users", "/api/backup")): return role == "owner"
+    if path.startswith(("/api/users", "/api/backup", "/api/audit")): return role == "owner"
     if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
     if path.startswith(("/api/credentials", "/api/oauth", "/api/settings")): return role in ("owner", "admin")
@@ -329,14 +345,38 @@ async def require_login(request: Request, call_next):
         request.state.actor = user
         if user["role"] not in ("owner", "admin"):
             wf = re.match(r"^/api/workflows/([^/]+)", path)
-            ex = re.match(r"^/api/executions/([^/]+)/cancel$", path)
+            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay)$", path)
             target = wf.group(1) if wf else None
             if ex:
                 with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
                 target = row["workflow_id"] if row else None
             if target and not can_see_workflow(user, target):
                 return JSONResponse({"detail": "Not found"}, status_code=404)
-    return await call_next(request)
+    response = await call_next(request)
+    user = getattr(request.state, "actor", None)
+    login = path == "/api/auth/login"
+    if path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and (response.status_code < 400 or (login and response.status_code in (401, 429))) and not path.startswith("/api/hooks/") and path != "/api/oauth/callback":
+        try: record_audit(getattr(request.state, "audit_user", None) or (user["username"] if user else None), user["role"] if user else None, request.method, path, response.status_code)
+        except Exception: log.exception("Could not write the audit log")
+    return response
+
+
+AUDIT_KEEP = 5000
+
+
+def record_audit(username: str | None, role: str | None, method: str, path: str, status: int) -> None:
+    with conn() as db:
+        cur = db.execute("INSERT INTO audit_log (at,username,role,method,path,status) VALUES (?,?,?,?,?,?)", (now(), username, role, method, path[:300], status))
+        db.execute("DELETE FROM audit_log WHERE id <= ?", (cur.lastrowid - AUDIT_KEEP,))
+
+
+@app.get("/api/audit")
+def audit_log(limit: int = 200, offset: int = 0, who: str = ""):
+    limit, offset = max(1, min(limit, 1000)), max(0, offset)
+    with conn() as db:
+        if who: rows = db.execute("SELECT * FROM audit_log WHERE username=? ORDER BY id DESC LIMIT ? OFFSET ?", (who, limit, offset)).fetchall()
+        else: rows = db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    return [dict(r) for r in rows]
 
 
 MAX_BODY = 5 * 1024 * 1024
@@ -399,8 +439,10 @@ def auth_login(body: LoginIn, request: Request, response: Response):
     ok = verify_password(body.password, row["password_hash"] if row else DUMMY_HASH)
     if not row or not ok:
         _failed_logins[key].append(time.time())
+        request.state.audit_user = body.username.strip().lower()[:40] if row else "(unknown user)"  # a mistyped password is never recorded as a name
         raise HTTPException(401, "Incorrect username or password")
     _failed_logins.pop(key, None)
+    request.state.audit_user = body.username.strip().lower()
     create_session(row["id"], response, is_https(request))
     return {"username": body.username.strip().lower(), "role": row["role"]}
 
@@ -580,7 +622,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.12.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.13.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -624,7 +666,7 @@ MAX_VERSIONS = 30
 
 
 def canonical(doc: dict) -> str:
-    return json.dumps({k: doc.get(k) for k in ("name", "description", "nodes", "edges")}, sort_keys=True)
+    return json.dumps({k: doc.get(k) for k in ("name", "description", "nodes", "edges", "settings")}, sort_keys=True)
 
 
 @app.put("/api/workflows/{workflow_id}")
@@ -638,6 +680,7 @@ def update_workflow(workflow_id: str, body: WorkflowIn, request: Request):
         row = db.execute("SELECT active, definition, name FROM workflows WHERE id=?", (workflow_id,)).fetchone()
         if not row: raise HTTPException(404, "Workflow not found")
         if "tags" not in body.model_fields_set: doc["tags"] = json.loads(row["definition"]).get("tags", [])
+        if "settings" not in body.model_fields_set: doc["settings"] = json.loads(row["definition"]).get("settings", {})
         if canonical(json.loads(row["definition"])) != canonical(doc):
             who = getattr(getattr(request, "state", None), "user", None)
             db.execute("INSERT INTO workflow_versions (workflow_id,saved_at,saved_by,name,definition) VALUES (?,?,?,?,?)", (workflow_id, now(), who, row["name"], row["definition"]))
@@ -1172,9 +1215,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
+PINNABLE = {"sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
+ERROR_SETTINGS = {"sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1552,6 +1595,135 @@ def app_action(d: dict, previous: Any) -> Any:
     fields = read_json(render_template(str(d.get("fields") or "{}"), previous, json_escape=True))
     if not isinstance(fields, dict): raise ValueError("Fields must be a JSON object")
     return APP_HANDLERS[service](op, secret, fields)
+
+
+# ---------------------------------------------------------------------------
+# Item tools: small nodes that reshape lists and values (sort, limit, remove duplicates, split, summarise, rename, date/time, crypto)
+# ---------------------------------------------------------------------------
+def _need_list(previous: Any, label: str) -> list:
+    if not isinstance(previous, list): raise ValueError(f"{label} needs a list as input")
+    return previous
+
+
+def _sort_key(value: Any):
+    if isinstance(value, bool): return (1, str(value))
+    if isinstance(value, (int, float)): return (0, float(value), "")
+    if isinstance(value, str): return (1, 0.0, value.lower())
+    if value is None: return (3, 0.0, "")
+    return (2, 0.0, json.dumps(value, sort_keys=True, default=str))
+
+
+def tool_sort(d: dict, previous: Any) -> list:
+    items, path = _need_list(previous, "Sort"), str(d.get("path") or "").strip()
+    if len(items) > 50_000: raise ValueError("Sort is limited to 50000 items")
+    return sorted(items, key=lambda it: _sort_key(get_path(it, path) if path else it), reverse=str(d.get("order") or "asc") == "desc")
+
+
+def tool_limit(d: dict, previous: Any) -> list:
+    items = _need_list(previous, "Limit")
+    try: count = max(0, int(float(d.get("count") or 10)))
+    except (TypeError, ValueError): raise ValueError("Count must be a number")
+    return items[-count:] if count and str(d.get("from") or "first") == "last" else items[:count]
+
+
+def tool_dedupe(d: dict, previous: Any) -> list:
+    items, path, seen, out = _need_list(previous, "Remove Duplicates"), str(d.get("path") or "").strip(), set(), []
+    for it in items:
+        key = json.dumps(get_path(it, path) if path else it, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append(it)
+    return out
+
+
+def tool_split(d: dict, previous: Any) -> list:
+    value = get_path(previous, str(d.get("path") or "").strip())
+    if not isinstance(value, list): raise ValueError("Split Out found no list at that field")
+    return value
+
+
+def tool_aggregate(d: dict, previous: Any) -> Any:
+    items, path, op = _need_list(previous, "Summarize"), str(d.get("path") or "").strip(), str(d.get("operation") or "count")
+    values = [get_path(it, path) if path else it for it in items]
+    if op == "count": return len(values)
+    if op == "collect": return values
+    nums = []
+    for v in values:
+        if v is None or v == "": continue
+        try: nums.append(float(v))
+        except (TypeError, ValueError): raise ValueError(f"Cannot {op} the value {str(v)[:40]!r}: it is not a number")
+    if op not in ("sum", "avg", "min", "max"): raise ValueError(f"Unknown summary: {op}")
+    if not nums: return 0 if op == "sum" else None
+    res = {"sum": sum(nums), "avg": sum(nums) / len(nums), "min": min(nums), "max": max(nums)}[op]
+    return int(res) if float(res).is_integer() else round(res, 10)
+
+
+def tool_rename(d: dict, previous: Any) -> Any:
+    mapping = read_json(str(d.get("mapping") or "{}"))
+    if not isinstance(mapping, dict) or not all(isinstance(v, str) and v for v in mapping.values()): raise ValueError('Mapping must be a JSON object like {"old_name": "new_name"}')
+    one = lambda obj: {mapping.get(k, k): v for k, v in obj.items()} if isinstance(obj, dict) else obj
+    return [one(x) for x in previous] if isinstance(previous, list) else one(previous)
+
+
+def _to_datetime(value: Any) -> datetime:
+    if isinstance(value, (int, float)) and not isinstance(value, bool): return datetime.fromtimestamp(float(value), timezone.utc)
+    text = str(value if value is not None else "").strip()
+    if not text: return datetime.now(timezone.utc)
+    if re.fullmatch(r"-?\d+(\.\d+)?", text): return datetime.fromtimestamp(float(text), timezone.utc)
+    try: dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError: raise ValueError(f"Cannot read {text[:40]!r} as a date (use 2025-01-31 or 2025-01-31T10:00:00Z)")
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+DT_UNITS = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400, "weeks": 604800}
+
+
+def tool_datetime(d: dict, previous: Any) -> Any:
+    op = str(d.get("operation") or "now")
+    value = _to_datetime(render_template(str(d.get("value") or ""), previous))
+    unit = str(d.get("unit") or "days")
+    if unit not in DT_UNITS: raise ValueError(f"Unit must be one of {', '.join(DT_UNITS)}")
+    if op == "now": return datetime.now(timezone.utc).isoformat()
+    if op in ("add", "subtract"):
+        try: amount = float(render_template(str(d.get("amount") or "0"), previous))
+        except ValueError: raise ValueError("Amount must be a number")
+        if abs(amount * DT_UNITS[unit]) > 3650 * 86400 * 10: raise ValueError("Amount is too large")
+        return (value + timedelta(seconds=amount * DT_UNITS[unit] * (1 if op == "add" else -1))).isoformat()
+    if op == "diff":
+        other = _to_datetime(render_template(str(d.get("other") or ""), previous))
+        res = (other - value).total_seconds() / DT_UNITS[unit]
+        return int(res) if float(res).is_integer() else round(res, 6)
+    if op == "format":
+        fmt = str(d.get("format") or "%Y-%m-%d")
+        if len(fmt) > 100: raise ValueError("Format is too long")
+        return value.strftime(fmt)
+    raise ValueError(f"Unknown date operation: {op}")
+
+
+def tool_crypto(d: dict, previous: Any) -> Any:
+    op = str(d.get("operation") or "sha256")
+    if op == "uuid": return str(uuid.uuid4())
+    if op == "random":
+        try: n = max(1, min(int(float(d.get("value") or 16)), 128))
+        except (TypeError, ValueError): raise ValueError("Length must be a number")
+        return secrets.token_urlsafe(n)[:n]
+    data = render_template(str(d.get("value") or ""), previous)
+    if len(data) > 1_000_000: raise ValueError("Input is too large (limit 1 MB)")
+    raw = data.encode("utf-8")
+    if op in ("sha256", "sha512"): return hashlib.new(op, raw).hexdigest()
+    if op in ("sha1", "md5"): return hashlib.new(op, raw, usedforsecurity=False).hexdigest()
+    if op == "hmac_sha256":
+        key = render_template(str(d.get("key") or ""), previous)
+        if not key: raise ValueError("HMAC needs a secret key (use {{cred.NAME}} for a saved credential)")
+        return hmac.new(key.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    if op == "base64_encode": return base64.b64encode(raw).decode()
+    if op == "base64_decode":
+        try: return base64.b64decode(data.strip(), validate=True).decode("utf-8")
+        except Exception: raise ValueError("That is not valid base64 text")
+    raise ValueError(f"Unknown operation: {op}")
+
+
+ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto}
 
 
 def build_response(d: dict, previous: Any) -> dict:
@@ -2085,6 +2257,9 @@ def step_action(node: dict, previous: Any):
     if typ == "github":
         value = github_action(d, previous)
         return value, value, None
+    if typ in ITEM_TOOLS:
+        value = ITEM_TOOLS[typ](d, previous)
+        return value, value, None
     if typ == "app":
         value = app_action(d, previous)
         return value, value, None
@@ -2178,6 +2353,9 @@ class Graph:
         self.steps: list[dict] = []
         self.iter: list[int] = []
         self.suspended: dict | None = None
+        timeout = (doc.get("settings") or {}).get("timeout_seconds")
+        self.limit = int(timeout) if timeout else 0
+        self.deadline = time.monotonic() + self.limit if self.limit else None
 
     def reach(self, starts) -> set:
         seen, queue = set(), list(starts)
@@ -2263,7 +2441,7 @@ def run_repeat(g: Graph, nid: str, node: dict, value: Any):
     return {"attempts": attempts, "condition_met": met}, current
 
 
-EACH_ITEM_TYPES = {"app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
+EACH_ITEM_TYPES = {"datetime", "crypto", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
 MAX_EACH_ITEMS = 200
 
 
@@ -2380,6 +2558,7 @@ def run_graph(g: Graph, allowed: set, seeds: list):
 
     for edge, value in seeds: deliver(edge["target"], value, False)
     while stack:
+        if g.deadline is not None and time.monotonic() > g.deadline: raise StepFailure(f"The workflow ran longer than its time limit of {g.limit} seconds")
         batch = [stack.pop()]
         while stack and len(batch) < MAX_PARALLEL and g.nodes[batch[0]]["type"] in PARALLEL_TYPES and g.nodes[stack[-1]]["type"] in PARALLEL_TYPES:
             batch.append(stack.pop())
@@ -2413,11 +2592,16 @@ def _execute(doc: dict, initial: Any = None, resume: tuple | None = None) -> dic
     g = Graph(doc)
     try:
         if resume:
-            nid, value = resume
-            if nid not in g.nodes: raise ValueError("The waiting node no longer exists in this workflow")
-            allowed = g.reach([e["target"] for e in g.out[nid]])
-            if g.has_cycle(allowed): raise ValueError("Cycles are not supported in this release")
-            final = run_graph(g, allowed, [(e, value) for e in g.out[nid]])
+            nid, value, *flags = resume
+            if nid not in g.nodes: raise ValueError("The waiting node no longer exists in this workflow" if not flags else "The failed node no longer exists in this workflow")
+            if flags:  # replay: run the node itself again, then everything after it
+                allowed = g.reach([nid])
+                if g.has_cycle(allowed): raise ValueError("Cycles are not supported in this release")
+                final = run_graph(g, allowed, [({"target": nid}, value)])
+            else:
+                allowed = g.reach([e["target"] for e in g.out[nid]])
+                if g.has_cycle(allowed): raise ValueError("Cycles are not supported in this release")
+                final = run_graph(g, allowed, [(e, value) for e in g.out[nid]])
         else:
             starts = [nid for nid, n in g.nodes.items() if n["type"] in START_TYPES]
             if len(starts) != 1: raise ValueError("Workflow must contain exactly one trigger (Manual, Schedule or Webhook)")
@@ -2452,12 +2636,14 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
     exec_id, started = str(uuid.uuid4()), now()
     try: result = run_flow(doc, initial() if callable(initial) else initial)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
+    policy = (doc.get("settings") or {}).get("save_runs", "all")
+    skip_save = kind not in ("manual", "replay") and result["status"] != "waiting" and (policy == "none" or (policy == "failures" and result["status"] == "success"))
     with conn() as db:
         if result["status"] == "waiting" and db.execute("SELECT COUNT(*) c FROM waits WHERE status='pending'").fetchone()["c"] >= MAX_PENDING_WAITS:
             result = {"status": "failed", "output": None, "steps": result["steps"], "error": f"Too many runs are waiting (limit {MAX_PENDING_WAITS})"}
-        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
+        if not skip_save: db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
                    (exec_id, doc["id"], result["status"], started, None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
-        if result["status"] == "waiting": add_wait(db, exec_id, doc["id"], result["wait"])
+        if result["status"] == "waiting" and not skip_save: add_wait(db, exec_id, doc["id"], result["wait"])
     if result["status"] == "failed" and kind != "error": run_error_handler(doc, exec_id, kind, result)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
 
@@ -2516,6 +2702,34 @@ def recover_waits() -> None:
         for w in db.execute("SELECT id, execution_id FROM waits WHERE status='running'").fetchall():
             db.execute("UPDATE waits SET status='interrupted' WHERE id=?", (w["id"],))
             db.execute("UPDATE executions SET status='failed', finished_at=?, error='Interrupted: the API stopped while this run was resuming' WHERE id=?", (now(), w["execution_id"]))
+
+
+@app.post("/api/executions/{execution_id}/replay")
+def replay_execution(execution_id: str):
+    """Run a failed execution again from the node that failed, using the data that node received."""
+    with conn() as db: ex = db.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
+    if not ex: raise HTTPException(404, "Execution not found")
+    if ex["status"] != "failed": raise HTTPException(400, "Only failed runs can be replayed")
+    steps = json.loads(ex["steps"] or "[]")
+    failed = next((s for s in reversed(steps) if s.get("status") == "error" and not s.get("continued")), None)
+    if not failed: raise HTTPException(400, "This run did not stop at a node, so there is nothing to replay")
+    if failed.get("iteration"): raise HTTPException(400, "The failure happened inside a loop, which cannot be replayed from the middle")
+    if failed.get("type") == "merge": raise HTTPException(400, "A failed Merge node cannot be replayed")
+    value = failed.get("input")
+    if isinstance(value, dict) and value.get("truncated") is True and "preview" in value: raise HTTPException(400, "The input of the failed node was too large to keep, so it cannot be replayed")
+    try: doc = get_workflow(ex["workflow_id"])
+    except HTTPException: raise HTTPException(404, "The workflow no longer exists")
+    kept = [s for s in steps if s is not failed and s.get("status") in ("success", "skipped")]
+    try: result = run_flow(doc, None, resume=(failed["node_id"], value, True))
+    except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
+    all_steps = kept + result["steps"]
+    new_id = str(uuid.uuid4())
+    with conn() as db:
+        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay"))
+        if result["status"] == "waiting": add_wait(db, new_id, doc["id"], result["wait"])
+    if result["status"] == "failed": run_error_handler(doc, new_id, "replay", {**result, "steps": all_steps})
+    return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, **{**result, "steps": all_steps}}
 
 
 @app.post("/api/executions/{execution_id}/cancel")
@@ -2905,7 +3119,7 @@ def backup_workflows():
     items = []
     for r in rows:
         d = json.loads(r["definition"])
-        items.append({k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges")})
+        items.append({k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges", "settings")})
     body = {"format": "flowpilot-backup", "version": 1, "exported_at": now(), "workflows": items}
     return JSONResponse(body, headers={"Content-Disposition": 'attachment; filename="flowpilot-workflows.json"'})
 
@@ -2923,7 +3137,7 @@ def restore_workflows(body: RestoreIn):
     for item in body.workflows:
         label = str(item.get("name") or "(unnamed)")[:120]
         try:
-            wf = WorkflowIn(name=item.get("name") or "Restored workflow", description=item.get("description") or "", nodes=item.get("nodes") or [], edges=item.get("edges") or [], tags=item.get("tags") or [])
+            wf = WorkflowIn(name=item.get("name") or "Restored workflow", description=item.get("description") or "", nodes=item.get("nodes") or [], edges=item.get("edges") or [], tags=item.get("tags") or [], settings=item.get("settings") or {})
             validate_flow(wf)
         except HTTPException as exc: skipped.append({"name": label, "reason": exc.detail}); continue
         except Exception as exc: skipped.append({"name": label, "reason": str(exc).splitlines()[0][:150]}); continue

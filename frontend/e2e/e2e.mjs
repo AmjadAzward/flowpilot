@@ -733,6 +733,65 @@ await check('App Action switches service and action, and "each item" mode is off
   await shot('26-app-action');
 });
 
+await check('data tools: sort, limit, remove duplicates, split, summarize, rename, date and crypto expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-fetch-todo').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await openLibrary();
+  for (const t of ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename']) await page.getByTestId(`add-${t}`).waitFor();
+  await page.getByTestId('add-aggregate').click();
+  await page.getByLabel('Result').selectOption('sum');
+  await page.getByLabel(/^Field/).fill('amount');
+  await page.getByTestId('add-datetime').click();
+  await page.getByLabel('Action').selectOption('diff');
+  await page.getByLabel('Second date').waitFor();
+  await page.getByLabel('Action').selectOption('format');
+  await page.getByLabel('Format', { exact: true }).waitFor();
+  if (await page.getByLabel('Second date').count()) throw new Error('the second date should be hidden for Format');
+  await page.getByTestId('add-crypto').click();
+  await page.getByLabel('Action').selectOption('hmac_sha256');
+  await page.getByLabel('Secret key').waitFor();
+  await page.getByLabel('Action').selectOption('uuid');
+  if (await page.getByLabel('Secret key').count()) throw new Error('the key should be hidden for a random ID');
+  await shot('27-data-tools');
+});
+
+await check('run settings (time limit, which runs to keep) are saved with the workflow', async () => {
+  await page.getByText('Run settings').first().click();
+  await page.getByLabel('Workflow time limit').selectOption('300');
+  await page.getByLabel('Which runs to keep').selectOption('failures');
+  const sent = page.waitForRequest(r => r.method() === 'PUT' && /\/api\/workflows\//.test(r.url()));
+  await page.keyboard.press('Control+s');
+  const saved = JSON.parse((await sent).postData() ?? '{}').settings;
+  await expectText(toast(), /saved/i);
+  if (!saved || saved.timeout_seconds !== 300 || saved.save_runs !== 'failures') throw new Error('settings not sent: ' + JSON.stringify(saved));
+  await shot('28-run-settings');
+});
+
+await check('a failed run can be replayed from the failed step', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Replay flow', description: '', nodes: [node('t', 'trigger'), node('f', 'fail', { message: 'always fails' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'f' }, { id: 'b', source: 'f', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.locator('summary', { hasText: 'Replay flow' }).first().click();
+  await page.getByTestId('replay-run').first().click();
+  await expectText(toast(), /Replay failed/i);
+  await expectText(page.locator('.trig-chip.replay'), /Replay/);
+  await shot('29-replay');
+});
+
+await check('the owner sees an activity log of changes', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('audit-row').first().waitFor();
+  const text = await page.getByTestId('audit-panel').innerText();
+  if (!/POST \/api\/workflows/.test(text)) throw new Error('workflow creation not in the activity log');
+  if (/e2e-password|password/i.test(text.replace(/\/api\/auth\/password/g, ''))) throw new Error('a password appears in the activity log');
+  await shot('30-activity-log');
+});
+
 await check('projects limit what a member can see', async () => {
   await page.getByRole('button', { name: /^Users/ }).click();
   await page.getByTestId('user-name').fill('pat-editor');
