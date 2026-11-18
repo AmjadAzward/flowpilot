@@ -20,14 +20,14 @@ const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
 const pageErrors = [];
 page.on('pageerror', e => pageErrors.push(e.message));
-page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_/.test(m.text())) pageErrors.push(m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_|status of 401/.test(m.text())) pageErrors.push(m.text()); });
 
 let passed = 0, failed = 0;
 const check = async (name, fn) => {
   try { await fn(); passed++; console.log('  PASS', name); }
   catch (e) { failed++; console.log('  FAIL', name, '\n       ', String(e.message).split('\n')[0]); if (SHOTS) await page.screenshot({ path: `${SHOTS}/fail-${name.replace(/\W+/g, '-')}.png` }); }
 };
-const shot = async n => { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${n}.png` }); };
+const shot = async n => { if (SHOTS) await page.waitForTimeout(450); if (SHOTS) await page.screenshot({ path: `${SHOTS}/${n}.png` }); };
 const expectText = async (loc, re, timeout = 8000) => {
   const end = Date.now() + timeout; let t = '';
   while (Date.now() < end) {
@@ -42,20 +42,87 @@ await page.goto(BASE);
 await page.evaluate(() => localStorage.clear());
 await page.goto(BASE);
 
+const U = 'e2e-owner', PW = 'e2e-password-123';
+const fillAuth = async (user, pw, confirm) => {
+  await page.getByLabel('Username').fill(user);
+  await page.getByLabel('Password', { exact: true }).fill(pw);
+  if (confirm !== undefined) await page.getByLabel('Confirm password').fill(confirm);
+};
+
+await check('first visit shows account setup with branded tab title and icon', async () => {
+  await expectText(page.locator('h1'), /Create your account/);
+  const title = await page.title();
+  if (!/FlowPilot/.test(title)) throw new Error('tab title: ' + title);
+  const href = await page.locator('link[rel=icon]').getAttribute('href');
+  if (href !== '/favicon.svg') throw new Error('favicon href: ' + href);
+  const res = await page.request.get(BASE + '/favicon.svg');
+  if (res.status() !== 200 || !(res.headers()['content-type'] || '').includes('svg')) throw new Error('favicon not served as svg');
+  await shot('00-setup');
+});
+
+await check('API is locked while signed out', async () => {
+  const status = await page.evaluate(async () => (await fetch('/api/workflows')).status);
+  if (status !== 401) throw new Error('expected 401, got ' + status);
+});
+
+await check('setup validates matching passwords', async () => {
+  await fillAuth(U, PW, 'different-password');
+  await page.getByRole('button', { name: /Create account/ }).click();
+  await expectText(page.getByRole('alert'), /do not match/);
+});
+
+await check('setup creates the account and signs in', async () => {
+  await fillAuth(U, PW, PW);
+  await page.getByRole('button', { name: /Create account/ }).click();
+  await expectText(page.locator('h1'), /^Workflows$/);
+  await expectText(page.locator('.crumb strong'), /Overview/);
+  if (!/^Overview - FlowPilot$/.test(await page.title())) throw new Error('page title: ' + (await page.title()));
+});
+
+await check('sign out returns to the login screen', async () => {
+  await page.getByRole('button', { name: /Sign out/ }).click();
+  await expectText(page.locator('h1'), /Welcome back/);
+  if (!/^Sign in - FlowPilot$/.test(await page.title())) throw new Error('title: ' + (await page.title()));
+  await shot('00-login');
+});
+
+await check('login rejects a wrong password', async () => {
+  await fillAuth(U, 'wrong-password');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expectText(page.getByRole('alert'), /Incorrect username or password/);
+});
+
+await check('password visibility toggle', async () => {
+  await page.getByLabel('Show password').click();
+  if ((await page.getByLabel('Password', { exact: true }).getAttribute('type')) !== 'text') throw new Error('not revealed');
+  await page.getByLabel('Hide password').click();
+});
+
+await check('login succeeds and the session survives a reload', async () => {
+  await fillAuth(U, PW);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expectText(page.locator('h1'), /^Workflows$/);
+  await page.reload();
+  await expectText(page.locator('h1'), /^Workflows$/);
+});
+
 await check('dashboard renders hero, stats and seeded workflow', async () => {
-  await expectText(page.locator('h1'), /Build smarter/);
+  await expectText(page.locator('h1'), /^Workflows$/);
   await page.getByTestId('workflow-row').first().waitFor();
   if ((await page.locator('.stat').count()) !== 4) throw new Error('expected 4 stat cards');
   await shot('01-dashboard');
 });
 
-await check('theme toggle switches to light and persists', async () => {
+await check('theme defaults to light, toggles to dark and persists', async () => {
+  const theme = () => page.locator('html').getAttribute('data-theme');
+  if ((await theme()) !== 'light') throw new Error('default theme should be light');
   await page.getByLabel('Toggle theme').click();
-  if ((await page.locator('html').getAttribute('data-theme')) !== 'light') throw new Error('not light');
-  await shot('02-dashboard-light');
+  if ((await theme()) !== 'dark') throw new Error('not dark after toggle');
+  await shot('02-dashboard-dark');
   await page.reload();
-  if ((await page.locator('html').getAttribute('data-theme')) !== 'light') throw new Error('theme not persisted');
+  if ((await theme()) !== 'dark') throw new Error('theme not persisted');
   await page.getByLabel('Toggle theme').click();
+  if ((await theme()) !== 'light') throw new Error('not light after second toggle');
 });
 
 await check('search filters workflows', async () => {
@@ -93,6 +160,7 @@ await check('Ctrl+S saves', async () => {
 });
 
 await check('node library filter and adding a node', async () => {
+  if (!(await page.getByLabel('Filter nodes').isVisible())) await page.getByRole('button', { name: /Add nodes/ }).click();
   await page.getByLabel('Filter nodes').fill('delay');
   if ((await page.locator('.catalog-entry').count()) !== 1) throw new Error('filter failed');
   const before = await page.locator('.react-flow__node').count();

@@ -1,8 +1,11 @@
 """FlowPilot: small self-hosted visual automation API. SQLite, no cloud required."""
 from __future__ import annotations
 import copy
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import re
 import time
 import sqlite3
@@ -15,8 +18,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 BASE = Path(__file__).resolve().parent.parent
@@ -57,6 +61,8 @@ def initialize():
     with conn() as db:
         db.execute("CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', definition TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS executions (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, output TEXT, steps TEXT, error TEXT)")
+        db.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
             obj = sample_workflow()
             ts = now()
@@ -87,6 +93,125 @@ def workflow_row(row):
     result = json.loads(row["definition"])
     result.update(id=row["id"], name=row["name"], description=row["description"], updated_at=row["updated_at"])
     return result
+
+# ---------------------------------------------------------------------------
+# Authentication: one owner account, PBKDF2 password hashing, server-side sessions
+# ---------------------------------------------------------------------------
+COOKIE = "fp_session"
+SESSION_DAYS = 7
+PBKDF2_ROUNDS = 240_000
+MAX_FAILED_LOGINS = 5
+LOCKOUT_SECONDS = 300
+PUBLIC_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout"}
+_failed_logins: dict[str, list[float]] = {}
+
+
+def hash_password(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ROUNDS)
+    return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        _, rounds, salt, digest = stored.split("$")
+        check = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(rounds))
+        return hmac.compare_digest(check.hex(), digest)
+    except (ValueError, TypeError):
+        return False
+
+
+DUMMY_HASH = hash_password("not-a-real-password")  # keeps login timing similar for unknown users
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_session(user_id: str, response: Response) -> None:
+    token = secrets.token_urlsafe(32)
+    created = datetime.now(timezone.utc)
+    expires = created.timestamp() + SESSION_DAYS * 86400
+    with conn() as db:
+        db.execute("DELETE FROM sessions WHERE expires_at < ?", (created.isoformat(),))
+        db.execute("INSERT INTO sessions VALUES (?,?,?,?)", (token_hash(token), user_id, created.isoformat(), datetime.fromtimestamp(expires, timezone.utc).isoformat()))
+    response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="strict", path="/")
+
+
+def session_username(token: str | None) -> str | None:
+    if not token: return None
+    with conn() as db:
+        row = db.execute(
+            "SELECT u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash=? AND s.expires_at > ?",
+            (token_hash(token), now())).fetchone()
+    return row["username"] if row else None
+
+
+class SetupIn(BaseModel):
+    username: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.@-]+$")
+    password: str = Field(min_length=8, max_length=200)
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and request.method != "OPTIONS":
+        if not session_username(request.cookies.get(COOKIE)):
+            return JSONResponse({"detail": "Not signed in"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    with conn() as db:
+        has_users = db.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+    username = session_username(request.cookies.get(COOKIE))
+    return {"setup_required": not has_users, "authenticated": username is not None, "username": username}
+
+
+@app.post("/api/auth/setup", status_code=201)
+def auth_setup(body: SetupIn, response: Response):
+    """Create the owner account. Only possible while no account exists."""
+    user_id = str(uuid.uuid4())
+    with conn() as db:
+        if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise HTTPException(409, "An account already exists. Please sign in.")
+        db.execute("INSERT INTO users VALUES (?,?,?,?)", (user_id, body.username.lower(), hash_password(body.password), now()))
+    create_session(user_id, response)
+    return {"username": body.username.lower()}
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn, request: Request, response: Response):
+    key = request.client.host if request.client else "unknown"
+    recent = [t for t in _failed_logins.get(key, []) if time.time() - t < LOCKOUT_SECONDS]
+    _failed_logins[key] = recent
+    if len(recent) >= MAX_FAILED_LOGINS:
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+    with conn() as db:
+        row = db.execute("SELECT id, password_hash FROM users WHERE username=?", (body.username.strip().lower(),)).fetchone()
+    ok = verify_password(body.password, row["password_hash"] if row else DUMMY_HASH)
+    if not row or not ok:
+        _failed_logins[key].append(time.time())
+        raise HTTPException(401, "Incorrect username or password")
+    _failed_logins.pop(key, None)
+    create_session(row["id"], response)
+    return {"username": body.username.strip().lower()}
+
+
+@app.post("/api/auth/logout", status_code=204)
+def auth_logout(request: Request, response: Response):
+    token = request.cookies.get(COOKIE)
+    if token:
+        with conn() as db:
+            db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(token),))
+    response.delete_cookie(COOKIE, path="/")
+
 
 @app.get("/api/health")
 def health(): return {"status":"ok", "version":"0.2.0", "mode":"local"}

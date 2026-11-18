@@ -12,8 +12,29 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+OWNER = {"username": "owner", "password": "correct-horse-battery"}
+
+
+@pytest.fixture(scope="session")
+def session_cookie():
+    """Create the owner account once and return its session cookie."""
+    c = TestClient(app)
+    res = c.post("/api/auth/setup", json=OWNER)
+    assert res.status_code == 201, res.text
+    return res.cookies["fp_session"]
+
+
 @pytest.fixture()
-def client():
+def client(session_cookie):
+    """A client that is already signed in as the owner."""
+    c = TestClient(app)
+    c.cookies.set("fp_session", session_cookie)
+    return c
+
+
+@pytest.fixture()
+def anon():
+    """A client with no session."""
     return TestClient(app)
 
 

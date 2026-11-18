@@ -9,7 +9,8 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-42%20API%20%2B%2015%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-65%20API%20%2B%2023%20browser-34D399?style=for-the-badge)
+![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Cost](https://img.shields.io/badge/cost-free-F59E0B?style=for-the-badge)
 
 **Design workflows visually. Branch on conditions. Call APIs. Inspect every run.**
@@ -23,12 +24,16 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/01-dashboard.png" alt="Dashboard in dark mode"/><br/><sub><b>Overview</b> with stats, templates and your workflows (dark theme)</sub></td>
-    <td width="50%"><img src="docs/screenshots/02-dashboard-light.png" alt="Dashboard in light mode"/><br/><sub><b>Light theme</b>, remembered between visits</sub></td>
+    <td width="50%"><img src="docs/screenshots/01-dashboard.png" alt="Dashboard"/><br/><sub><b>Overview</b> with stats, your workflows and starter templates (light theme)</sub></td>
+    <td width="50%"><img src="docs/screenshots/02-dashboard-dark.png" alt="Dashboard in dark mode"/><br/><sub><b>Dark theme</b>, remembered between visits</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/04-branching.png" alt="Branching workflow"/><br/><sub><b>Branching</b>: only the matching path runs, the other is greyed out</sub></td>
     <td width="50%"><img src="docs/screenshots/05-failed-run.png" alt="Failed run"/><br/><sub><b>Failure inspection</b> with the failing node marked on the canvas</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/00-login.png" alt="Sign in screen"/><br/><sub><b>Sign in</b> screen protecting your workspace</sub></td>
+    <td width="50%"><img src="docs/screenshots/06-executions.png" alt="Execution history"/><br/><sub><b>Execution history</b> with status filters and step details</sub></td>
   </tr>
 </table>
 
@@ -46,7 +51,8 @@
 | **Templates** | Three ready-made workflows to start from: greeting, order triage (branching) and fetch-and-extract (HTTP) |
 | **Workflow management** | Create, rename, duplicate, delete, import and export as JSON, run directly from the dashboard |
 | **Execution history** | Every run stored with output and steps, filterable by status, with one-click clear |
-| **Editor comfort** | Unsaved-change indicator, Ctrl+S to save, light and dark themes |
+| **Editor comfort** | Unsaved-change indicator, Ctrl+S to save, light and dark themes, branded browser tab title and icon |
+| **Login** | Owner account created on first visit, salted PBKDF2 password hashing, 7-day sessions in an HttpOnly cookie, lockout after 5 failed attempts, every API route locked until you sign in |
 | **Safe by default** | HTTPS-only public destinations, private and metadata addresses blocked, redirects refused, 8 second timeout, 1 MB response cap |
 
 ---
@@ -58,7 +64,7 @@
 1. Install **Python 3.11 or newer** (tick *Add Python to PATH*) and **Node.js LTS**.
 2. Extract or clone this project, for example to `C:\FlowPilot`.
 3. Double-click **`start-windows.bat`**. The first launch installs dependencies and opens two terminal windows.
-4. Open **http://127.0.0.1:5173** in your browser.
+4. Open **http://127.0.0.1:5173** in your browser. On first visit you create your owner account (see below).
 
 ### macOS and Linux
 
@@ -85,6 +91,20 @@ Interactive API documentation is served at **http://127.0.0.1:8000/docs**.
 
 ---
 
+## <img src="https://img.shields.io/badge/-Login%20and%20account-E9522A?style=flat-square" alt="Login"/>
+
+- **First visit:** FlowPilot shows *Create your account*. Choose a username (3 to 40 characters) and a password of at least 8 characters. That single owner account is the only one; setup closes afterwards.
+- **After that:** you sign in with that username and password. Sessions last 7 days or until you press **Sign out**.
+- **Forgot the password?** Stop the API, then run this from the `backend` folder. It removes the owner account and sessions (workflows and history are kept) so the setup screen appears again:
+
+```powershell
+.\.venv\Scripts\python.exe reset_password.py
+```
+
+- **Upgrading from an earlier version:** existing workflows are kept. You will simply be asked to create the owner account on your next visit.
+
+---
+
 ## <img src="https://img.shields.io/badge/-Your%20first%20workflow-38BDF8?style=flat-square" alt="First workflow"/>
 
 1. On the **Overview** page choose the template **Order triage**.
@@ -98,12 +118,12 @@ Interactive API documentation is served at **http://127.0.0.1:8000/docs**.
 
 ```mermaid
 flowchart LR
-    A[React + React Flow<br/>web app]:::ui -->|/api proxy| B[FastAPI<br/>REST API]:::api
+    A[React + React Flow<br/>web app]:::ui -->|/api proxy, session cookie| B[FastAPI<br/>REST API + login]:::api
     B --> C[Execution engine<br/>branching, templates, HTTP]:::engine
     B --> D[(SQLite<br/>workflows and runs)]:::db
     C -->|HTTPS GET only| E[Public web APIs]:::ext
 
-    classDef ui fill:#8B7BFF,stroke:#5b4cdb,color:#ffffff
+    classDef ui fill:#E9522A,stroke:#b13a18,color:#ffffff
     classDef api fill:#009688,stroke:#00695c,color:#ffffff
     classDef engine fill:#F472B6,stroke:#be185d,color:#ffffff
     classDef db fill:#38BDF8,stroke:#0369a1,color:#0a0f1c
@@ -130,7 +150,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the single 
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API and engine tests** (42 tests, use a temporary database):
+**API, engine and login tests** (65 tests, use a temporary database):
 
 ```powershell
 cd backend
@@ -138,7 +158,7 @@ cd backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-**Browser end-to-end tests** (15 checks driving a real Chrome or Edge). These create and delete workflows, so start the API on a throwaway database first:
+**Browser end-to-end tests** (23 checks driving a real Chrome or Edge, including account setup, sign in and sign out). These create and delete workflows, so start the API on a throwaway database first:
 
 ```powershell
 $env:FLOWPILOT_DB = "$env:TEMP\flowpilot-e2e.db"
@@ -166,11 +186,15 @@ flowpilot/
   start-windows.bat          one-click launcher for Windows
   start-mac-linux.sh         launcher for macOS and Linux
   backend/
-    app/main.py              API, SQLite storage and the execution engine
+    app/main.py              API, login and sessions, SQLite storage, execution engine
+    reset_password.py        removes the owner account so you can set a new one
     tests/                   pytest suite
     requirements.txt
   frontend/
-    src/App.tsx              dashboard, editor, executions, settings
+    src/App.tsx              auth gate, dashboard, editor, executions, settings
+    src/Login.tsx            sign in and first-run account setup
+    src/MiniFlow.tsx         workflow previews on template cards
+    public/favicon.svg       browser tab icon
     src/nodes.tsx            custom canvas nodes and run-state badges
     src/catalog.ts           node definitions and starter templates
     src/styles.css           design tokens, light and dark themes
@@ -184,7 +208,7 @@ flowpilot/
 
 ## <img src="https://img.shields.io/badge/-Limits%20to%20know-FB7185?style=flat-square" alt="Limits"/>
 
-- **Single user, local only.** There is no authentication. Do not expose port 8000 to the internet or forward it on your router.
+- **Single user, local use.** There is one owner account and sessions run over plain HTTP on localhost. It is not hardened for the public internet: do not expose port 8000 or forward it on your router.
 - **Manual triggers only.** Scheduling, webhooks, OAuth connectors, loops and queues are on the [roadmap](ROADMAP.md), not implemented.
 - **One incoming connection per node.** Branches cannot merge back together yet, and cycles are rejected. One node may fan out to several.
 - **HTTP node is GET only.** The URL checks are an MVP safeguard, not a hardened defence for untrusted multi-tenant use. Only run workflows you trust.

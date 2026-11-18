@@ -15,7 +15,9 @@ This file describes planned functionality, **not current features**.
 - Per-step timings, per-node run badges on the canvas
 - Workflow duplication, execution filtering and clearing, starter templates
 - Light and dark themes, unsaved-change indicator, Ctrl+S
-- 42 API tests and a 15-check browser end-to-end suite
+- Redesigned light/dark interface with an orange brand theme, branded tab title and icon
+- Owner login with hashed passwords, sessions, lockout and password reset script
+- 65 API tests and a 23-check browser end-to-end suite
 
 ## Phase 2: True automation engine
 - Worker queue (Redis or database-backed)
@@ -41,7 +43,7 @@ This file describes planned functionality, **not current features**.
 
 ## Phase 5: Production SaaS
 - PostgreSQL migration, Redis queue, scaled workers
-- Multi-user accounts, organization isolation, RBAC, audit logs
+- Multi-user accounts (v0.2 has one owner login), organization isolation, RBAC, audit logs
 - Security hardening incl. network egress isolation for untrusted connectors
 - Rate limiting, usage quotas, monitoring and disaster recovery
 - Multi-tenant deployment and subscription plans (optional)

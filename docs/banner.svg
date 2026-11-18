@@ -2,23 +2,23 @@
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0a0f1c"/>
-      <stop offset="1" stop-color="#1a1440"/>
+      <stop offset="1" stop-color="#3a1a12"/>
     </linearGradient>
     <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#8b7bff"/>
-      <stop offset="1" stop-color="#38bdf8"/>
+      <stop offset="0" stop-color="#ff9a6b"/>
+      <stop offset="1" stop-color="#ffd166"/>
     </linearGradient>
     <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#8b7bff"/>
-      <stop offset="1" stop-color="#4f8bff"/>
+      <stop offset="0" stop-color="#ff9a6b"/>
+      <stop offset="1" stop-color="#e9522a"/>
     </linearGradient>
     <radialGradient id="glow1" cx="0.85" cy="0.1" r="0.6">
-      <stop offset="0" stop-color="#7c6cff" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#7c6cff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#e9522a" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#e9522a" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="glow2" cx="0.1" cy="1" r="0.6">
-      <stop offset="0" stop-color="#38bdf8" stop-opacity="0.3"/>
-      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffd166" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#ffd166" stop-opacity="0"/>
     </radialGradient>
   </defs>
   <rect width="1200" height="320" rx="24" fill="url(#bg)"/>
@@ -27,9 +27,9 @@
 
   <!-- workflow diagram -->
   <g transform="translate(700 70)" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="14" font-weight="600">
-    <path d="M150 60 C190 60 190 20 230 20" stroke="#7c6cff" stroke-width="2.5" fill="none" stroke-dasharray="6 5"/>
-    <path d="M150 60 C190 60 190 130 230 130" stroke="#7c6cff" stroke-width="2.5" fill="none" stroke-dasharray="6 5" opacity="0.5"/>
-    <path d="M380 20 C410 20 410 75 440 75" stroke="#7c6cff" stroke-width="2.5" fill="none" stroke-dasharray="6 5"/>
+    <path d="M150 60 C190 60 190 20 230 20" stroke="#e9522a" stroke-width="2.5" fill="none" stroke-dasharray="6 5"/>
+    <path d="M150 60 C190 60 190 130 230 130" stroke="#e9522a" stroke-width="2.5" fill="none" stroke-dasharray="6 5" opacity="0.5"/>
+    <path d="M380 20 C410 20 410 75 440 75" stroke="#e9522a" stroke-width="2.5" fill="none" stroke-dasharray="6 5"/>
 
     <rect x="0" y="35" width="150" height="50" rx="12" fill="#121a2e" stroke="#f59e0b" stroke-width="2"/>
     <circle cx="26" cy="60" r="11" fill="#f59e0b" opacity="0.25"/><circle cx="26" cy="60" r="4" fill="#f59e0b"/>
@@ -43,8 +43,8 @@
     <circle cx="256" cy="130" r="11" fill="#fb7185" opacity="0.25"/><circle cx="256" cy="130" r="4" fill="#fb7185"/>
     <text x="276" y="135" fill="#e8ecf8">If false</text>
 
-    <rect x="440" y="50" width="150" height="50" rx="12" fill="#121a2e" stroke="#8b7bff" stroke-width="2"/>
-    <circle cx="466" cy="75" r="11" fill="#8b7bff" opacity="0.25"/><circle cx="466" cy="75" r="4" fill="#8b7bff"/>
+    <rect x="440" y="50" width="150" height="50" rx="12" fill="#121a2e" stroke="#ff9a6b" stroke-width="2"/>
+    <circle cx="466" cy="75" r="11" fill="#ff9a6b" opacity="0.25"/><circle cx="466" cy="75" r="4" fill="#ff9a6b"/>
     <text x="486" y="80" fill="#e8ecf8">Result</text>
   </g>
 
