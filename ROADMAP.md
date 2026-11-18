@@ -31,7 +31,7 @@ This file describes planned functionality, **not current features**.
 - OAuth 2.0 connections (Google, GitHub, custom) with PKCE and automatic refresh
 - Google Sheets and Gmail nodes, OAuth option on the HTTP node
 - Durable long waits (up to 7 days) with resume, cancel and restart recovery
-- 371 API tests and a 42-check browser suite
+- 432 API tests and a 42-check browser suite
 
 ### v0.5
 - Switch, Code (restricted Python), Stop and Fail and Wait nodes
