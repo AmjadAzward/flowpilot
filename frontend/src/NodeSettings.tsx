@@ -232,6 +232,28 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <span className="hint">When this workflow is called through its webhook, the caller receives this reply instead of the default status. Use {'{{body.field}}'} to include data. Needs a Webhook trigger and an active workflow.</span>
         </>
       );
+    case 'poll_in': {
+      const source = v('source', 'rss');
+      return (
+        <>
+          <label>Watch<select value={source} onChange={text('source')}><option value="rss">An RSS or Atom feed</option><option value="github_issues">GitHub issues</option><option value="json_list">Any JSON list from an API</option></select></label>
+          {source === 'github_issues'
+            ? <>
+                <label>Repository<input value={v('repo')} onChange={text('repo')} placeholder="owner/name" /></label>
+                <label>Which issues<select value={v('state', 'open')} onChange={text('state')}><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select></label>
+              </>
+            : <label>Address (HTTPS)<input value={v('url')} onChange={text('url')} spellCheck={false} placeholder="https://example.com/feed.xml" /></label>}
+          {source === 'json_list' && <>
+            <label>Where the list is (blank when the reply is the list)<input value={v('items_path')} onChange={text('items_path')} placeholder="data.items" /></label>
+            <label>Field that identifies an item (blank uses the whole item)<input value={v('id_path')} onChange={text('id_path')} placeholder="id" /></label>
+            <label>The API lists items<select value={v('order', 'newest_first')} onChange={text('order')}><option value="newest_first">Newest first</option><option value="oldest_first">Oldest first</option></select></label>
+          </>}
+          {source !== 'rss' && credSelect('credential', 'Access token (optional)')}
+          <label>Check every (minutes, 1 to 1440)<input type="number" min={1} max={1440} value={v('minutes', '15')} onChange={text('minutes')} /></label>
+          <span className="hint">When you activate the workflow, what exists now is remembered and does not run. After that, each new item starts one run (up to 10 per check). Later nodes read the item's fields, for example {'{{title}}'} and {'{{link}}'} for a feed, or {'{{number}}'}, {'{{title}}'} and {'{{url}}'} for GitHub issues. Run workflow tests it with a sample item.</span>
+        </>
+      );
+    }
     case 'email_in':
       return (
         <>

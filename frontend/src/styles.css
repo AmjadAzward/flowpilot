@@ -528,3 +528,10 @@ button:disabled { cursor: not-allowed; }
 .tour-dots span.on { background: var(--accent); }
 .tour-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
 .tour-actions .spacer { flex: 1; }
+
+.name-cell { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.name-cell > .flow-meta { flex: 1; min-width: 0; }
+.name-cell input[type='checkbox'], .workflow-row input[type='checkbox'] { width: 16px; height: 16px; flex: none; accent-color: var(--accent); cursor: pointer; }
+.workflow-row.picked { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 13px; }
+.bulk-bar .spacer { flex: 1; }

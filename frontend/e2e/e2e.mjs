@@ -198,6 +198,7 @@ await check('branching template routes to the correct branch', async () => {
 await check('text template and http templates load; http failure shows error', async () => {
   await page.getByLabel('Back to overview').click();
   await page.getByTestId('template-greeting').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Personalised greeting');
   await page.getByRole('button', { name: /Run workflow/ }).click();
   await expectText(runPanel().locator('pre'), /Hello Ada from London!/);
   await page.locator('.react-flow__node', { hasText: 'Text Template' }).click();
@@ -798,15 +799,15 @@ await check('every template can be created, and the offline ones produce the exp
   const built = await build({ entryPoints: ['src/catalog.ts'], bundle: true, format: 'esm', platform: 'node', write: false, external: ['@xyflow/react'] });
   const mod = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
   const templates = mod.templates;
-  if (templates.length < 20) throw new Error('expected at least 20 templates, found ' + templates.length);
-  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert']);
+  if (templates.length < 25) throw new Error('expected at least 25 templates, found ' + templates.length);
+  const online = new Set(['fetch-todo', 'scheduled-check', 'post-api', 'resilient-call', 'rss-digest', 'slack-alert', 'ntfy-alert']);
   const expected = {
     greeting: 'Hello Ada from London!', 'order-triage': 'PRIORITY: order A-1042 (250)', 'webhook-receiver': 'New message from Ada: Hello from a webhook',
     'top-n': ['Ada: 91', 'Di: 85', 'Cy: 77'], 'clean-contacts': [{ mail: 'a@x.com', name: 'Ada' }, { mail: 'b@x.com', name: 'Bob' }], 'sales-summary': 'Paid total: 200.5',
     'due-date': 'Friday 14 February 2025', 'hash-email': createHash('sha256').update('ada@example.com').digest('hex'),
     'add-field': [{ item: 'Pen', price: 10, price_with_tax: 12 }, { item: 'Book', price: 24.5, price_with_tax: 29.4 }], 'unwrap-list': [{ id: 1 }, { id: 2 }],
     'route-tickets': 'Page the on-call: T-77', 'webhook-reply': { greeting: 'Hello Ada' }, 'error-alert': 'ALERT: Nightly import failed at HTTP Request: Database timed out',
-    'python-stats': { count: 3, average: 72, best: 'Ada' }, 'combine-sources': { name: 'Ada', plan: 'pro' },
+    'python-stats': { count: 3, average: 72, best: 'Ada' }, 'new-posts': 'New post: Sample item https://example.com/sample', 'combine-sources': { name: 'Ada', plan: 'pro' },
   };
   const results = await page.evaluate(async ({ templates, online }) => {
     const out = {};
@@ -875,6 +876,71 @@ await check('run history exports as CSV', async () => {
   for await (const chunk of stream) text += chunk;
   if (!text.startsWith('execution_id,workflow,status,trigger')) throw new Error('unexpected header: ' + text.slice(0, 60));
   if (text.trim().split('\n').length < 2) throw new Error('no rows exported');
+});
+
+await check('the New Items trigger and the added services expose their settings', async () => {
+  await goOverview();
+  await page.getByTestId('template-new-posts').click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await node('New Items Trigger').click();
+  await page.getByLabel('Watch').selectOption('github_issues');
+  await page.getByLabel('Repository').waitFor();
+  await page.getByLabel('Watch').selectOption('json_list');
+  await page.getByLabel(/^Field that identifies/).waitFor();
+  await page.getByLabel('Watch').selectOption('rss');
+  await page.getByLabel(/^Address/).waitFor();
+  await openLibrary();
+  await page.getByTestId('add-app').click();
+  for (const [service, field] of [['sendgrid', '"from"'], ['mailchimp', 'list_id'], ['trello', 'list_id'], ['asana', 'project_id'], ['jira', '"site"'], ['todoist', '"due"'], ['gitlab', '"project"'], ['discord', 'channel_id'], ['ntfy', '"topic"']]) {
+    await page.getByLabel('Service').selectOption(service);
+    if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes(field)) throw new Error(service + ' example fields missing ' + field);
+  }
+  await shot('32-new-items-trigger');
+});
+
+await check('bulk actions: select workflows, activate, deactivate, run and delete them together', async () => {
+  const ids = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const made = [];
+    for (const name of ['Bulk A', 'Bulk B', 'Bulk C']) {
+      const body = { name, description: '', nodes: [node('s', 'schedule', { mode: 'interval', minutes: '30' }), node('o', 'output')], edges: [{ id: 'e', source: 's', target: 'o' }] };
+      made.push((await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()).id);
+    }
+    return made;
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /^Overview/ }).click();
+  await page.getByLabel('Search workflows').fill('Bulk ');
+  await page.getByTestId('workflow-row').nth(2).waitFor();
+  await page.getByTestId('select-all').check();
+  await expectText(page.getByTestId('bulk-bar'), /3 selected/);
+  await page.getByTestId('bulk-bar').getByRole('button', { name: 'Activate', exact: true }).click();
+  await expectText(toast(), /3 activated/);
+  const active = await page.evaluate(async ids => (await Promise.all(ids.map(async id => (await (await fetch(`/api/workflows/${id}`)).json()).active))), ids);
+  if (!active.every(Boolean)) throw new Error('not all activated: ' + active);
+  await page.getByTestId('select-all').check();
+  await page.getByTestId('bulk-bar').getByRole('button', { name: 'Deactivate', exact: true }).click();
+  await expectText(toast(), /3 deactivated/);
+  await page.getByTestId('select-all').check();
+  await page.getByTestId('bulk-bar').getByRole('button', { name: 'Run', exact: true }).click();
+  await expectText(toast(), /3 run/);
+  await page.getByLabel('Select Bulk B').check();
+  await expectText(page.getByTestId('bulk-bar'), /1 selected/);
+  await page.getByRole('button', { name: 'Clear selection' }).click();
+  if (await page.getByTestId('bulk-bar').count()) throw new Error('the bar should disappear when nothing is selected');
+  await page.getByLabel('Select Bulk A').check();
+  await page.getByLabel('Select Bulk C').check();
+  page.once('dialog', d => d.accept());
+  await page.getByTestId('bulk-bar').getByRole('button', { name: 'Delete', exact: true }).click();
+  await expectText(toast(), /2 deleted/);
+  await page.getByTestId('workflow-row').first().waitFor();
+  if ((await page.getByTestId('workflow-row').count()) !== 1) throw new Error('expected one Bulk workflow left');
+  await page.getByLabel('Select Bulk B').check();
+  page.once('dialog', d => d.accept());
+  await page.getByTestId('bulk-bar').getByRole('button', { name: 'Delete', exact: true }).click();
+  await expectText(toast(), /1 deleted/);
+  await page.getByLabel('Search workflows').fill('');
+  await shot('33-bulk');
 });
 
 await check('projects limit what a member can see', async () => {

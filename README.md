@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-801%20API%20%2B%2058%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-829%20API%20%2B%2060%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -63,6 +63,8 @@
 | **Parallel branches** | Branches that become ready together run at the same time (up to 4 at once) when they are network, database, AI, code or file nodes. Results are recorded for every branch, and a failure still finishes its siblings |
 | **Repeat until** | Repeat steps until a condition is met, for example polling an API until a job is done, with a limit of 20 attempts |
 | **Files** | Read, write, list and delete files (text or binary as base64) in one safe folder, and download an HTTP response straight into a file (up to 5 MB) |
+| **New Items trigger** | Watch an RSS or Atom feed, the issues of a GitHub repository, or any JSON list from an API, and run the workflow once for each new item (up to 10 per check, every 1 to 1440 minutes). Activating remembers what exists now so old items do not run. Failed checks are recorded as failed runs |
+| **Bulk actions** | Tick workflows on the Overview page to activate, deactivate, run or delete several at once |
 | **Email trigger** | Poll an IMAP inbox and run the workflow once per new message, with optional sender and subject filters. Failed checks are recorded as failed runs |
 | **Projects** | The owner groups workflows into projects and chooses who is a member. Members see their projects plus unassigned workflows. Enforced on every route, including history and cancelling runs |
 | **AI, free and private** | The AI Prompt node talks to any OpenAI-compatible service. Run a model on your own computer with Ollama or LM Studio at no cost, or use a hosted one. Replies can be text or JSON data |
@@ -80,15 +82,15 @@
 | **Connect to services** | Send Email over SMTP, Send Message to Slack or Discord, HTTP with Bearer, Basic or API-key auth, and Run Workflow to call one workflow from another |
 | **Run on their own** | Schedule trigger (every N minutes, daily at a time, or any cron expression) and Webhook trigger (a secret URL that starts the workflow), with an Active switch per workflow |
 | **Work on lists** | Most action nodes can run once for every element of a list ("Run once for each item", up to 200 items), so one HTTP, Code, Set or message node handles a whole list and returns a list of results |
-| **App Action node** | Seven services behind one node: Slack, Notion, Airtable, Stripe, Twilio, Linear and HubSpot. These are tested against simulated servers only, so try each one with a test account before relying on it |
+| **App Action node** | Sixteen services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab and ntfy (free push notifications). These are tested against simulated servers only, so try each one with a test account before relying on it |
 | **Data tools** | Sort, Limit, Remove Duplicates, Split Out, Summarize (count, sum, average, min, max, collect), Rename Keys, Date and Time (add, subtract, compare, format) and Crypto and Encoding (SHA, MD5, HMAC signatures, base64, random IDs) |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
 | **Activity log** | The owner sees who changed what (every successful change, plus sign-ins and failed sign-ins by account name). Passwords and bodies are never recorded. The latest 5000 entries are kept |
-| **Twenty-three templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
+| **Twenty-five templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
 | **First-run tour** | A four-step walkthrough shown once, and again from the Tour link in the sidebar |
 | **Export runs to CSV** | The Executions page exports the run history (all, or only the failed or successful ones). Cells that could be read as spreadsheet formulas are neutralised |
-| **Forty-four node types** | Manual, Schedule, Webhook and Email triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
+| **Forty-five node types** | Manual, Schedule, Webhook, Email and New Items triggers; JSON Input, Extract Field, Text Template, Set Fields, Filter List, Parse CSV, Files; Compare Value, Switch, Loop Over Items, Repeat Until, Merge, Run Workflow, Code, Stop and Fail, Wait, Delay, Pass Through; Sort, Limit, Remove Duplicates, Split Out, Summarize, Rename Keys, Date and Time, Crypto and Encoding; Database Query (SQLite and Postgres), Read RSS Feed, Google Sheets; HTTP Request, Send Message, Send Email, Telegram Message, GitHub Issues, App Action (Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot), Gmail, AI Prompt; Sticky Note, Result Output, Respond to Webhook |
 | **Full HTTP requests** | GET, POST, PUT, PATCH and DELETE with custom headers and a JSON or text body. `{{field}}` placeholders work in the URL, headers and body |
 | **Seven comparison operators** | equals, does not equal, contains, greater than, less than, exists, does not exist |
 | **Run feedback** | Per-node success, error and skipped badges on the canvas, plus per-step timings in milliseconds |
@@ -270,7 +272,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (801 tests, use a temporary database and key):
+**API, engine, security and connector tests** (829 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -379,6 +381,7 @@ Everything works with no configuration. These optional environment variables cha
 - **Backups:** because of WAL mode, copying `flowpilot.db` alone while the API runs can miss recent changes. Use the Backup page in Settings, which makes a consistent copy.
 - **Parallel branches:** only network, database, AI, code and file nodes run in parallel, so loops and branch logic stay predictable. If one parallel branch fails, the others in that group still finish.
 - **Files** live in `backend/data/files` (override with `FLOWPILOT_FILES_DIR`). Binary data is passed around as base64 inside JSON, and webhooks do not accept file uploads yet.
+- **New Items trigger:** checks run while FlowPilot is running, and items that appear and disappear between two checks are missed. An API list without a stable identifier field is matched by its whole content, so an item that changes counts as new.
 - **Email trigger:** a message is marked read when picked up, so a failed run is not retried (the failed run keeps the message). Gmail needs an app password.
 - **Projects control visibility, not secrets:** credentials are still shared by name with everyone who can build workflows.
 - **Not yet:** SSO, webhook file uploads, and a Postgres option for FlowPilot's own storage (the Database Query node can already talk to Postgres). The OAuth flow was tested with simulated providers, not against live Google.

@@ -32,7 +32,7 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const triggerLabel: Record<TriggerKind | 'error' | 'replay', string> = { replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', error: 'On error' };
+const triggerLabel: Record<TriggerKind | 'error' | 'replay', string> = { replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', poll_in: 'New items', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
@@ -105,6 +105,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'error' } | null>(null);
   const [query, setQuery] = useState('');
   const [libQuery, setLibQuery] = useState('');
+  const [picked, setPicked] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [tplGroup, setTplGroup] = useState<(typeof templateGroups)[number]>('All');
   const [tourOpen, setTourOpen] = useState(() => { try { return localStorage.getItem('fp-tour') !== 'done'; } catch { return false; } });
   const closeTour = () => { setTourOpen(false); try { localStorage.setItem('fp-tour', 'done'); } catch { /* private mode */ } };
@@ -207,6 +209,31 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       const result = await api<Run>(`/api/workflows/${id}/run`, { method: 'POST' });
       await refresh(); notify(result.status === 'success' ? 'Workflow completed' : `Workflow failed: ${result.error}`, result.status === 'success' ? 'ok' : 'error');
     } catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const bulk = async (action: 'activate' | 'deactivate' | 'run' | 'delete') => {
+    const targets = flows.filter(f => picked.includes(f.id));
+    if (!targets.length) return;
+    if (action === 'delete' && !window.confirm(`Delete ${targets.length} workflow${targets.length > 1 ? 's' : ''} and their execution logs permanently?`)) return;
+    setBulkBusy(true);
+    let ok = 0, skipped = 0;
+    const problems: string[] = [];
+    for (const f of targets) {
+      if ((action === 'activate') && (f.trigger ?? 'manual') === 'manual') { skipped++; continue; }
+      try {
+        if (action === 'delete') await api(`/api/workflows/${f.id}`, { method: 'DELETE' });
+        else if (action === 'run') await api(`/api/workflows/${f.id}/run`, { method: 'POST' });
+        else await api(`/api/workflows/${f.id}/active`, { method: 'POST', body: JSON.stringify({ active: action === 'activate' }) });
+        ok++;
+      } catch (e) { problems.push(`${f.name}: ${(e as Error).message}`); }
+    }
+    if (action === 'delete' && targets.some(f => f.id === selectedId)) { setSelectedId(''); setPage('dashboard'); }
+    setPicked([]); setBulkBusy(false);
+    await refresh();
+    const verb = { activate: 'activated', deactivate: 'deactivated', run: 'run', delete: 'deleted' }[action];
+    const parts = [`${ok} ${verb}`];
+    if (skipped) parts.push(`${skipped} skipped (manual workflows cannot be activated)`);
+    if (problems.length) parts.push(`${problems.length} failed: ${problems[0]}`);
+    notify(parts.join(', '), problems.length ? 'error' : 'ok');
   };
   const removeFlow = async (id: string) => {
     if (!window.confirm('Delete this workflow and its execution logs permanently?')) return;
@@ -423,7 +450,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     const starts = nodes.filter(n => startTypes.includes(n.type ?? ''));
     return starts.length === 1 ? starts[0].type : 'manual';
   }, [nodes]);
-  const canActivate = startKind === 'schedule' || startKind === 'webhook' || startKind === 'email_in';
+  const canActivate = startKind === 'schedule' || startKind === 'webhook' || startKind === 'email_in' || startKind === 'poll_in';
   const meta = flows.find(f => f.id === selectedId);
   const isActive = !!meta?.active;
   const lastRunOf = useMemo(() => {
@@ -459,7 +486,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.14</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.15</span>
         </div>
       </aside>
 
@@ -505,16 +532,30 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 </div>
               </div>
               {allTags.length > 0 && <div className="tag-bar" data-testid="tag-bar"><button className={'tag-chip ' + (!tagFilter ? 'on' : '')} onClick={() => setTagFilter('')}>All</button>{allTags.map(t => <button key={t} className={'tag-chip ' + (tagFilter === t ? 'on' : '')} onClick={() => setTagFilter(tagFilter === t ? '' : t)}>{t}</button>)}</div>}
-              {filtered.length > 0 && <div className="table-head"><span>Name</span><span>Trigger</span><span>Status</span><span>Last run</span><span>Updated</span><span className="th-actions">Actions</span></div>}
+              {picked.length > 0 && (
+                <div className="bulk-bar" data-testid="bulk-bar" role="toolbar" aria-label="Bulk actions">
+                  <strong>{picked.length} selected</strong>
+                  <button className="ghost" disabled={!canEdit || bulkBusy} onClick={() => void bulk('activate')}>Activate</button>
+                  <button className="ghost" disabled={!canEdit || bulkBusy} onClick={() => void bulk('deactivate')}>Deactivate</button>
+                  <button className="ghost" disabled={!canEdit || bulkBusy} onClick={() => void bulk('run')}>Run</button>
+                  <button className="ghost danger" disabled={!canEdit || bulkBusy} onClick={() => void bulk('delete')}>Delete</button>
+                  <span className="spacer" />
+                  <button className="ghost" onClick={() => setPicked([])}>Clear selection</button>
+                </div>
+              )}
+              {filtered.length > 0 && <div className="table-head"><span className="name-cell"><input type="checkbox" aria-label="Select all shown workflows" data-testid="select-all" checked={filtered.length > 0 && filtered.every(f => picked.includes(f.id))} onChange={e => setPicked(e.target.checked ? filtered.map(f => f.id) : [])} />Name</span><span>Trigger</span><span>Status</span><span>Last run</span><span>Updated</span><span className="th-actions">Actions</span></div>}
               <div className="workflow-list">
                 {filtered.length ? filtered.map(f => {
                   const last = lastRunOf[f.id];
                   return (
-                    <div key={f.id} className="workflow-row" data-testid="workflow-row">
+                    <div key={f.id} className={'workflow-row ' + (picked.includes(f.id) ? 'picked' : '')} data-testid="workflow-row">
+                      <span className="name-cell">
+                      <input type="checkbox" aria-label={`Select ${f.name}`} checked={picked.includes(f.id)} onChange={e => setPicked(p => e.target.checked ? [...p, f.id] : p.filter(x => x !== f.id))} />
                       <button className="flow-meta" onClick={() => void openFlow(f.id)}>
                         <span className="flow-tile"><Workflow size={17} /></span>
                         <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span>{(!!f.tags?.length || !!f.project_name) && <span className="tag-row">{f.project_name && <em className="tag-mini project" data-testid="project-chip">{f.project_name}</em>}{(f.tags ?? []).map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
                       </button>
+                      </span>
                       <span className={'trig-chip ' + (f.trigger ?? 'manual')}>{triggerLabel[f.trigger ?? 'manual']}</span>
                       <button role="switch" aria-checked={!!f.active} aria-label={`Activate ${f.name}`} className={'switch-row compact ' + (f.active ? 'on' : '')}
                         disabled={(f.trigger ?? 'manual') === 'manual'} title={(f.trigger ?? 'manual') === 'manual' ? 'Add a Schedule or Webhook trigger to activate' : f.active ? 'Click to deactivate' : 'Click to activate'}

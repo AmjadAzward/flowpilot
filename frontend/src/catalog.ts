@@ -1,17 +1,18 @@
 import type { Edge, Node } from '@xyflow/react';
 
-export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in';
+export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in' | 'poll_in';
 export type FlowDoc = { settings?: { timeout_seconds?: number; save_runs?: string }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
   { type: 'trigger', label: 'Manual Trigger', desc: 'Start by clicking Run', category: 'Start', color: '#f59e0b', icon: 'Zap' },
   { type: 'schedule', label: 'Schedule Trigger', desc: 'Run on a timer', category: 'Start', color: '#eab308', icon: 'CalendarClock' },
   { type: 'webhook', label: 'Webhook Trigger', desc: 'Run when a URL is called', category: 'Start', color: '#f43f5e', icon: 'Webhook' },
+  { type: 'poll_in', label: 'New Items Trigger', desc: 'Run for each new RSS post, issue or API item', category: 'Start', color: '#14b8a6', icon: 'Radar' },
   { type: 'email_in', label: 'Email Trigger', desc: 'Run when new mail arrives', category: 'Start', color: '#0ea5e9', icon: 'MailOpen' },
   { type: 'input', label: 'JSON Input', desc: 'Provide structured data', category: 'Data', color: '#38bdf8', icon: 'Braces' },
   { type: 'transform', label: 'Extract Field', desc: 'Read a nested JSON path', category: 'Data', color: '#2dd4bf', icon: 'ListTree' },
@@ -43,7 +44,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
   { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
   { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
-  { type: 'app', label: 'App Action', desc: 'Slack, Notion, Airtable, Stripe, Twilio, Linear, HubSpot', category: 'Network', color: '#6366f1', icon: 'Plug' },
+  { type: 'app', label: 'App Action', desc: '16 services: Slack, Notion, Jira, Stripe, Twilio and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
   { type: 'sheets', label: 'Google Sheets', desc: 'Read rows or append a row', category: 'Network', color: '#16a34a', icon: 'Sheet' },
   { type: 'gmail', label: 'Gmail', desc: 'Send with your Google account', category: 'Network', color: '#dc2626', icon: 'MailCheck' },
@@ -55,7 +56,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
-export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in'];
+export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in', 'poll_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
 export const pinnableTypes: string[] = ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
@@ -117,6 +118,25 @@ export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = 
     { key: 'key', label: 'Secret key', kind: 'text', placeholder: '{{cred.SIGNING_KEY}}', when: { operation: ['hmac_sha256'] } }] },
 };
 
+appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
+  send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
+appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {
+  add_subscriber: { label: 'Add a subscriber', example: '{"list_id": "", "email": "{{email}}", "first_name": "{{name}}", "status": "subscribed"}', hint: 'list_id (Audience ID) and email. Optional: first_name, last_name, status (subscribed or pending).' } } };
+appServices.trello = { label: 'Trello', credential: 'API_KEY:TOKEN (both from trello.com/app-key)', operations: {
+  create_card: { label: 'Create a card', example: '{"list_id": "", "name": "{{title}}", "description": ""}', hint: 'list_id (24 characters) and name. Optional: description.' } } };
+appServices.asana = { label: 'Asana', credential: 'Personal access token', operations: {
+  create_task: { label: 'Create a task', example: '{"name": "{{title}}", "notes": "", "project_id": ""}', hint: 'name. Optional: notes and project_id (a number).' } } };
+appServices.jira = { label: 'Jira', credential: 'email:API_TOKEN (like you@example.com:abc123)', operations: {
+  create_issue: { label: 'Create an issue', example: '{"site": "mycompany", "project": "ENG", "summary": "{{title}}", "description": "", "type": "Task"}', hint: 'site (the part before .atlassian.net), project (key), summary. Optional: description, type.' } } };
+appServices.todoist = { label: 'Todoist', credential: 'API token', operations: {
+  create_task: { label: 'Create a task', example: '{"content": "{{title}}", "description": "", "due": "tomorrow"}', hint: 'content. Optional: description and due (plain words like "tomorrow at 9am").' } } };
+appServices.gitlab = { label: 'GitLab', credential: 'Personal access token with the api scope', operations: {
+  create_issue: { label: 'Create an issue', example: '{"project": "group/name", "title": "{{title}}", "description": ""}', hint: 'project (a number or group/name), title. Optional: description.' } } };
+appServices.discord = { label: 'Discord bot', credential: 'Bot token', operations: {
+  post_message: { label: 'Post a message', example: '{"channel_id": "", "content": "Hello from FlowPilot"}', hint: 'channel_id (a long number) and content. The bot must be in the server with permission to post.' } } };
+appServices.ntfy = { label: 'ntfy (free push notifications)', credential: 'Optional access token (leave the credential empty for public topics)', operations: {
+  publish: { label: 'Send a notification', example: '{"topic": "my-flowpilot-alerts", "message": "{{message}}", "title": "FlowPilot", "priority": "3"}', hint: 'topic and message. Optional: title, priority (1 to 5), server (default https://ntfy.sh). Anyone who knows a public topic name can read it, so pick a long random one.' } } };
+
 export const operators = [
   { value: 'equals', label: 'equals' },
   { value: 'not_equals', label: 'does not equal' },
@@ -162,6 +182,7 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'respond': return { status: '200', body: '{"ok": true}' };
     case 'sticky': return { text: 'Write a note here' };
     case 'ai': return { credential: '', prompt: 'Summarise this in one sentence: {{}}', system: '', temperature: '0.2', json_output: 'false' };
+    case 'poll_in': return { source: 'rss', url: 'https://hnrss.org/newest', minutes: '15', repo: '', state: 'open', credential: '', items_path: '', id_path: '', order: 'newest_first' };
     case 'email_in': return { credential: '', minutes: '5', from_filter: '', subject_filter: '' };
     case 'repeat': return { path: 'status', op: 'equals', equals: 'done', max: '5', pause: '1', fail_if_not_met: 'false' };
     case 'file': return { operation: 'read', path: 'notes.txt', as: 'text', content: '', encoding: 'text', mode: 'overwrite' };
@@ -337,6 +358,18 @@ export const templates: { id: string; name: string; description: string; tag: st
     nodes: [n('t', 'trigger', 20, 150), n('a', 'input', 240, 60, { json: '{"name":"Ada"}' }), n('b', 'input', 240, 250, { json: '{"plan":"pro"}' }), n('m', 'merge', 480, 150, { mode: 'combine' }), n('o', 'output', 700, 150)],
     edges: [e('t', 'a'), e('t', 'b'), e('a', 'm'), e('b', 'm'), e('m', 'o')],
   },
+  {
+    id: 'new-posts', name: 'Alert on new feed posts', tag: 'New items',
+    description: 'Runs once for each new item in an RSS feed. Activate it to start watching; Run workflow tries it with a sample post.',
+    nodes: [n('p', 'poll_in', 20, 150, { source: 'rss', url: 'https://hnrss.org/newest', minutes: '15' }), n('m', 'template', 260, 150, { template: 'New post: {{title}} {{link}}' }), n('o', 'output', 500, 150)],
+    edges: [e('p', 'm'), e('m', 'o')],
+  },
+  {
+    id: 'ntfy-alert', name: 'Phone alert with ntfy', tag: 'Apps',
+    description: 'Send a free push notification to your phone with the ntfy app. Pick a long random topic name and subscribe to it in the app. Needs internet.',
+    nodes: [n('t', 'trigger', 20, 150), n('i', 'input', 220, 150, { json: '{"message":"Backup finished"}' }), n('a', 'app', 440, 150, { service: 'ntfy', operation: 'publish', credential: '', fields: '{"topic": "change-me-to-a-long-random-name", "message": "{{message}}", "title": "FlowPilot", "priority": "3"}' }), n('o', 'output', 700, 150)],
+    edges: [e('t', 'i'), e('i', 'a'), e('a', 'o')],
+  },
 ];
 
 export const templateGroups = ['All', 'Getting started', 'Lists and data', 'Webhooks and APIs', 'Reliability', 'Apps'] as const;
@@ -344,7 +377,7 @@ const groupById: Record<string, (typeof templateGroups)[number]> = {
   greeting: 'Getting started', 'order-triage': 'Getting started', 'route-tickets': 'Getting started',
   'loop-list': 'Lists and data', 'csv-report': 'Lists and data', 'top-n': 'Lists and data', 'clean-contacts': 'Lists and data', 'sales-summary': 'Lists and data', 'due-date': 'Lists and data',
   'hash-email': 'Lists and data', 'add-field': 'Lists and data', 'unwrap-list': 'Lists and data', 'python-stats': 'Lists and data', 'combine-sources': 'Lists and data',
-  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs',
+  'fetch-todo': 'Webhooks and APIs', 'webhook-receiver': 'Webhooks and APIs', 'scheduled-check': 'Webhooks and APIs', 'post-api': 'Webhooks and APIs', 'webhook-reply': 'Webhooks and APIs', 'rss-digest': 'Webhooks and APIs', 'new-posts': 'Webhooks and APIs', 'ntfy-alert': 'Apps',
   'resilient-call': 'Reliability', 'error-alert': 'Reliability', 'slack-alert': 'Apps',
 };
 export const templateGroup = (id: string) => groupById[id] ?? 'Getting started';

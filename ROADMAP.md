@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.15
+- New Items trigger (RSS, GitHub issues, any JSON list) with first-check baseline and per-check cap
+- Nine more App Action services (16 in all), two more templates (25), bulk actions on the Overview page
+- 829 API tests and a 60-check browser suite
+
 ### v0.14
 - Production mode: the API serves the built interface (one port), with Docker files and Windows start-at-sign-in scripts
 - Fifteen more templates (23 in five groups), a first-run tour and CSV export of run history

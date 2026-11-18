@@ -52,7 +52,7 @@ BASE = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.getenv("FLOWPILOT_DB", str(BASE / "flowpilot.db")))
 MAX_NODES = 60
 MAX_DELAY_SECONDS = 5.0
-START_TYPES = {"trigger", "schedule", "webhook", "email_in"}
+START_TYPES = {"trigger", "schedule", "webhook", "email_in", "poll_in"}
 SCHEDULER_ENABLED = os.getenv("FLOWPILOT_SCHEDULER", "1") != "0"
 SCHEDULER_TICK_SECONDS = 10
 WEBHOOK_MAX_BODY = 256 * 1024
@@ -75,7 +75,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.14.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.15.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -140,6 +140,8 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
+        db.execute("CREATE TABLE IF NOT EXISTS poll_state (workflow_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)")
         db.execute("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, username TEXT, role TEXT, method TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL, claimed_by TEXT, claimed_at TEXT, finished_at TEXT, execution_id TEXT, response TEXT, error TEXT)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, created_at)")
@@ -210,7 +212,7 @@ def workflow_row(row):
 
 def trigger_kind(doc: dict) -> str:
     kinds = [n.get("type") for n in doc.get("nodes", []) if n.get("type") in START_TYPES]
-    if len(kinds) == 1 and kinds[0] in ("schedule", "webhook", "email_in"): return kinds[0]
+    if len(kinds) == 1 and kinds[0] in ("schedule", "webhook", "email_in", "poll_in"): return kinds[0]
     return "manual"
 
 # ---------------------------------------------------------------------------
@@ -623,7 +625,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.14.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.15.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -701,6 +703,8 @@ def delete_workflow(workflow_id: str):
         db.execute("DELETE FROM executions WHERE workflow_id=?",(workflow_id,))
         db.execute("DELETE FROM workflow_versions WHERE workflow_id=?", (workflow_id,))
         db.execute("DELETE FROM waits WHERE workflow_id=?", (workflow_id,))
+        db.execute("DELETE FROM poll_seen WHERE workflow_id=?", (workflow_id,))
+        db.execute("DELETE FROM poll_state WHERE workflow_id=?", (workflow_id,))
 
 
 @app.get("/api/workflows/{workflow_id}/versions")
@@ -1463,7 +1467,17 @@ APP_OPS = {
     "twilio": ["send_sms"],
     "linear": ["create_issue"],
     "hubspot": ["create_contact", "list_contacts"],
+    "sendgrid": ["send_email"],
+    "mailchimp": ["add_subscriber"],
+    "trello": ["create_card"],
+    "asana": ["create_task"],
+    "jira": ["create_issue"],
+    "todoist": ["create_task"],
+    "gitlab": ["create_issue"],
+    "discord": ["post_message"],
+    "ntfy": ["publish"],
 }
+OPTIONAL_CREDENTIAL = {"ntfy"}
 NOTION_ID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
 AIRTABLE_BASE_RE = re.compile(r"^app[A-Za-z0-9]{8,30}$")
 AIRTABLE_TABLE_RE = re.compile(r"^[A-Za-z0-9 _.\-]{1,80}$")
@@ -1585,14 +1599,116 @@ def app_hubspot(op: str, secret: str, f: dict) -> Any:
     return [{"id": r.get("id"), **{k: (r.get("properties") or {}).get(k) for k in keys}} for r in (res.get("results") if isinstance(res, dict) else None) or []]
 
 
-APP_HANDLERS = {"slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def app_sendgrid(op: str, secret: str, f: dict) -> Any:
+    to, sender = _text(f, "to", "To", maxlen=200), _text(f, "from", "From", maxlen=200)
+    for addr in (to, sender):
+        if not EMAIL_RE.fullmatch(addr): raise ValueError(f"Invalid email address: {addr!r}")
+    subject = _text(f, "subject", "Subject", maxlen=200)
+    if "\n" in subject or "\r" in subject: raise ValueError("Subject must be one line")
+    body = {"personalizations": [{"to": [{"email": to}]}], "from": {"email": sender}, "subject": subject, "content": [{"type": "text/plain", "value": _text(f, "text", "Text", maxlen=100_000)}]}
+    do_request("POST", "https://api.sendgrid.com/v3/mail/send", {"Authorization": f"Bearer {secret}"}, json=body)
+    return {"sent": True, "to": to}
+
+
+def app_mailchimp(op: str, secret: str, f: dict) -> Any:
+    m = re.fullmatch(r"[0-9a-fA-F]{20,40}-([a-z]{2}\d{1,3})", secret)
+    if not m: raise ValueError("The Mailchimp credential must be an API key ending in a data centre such as -us21")
+    list_id = _text(f, "list_id", "Audience ID", maxlen=20)
+    if not re.fullmatch(r"[A-Za-z0-9]{6,20}", list_id): raise ValueError("Audience ID has unsupported characters")
+    email = _text(f, "email", "Email", maxlen=200)
+    if not EMAIL_RE.fullmatch(email): raise ValueError(f"Invalid email address: {email!r}")
+    status = _text(f, "status", "Status", required=False, maxlen=20) or "subscribed"
+    if status not in ("subscribed", "pending", "unsubscribed"): raise ValueError("Status must be subscribed, pending or unsubscribed")
+    merge = {k: v for k, v in (("FNAME", _text(f, "first_name", "First name", required=False, maxlen=100)), ("LNAME", _text(f, "last_name", "Last name", required=False, maxlen=100))) if v}
+    body: dict[str, Any] = {"email_address": email, "status": status}
+    if merge: body["merge_fields"] = merge
+    res = do_request("POST", f"https://{m.group(1)}.api.mailchimp.com/3.0/lists/{list_id}/members", {}, json=body, auth=("flowpilot", secret))
+    return {"id": res.get("id"), "email": res.get("email_address"), "status": res.get("status")} if isinstance(res, dict) else res
+
+
+def app_trello(op: str, secret: str, f: dict) -> Any:
+    key, _, tok = secret.partition(":")
+    if not key or not tok: raise ValueError("The Trello credential must look like API_KEY:TOKEN")
+    list_id = _text(f, "list_id", "List ID", maxlen=24)
+    if not re.fullmatch(r"[0-9a-f]{24}", list_id): raise ValueError("List ID must be the 24-character ID of a Trello list")
+    res = do_request("POST", "https://api.trello.com/1/cards", {}, params={"key": key, "token": tok, "idList": list_id, "name": _text(f, "name", "Card name", maxlen=500), "desc": _text(f, "description", "Description", required=False, maxlen=16000)})
+    return {"id": res.get("id"), "url": res.get("shortUrl")} if isinstance(res, dict) else res
+
+
+def app_asana(op: str, secret: str, f: dict) -> Any:
+    data: dict[str, Any] = {"name": _text(f, "name", "Task name", maxlen=500), "notes": _text(f, "notes", "Notes", required=False, maxlen=20000)}
+    project = _text(f, "project_id", "Project ID", required=False, maxlen=30)
+    if project:
+        if not project.isdigit(): raise ValueError("Project ID must be a number")
+        data["projects"] = [project]
+    res = do_request("POST", "https://app.asana.com/api/1.0/tasks", {"Authorization": f"Bearer {secret}"}, json={"data": data})
+    task = res.get("data") if isinstance(res, dict) else None
+    return {"id": (task or {}).get("gid"), "url": (task or {}).get("permalink_url")}
+
+
+def app_jira(op: str, secret: str, f: dict) -> Any:
+    email, _, token = secret.partition(":")
+    if not EMAIL_RE.fullmatch(email) or not token: raise ValueError("The Jira credential must look like you@example.com:API_TOKEN")
+    site = _text(f, "site", "Site", maxlen=63)
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", site): raise ValueError("Site is the part before .atlassian.net, for example mycompany")
+    project = _text(f, "project", "Project key", maxlen=20)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{1,19}", project): raise ValueError("Project key looks like ENG")
+    fields: dict[str, Any] = {"project": {"key": project}, "summary": _text(f, "summary", "Summary", maxlen=250), "issuetype": {"name": _text(f, "type", "Issue type", required=False, maxlen=40) or "Task"}}
+    desc = _text(f, "description", "Description", required=False, maxlen=30000)
+    if desc: fields["description"] = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": desc}]}]}
+    res = do_request("POST", f"https://{site}.atlassian.net/rest/api/3/issue", {}, json={"fields": fields}, auth=(email, token))
+    return {"key": res.get("key"), "id": res.get("id"), "url": f"https://{site}.atlassian.net/browse/{res.get('key')}"} if isinstance(res, dict) else res
+
+
+def app_todoist(op: str, secret: str, f: dict) -> Any:
+    body = {"content": _text(f, "content", "Task", maxlen=500), "description": _text(f, "description", "Description", required=False, maxlen=16000)}
+    due = _text(f, "due", "Due", required=False, maxlen=60)
+    if due: body["due_string"] = due
+    res = do_request("POST", "https://api.todoist.com/rest/v2/tasks", {"Authorization": f"Bearer {secret}"}, json=body)
+    return {"id": res.get("id"), "url": res.get("url")} if isinstance(res, dict) else res
+
+
+def app_gitlab(op: str, secret: str, f: dict) -> Any:
+    project = _text(f, "project", "Project", maxlen=200)
+    if not re.fullmatch(r"\d{1,12}|[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+){1,10}", project) or any(part.strip(".") == "" for part in project.split("/")): raise ValueError("Project is a number or a path like group/name")
+    res = do_request("POST", f"https://gitlab.com/api/v4/projects/{quote(project, safe='')}/issues", {"PRIVATE-TOKEN": secret}, json={"title": _text(f, "title", "Title", maxlen=250), "description": _text(f, "description", "Description", required=False, maxlen=100_000)})
+    return {"iid": res.get("iid"), "url": res.get("web_url")} if isinstance(res, dict) else res
+
+
+def app_discord(op: str, secret: str, f: dict) -> Any:
+    channel = _text(f, "channel_id", "Channel ID", maxlen=25)
+    if not channel.isdigit(): raise ValueError("Channel ID is a long number (turn on Developer Mode in Discord, then Copy Channel ID)")
+    res = do_request("POST", f"https://discord.com/api/v10/channels/{channel}/messages", {"Authorization": f"Bot {secret}"}, json={"content": _text(f, "content", "Message", maxlen=2000)})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_ntfy(op: str, secret: str, f: dict) -> Any:
+    topic = _text(f, "topic", "Topic", maxlen=64)
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,64}", topic): raise ValueError("Topic uses letters, numbers, - and _ only")
+    server = (_text(f, "server", "Server", required=False, maxlen=200) or "https://ntfy.sh").rstrip("/")
+    headers: dict[str, str] = {}
+    title = _text(f, "title", "Title", required=False, maxlen=200)
+    if title:
+        if "\n" in title or "\r" in title: raise ValueError("Title must be one line")
+        headers["Title"] = title.encode("ascii", "ignore").decode() or "FlowPilot"
+    priority = _text(f, "priority", "Priority", required=False, maxlen=1)
+    if priority:
+        if priority not in "12345": raise ValueError("Priority is a number from 1 to 5")
+        headers["Priority"] = priority
+    if secret: headers["Authorization"] = f"Bearer {secret}"
+    do_request("POST", f"{safe_url(server)}/{topic}", headers, content=_text(f, "message", "Message", maxlen=4000).encode("utf-8"))
+    return {"sent": True, "topic": topic}
+
+
+APP_HANDLERS = {"sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:
     service, op = str(d.get("service") or "").strip(), str(d.get("operation") or "").strip()
     if service not in APP_OPS: raise ValueError(f"Choose a service ({', '.join(APP_OPS)})")
     if op not in APP_OPS[service]: raise ValueError(f"Unknown {service} action: {op or '(none)'}")
-    secret = lookup_secret(str(d.get("credential") or "").strip())
+    cred = str(d.get("credential") or "").strip()
+    secret = lookup_secret(cred) if cred or service not in OPTIONAL_CREDENTIAL else ""
     fields = read_json(render_template(str(d.get("fields") or "{}"), previous, json_escape=True))
     if not isinstance(fields, dict): raise ValueError("Fields must be a JSON object")
     return APP_HANDLERS[service](op, secret, fields)
@@ -2078,6 +2194,86 @@ _inbox_busy: set[str] = set()
 _inbox_lock = threading.Lock()
 
 
+POLL_SOURCES = ("rss", "github_issues", "json_list")
+MAX_POLL_ITEMS = 10
+POLL_SEEN_KEEP = 2000
+SAMPLE_POLL_ITEM = {"id": "sample-1", "title": "Sample item", "link": "https://example.com/sample", "published": "Mon, 01 Jan 2026 09:00:00 +0000", "summary": "A test item."}
+
+
+def validate_poll(d: dict) -> None:
+    inbox_minutes(d)
+    source = str(d.get("source") or "rss")
+    if source not in POLL_SOURCES: raise ValueError(f"Source must be one of: {', '.join(POLL_SOURCES)}")
+    if source == "github_issues":
+        if not GITHUB_REPO_RE.fullmatch(str(d.get("repo") or "").strip()): raise ValueError("Repository must look like owner/name")
+    else:
+        url = str(d.get("url") or "").strip()
+        if not url.lower().startswith("https://"): raise ValueError("Enter the HTTPS address to watch")
+        if source == "json_list" and str(d.get("order") or "newest_first") not in ("newest_first", "oldest_first"): raise ValueError("Order must be newest_first or oldest_first")
+
+
+def fetch_poll_items(d: dict) -> list[tuple[str, Any]]:
+    """Current items as (id, item) pairs, oldest first."""
+    validate_poll(d)
+    source = str(d.get("source") or "rss")
+    cred = str(d.get("credential") or "").strip()
+    headers = {"Authorization": f"Bearer {lookup_secret(cred)}"} if cred else {}
+    if source == "rss":
+        items = read_rss({"url": str(d.get("url")).strip(), "limit": 50}, None)
+        pairs = [(str(it.get("link") or it.get("title") or "")[:300], it) for it in items]
+        return [p for p in reversed(pairs) if p[0]]
+    if source == "github_issues":
+        headers.update({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "flowpilot"})
+        state = str(d.get("state") or "open")
+        if state not in ("open", "closed", "all"): raise ValueError("State must be open, closed or all")
+        res = do_request("GET", f"https://api.github.com/repos/{str(d.get('repo')).strip()}/issues?state={state}&per_page=30&sort=created&direction=desc", headers)
+        if not isinstance(res, list): raise ValueError("Unexpected response from GitHub")
+        pairs = [(str(i.get("number")), {"number": i.get("number"), "title": i.get("title"), "state": i.get("state"), "url": i.get("html_url"), "user": (i.get("user") or {}).get("login"),
+                                         "body": str(i.get("body") or "")[:2000], "created_at": i.get("created_at"), "labels": [l.get("name") for l in i.get("labels") or [] if isinstance(l, dict)]})
+                 for i in res if "pull_request" not in i]
+        return list(reversed(pairs))
+    res = do_request("GET", safe_url(str(d.get("url")).strip()), headers)
+    path = str(d.get("items_path") or "").strip()
+    items = get_path(res, path) if path else res
+    if not isinstance(items, list): raise ValueError("The address did not return a list" + (f" at {path!r}" if path else ""))
+    id_path, pairs = str(d.get("id_path") or "").strip(), []
+    for it in items[:200]:
+        key = get_path(it, id_path) if id_path else hashlib.sha256(json.dumps(it, sort_keys=True, default=str).encode()).hexdigest()
+        if key is None or key == "": continue
+        pairs.append((str(key)[:300], it))
+    return pairs if str(d.get("order") or "newest_first") == "oldest_first" else list(reversed(pairs))
+
+
+def reset_poll_state(workflow_id: str) -> None:
+    """Forget what was seen, so the next check records what exists now without running the workflow for it."""
+    with conn() as db:
+        db.execute("DELETE FROM poll_seen WHERE workflow_id=?", (workflow_id,))
+        db.execute("DELETE FROM poll_state WHERE workflow_id=?", (workflow_id,))
+
+
+def poll_items(doc: dict, node: dict) -> None:
+    secrets_ = load_secrets()
+    token = _secrets_var.set(secrets_)
+    try: pairs = fetch_poll_items(node.get("data", {}) or {})
+    except Exception as exc:
+        err = str(redact({"e": str(exc)}, secrets_)["e"])
+        def boom(): raise ValueError(err)
+        execute_workflow(doc, "poll_in", boom)  # recorded as a failed run, so the problem is visible
+        return
+    finally: _secrets_var.reset(token)
+    wid = doc["id"]
+    with conn() as db:
+        started = db.execute("SELECT initialized FROM poll_state WHERE workflow_id=?", (wid,)).fetchone()
+        seen = {r["item_id"] for r in db.execute("SELECT item_id FROM poll_seen WHERE workflow_id=?", (wid,)).fetchall()}
+        fresh = [p for p in pairs if p[0] not in seen]
+        batch = [] if not started else fresh[:MAX_POLL_ITEMS]  # the first check only records what already exists
+        stamp = now()
+        for item_id, _ in (fresh if not started else batch): db.execute("INSERT OR IGNORE INTO poll_seen (workflow_id,item_id,seen_at) VALUES (?,?,?)", (wid, item_id, stamp))
+        db.execute("INSERT OR REPLACE INTO poll_state (workflow_id, initialized) VALUES (?, 1)", (wid,))
+        db.execute("DELETE FROM poll_seen WHERE workflow_id=? AND rowid NOT IN (SELECT rowid FROM poll_seen WHERE workflow_id=? ORDER BY seen_at DESC, rowid DESC LIMIT ?)", (wid, wid, POLL_SEEN_KEEP))
+    for _, item in batch: dispatch(doc, "poll_in", item)
+
+
 def submit_inbox_poll(doc: dict, node: dict) -> None:
     """Check an inbox in the background, so a slow mail server never delays other schedules. One check per workflow at a time."""
     with _inbox_lock:
@@ -2085,7 +2281,7 @@ def submit_inbox_poll(doc: dict, node: dict) -> None:
         _inbox_busy.add(doc["id"])
 
     def work() -> None:
-        try: poll_inbox(doc, node)
+        try: (poll_items if node.get("type") == "poll_in" else poll_inbox)(doc, node)
         except Exception: log.exception("Inbox check failed for %s", doc["id"])
         finally:
             with _inbox_lock: _inbox_busy.discard(doc["id"])
@@ -2786,6 +2982,7 @@ def run_workflow(workflow_id: str, body: RunIn | None = None):
             return webhook_payload("POST", {}, read_json(sample) if sample else None, "application/json")
         if node and node["type"] == "schedule": return {"scheduled_at": now(), "manual": True}
         if node and node["type"] == "email_in": return SAMPLE_EMAIL
+        if node and node["type"] == "poll_in": return SAMPLE_POLL_ITEM
         return None
     return execute_workflow(doc, "manual", initial)
 
@@ -2883,6 +3080,9 @@ def activation_next_run(doc: dict, after: datetime | None = None) -> str | None:
     if node["type"] == "email_in":
         inbox_credential(node.get("data", {}))
         return (( after or datetime.now(timezone.utc)) + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
+    if node["type"] == "poll_in":
+        validate_poll(node.get("data", {}) or {})
+        return ((after or datetime.now(timezone.utc)) + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
     cfg = validate_schedule(node.get("data", {}))
     return next_run_after(cfg, after or datetime.now(timezone.utc)).isoformat()
 
@@ -2900,6 +3100,7 @@ def set_active(workflow_id: str, body: ActiveIn):
         except ValueError as exc: raise HTTPException(400, str(exc))
     with conn() as db:
         db.execute("UPDATE workflows SET active=?, next_run_at=? WHERE id=?", (int(body.active), next_run, workflow_id))
+    if body.active: reset_poll_state(workflow_id)  # whatever exists now is the starting point
     return {"id": workflow_id, "active": body.active, "next_run_at": next_run}
 
 
@@ -2922,10 +3123,10 @@ def scheduler_tick(at: datetime | None = None) -> int:
         try:
             doc = get_workflow(row["id"])
             node = start_node(doc)
-            if not node or node["type"] not in ("schedule", "email_in"):
+            if not node or node["type"] not in ("schedule", "email_in", "poll_in"):
                 with conn() as db: db.execute("UPDATE workflows SET active=0, next_run_at=NULL WHERE id=?", (row["id"],))
                 continue
-            if node["type"] == "email_in":
+            if node["type"] in ("email_in", "poll_in"):
                 upcoming = (moment + timedelta(minutes=inbox_minutes(node.get("data", {})))).isoformat()
                 with conn() as db: db.execute("UPDATE workflows SET next_run_at=? WHERE id=?", (upcoming, row["id"]))
                 submit_inbox_poll(doc, node)
