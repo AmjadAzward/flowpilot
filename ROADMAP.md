@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.9
+- Queue mode with separate worker processes, atomic job claiming and crash recovery
+- SQLite WAL mode for concurrent processes, configurable webhook rate limit
+- 550 API tests and a 47-check browser suite
+
 ### v0.8
 - Parallel execution of branches that are ready together
 - Repeat Until, Files and Email (IMAP) trigger

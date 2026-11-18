@@ -53,7 +53,7 @@ START_TYPES = {"trigger", "schedule", "webhook", "email_in"}
 SCHEDULER_ENABLED = os.getenv("FLOWPILOT_SCHEDULER", "1") != "0"
 SCHEDULER_TICK_SECONDS = 10
 WEBHOOK_MAX_BODY = 256 * 1024
-WEBHOOK_RATE_PER_MINUTE = 60
+WEBHOOK_RATE_PER_MINUTE = int(os.getenv("FLOWPILOT_WEBHOOK_RATE", "60"))  # per webhook URL
 log = logging.getLogger("flowpilot")
 
 
@@ -67,7 +67,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.8.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.9.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -75,8 +75,9 @@ def now(): return datetime.now(timezone.utc).isoformat()
 
 def conn():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=15)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA synchronous=NORMAL")  # in WAL mode: no disk sync on every commit (a power cut can lose the last moments, never corrupt the file)
     return db
 
 
@@ -107,6 +108,7 @@ def insert_workflow(db, wid: str, name: str, description: str, doc: dict, ts: st
 
 def initialize():
     with conn() as db:
+        db.execute("PRAGMA journal_mode=WAL")  # readers and writers from the API and worker processes do not block each other
         db.execute("CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', definition TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS executions (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, output TEXT, steps TEXT, error TEXT)")
         wf_cols = {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}
@@ -130,6 +132,8 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS waits (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, workflow_id TEXT NOT NULL, node_id TEXT NOT NULL, value TEXT NOT NULL, resume_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL, claimed_by TEXT, claimed_at TEXT, finished_at TEXT, execution_id TEXT, response TEXT, error TEXT)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions (workflow_id, id)")
         db.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)")
         if not db.execute("SELECT id FROM workflows LIMIT 1").fetchone():
@@ -537,7 +541,7 @@ def delete_project(project_id: str):
 
 
 @app.get("/api/health")
-def health(): return {"status":"ok", "version":"0.8.0", "mode":"local"}
+def health(): return {"status":"ok", "version":"0.9.0", "mode":"local"}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -1550,7 +1554,7 @@ def poll_inbox(doc: dict, node: dict) -> None:
         execute_workflow(doc, "email_in", boom)  # recorded as a failed run, so the problem is visible
         return
     finally: _secrets_var.reset(token)
-    for m in messages: execute_workflow(doc, "email_in", m)
+    for m in messages: dispatch(doc, "email_in", m)
 
 
 # ---------------------------------------------------------------------------
@@ -1559,6 +1563,82 @@ def poll_inbox(doc: dict, node: dict) -> None:
 MAX_REPEATS = 20
 MAX_PARALLEL = 4
 PARALLEL_TYPES = {"http", "sql", "rss", "notify", "email", "telegram", "github", "sheets", "gmail", "ai", "code", "delay", "file"}
+
+
+# ---------------------------------------------------------------------------
+# Queue mode: triggers add jobs to a queue and separate worker processes run them
+# (python -m app.worker). Start the API with FLOWPILOT_QUEUE=1 to use it.
+# ---------------------------------------------------------------------------
+MAX_QUEUE = 10_000
+STALE_JOB_SECONDS = 900
+WEBHOOK_WAIT_SECONDS = 25.0
+
+
+def queue_mode() -> bool:
+    return os.getenv("FLOWPILOT_QUEUE") == "1"
+
+
+def enqueue(doc: dict, kind: str, initial: Any = None) -> str:
+    with conn() as db:
+        if db.execute("SELECT COUNT(*) c FROM jobs WHERE status='queued'").fetchone()["c"] >= MAX_QUEUE:
+            raise HTTPException(503, "The queue is full. Try again later.")
+        job_id = str(uuid.uuid4())
+        db.execute("INSERT INTO jobs (id,workflow_id,kind,payload,status,created_at) VALUES (?,?,?,?,'queued',?)", (job_id, doc["id"], kind, json.dumps(initial, default=str), now()))
+    return job_id
+
+
+def dispatch(doc: dict, kind: str, initial: Any = None) -> dict:
+    """Run a triggered workflow now, or queue it when queue mode is on."""
+    if not queue_mode(): return execute_workflow(doc, kind, initial)
+    return {"status": "queued", "job_id": enqueue(doc, kind, initial)}
+
+
+def claim_job(worker_id: str) -> dict | None:
+    """Atomically take the oldest queued job. Two workers can never get the same one."""
+    with conn() as db:
+        row = db.execute("SELECT id FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
+        if not row: return None
+        if not db.execute("UPDATE jobs SET status='running', claimed_by=?, claimed_at=? WHERE id=? AND status='queued'", (worker_id, now(), row["id"])).rowcount: return None
+        return dict(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+
+
+def run_job(job: dict) -> None:
+    try:
+        doc = get_workflow(job["workflow_id"])
+        result = execute_workflow(doc, job["kind"], json.loads(job["payload"]))
+        with conn() as db:
+            db.execute("UPDATE jobs SET status='done', finished_at=?, execution_id=?, response=? WHERE id=?",
+                       (now(), result["id"], json.dumps(result.get("response")) if result.get("response") else None, job["id"]))
+    except Exception as exc:
+        log.exception("Job %s failed", job["id"])
+        with conn() as db: db.execute("UPDATE jobs SET status='failed', finished_at=?, error=? WHERE id=?", (now(), str(exc)[:300], job["id"]))
+
+
+def recover_jobs() -> int:
+    """A job whose worker vanished is closed as failed (never re-run, so side effects are not repeated)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_JOB_SECONDS)).isoformat()
+    with conn() as db:
+        return db.execute("UPDATE jobs SET status='failed', finished_at=?, error='The worker stopped before this job finished' WHERE status='running' AND claimed_at < ?", (now(), cutoff)).rowcount
+
+
+def has_respond_node(doc: dict) -> bool:
+    return any(n.get("type") == "respond" for n in doc.get("nodes", []))
+
+
+def wait_for_job(job_id: str, seconds: float = WEBHOOK_WAIT_SECONDS) -> dict | None:
+    end = time.time() + seconds
+    while time.time() < end:
+        with conn() as db: row = db.execute("SELECT status, response, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row and row["status"] in ("done", "failed"): return dict(row)
+        time.sleep(0.15)
+    return None
+
+
+@app.get("/api/queue")
+def queue_stats():
+    with conn() as db:
+        counts = {r["status"]: r["c"] for r in db.execute("SELECT status, COUNT(*) c FROM jobs GROUP BY status").fetchall()}
+    return {"mode": "queue" if queue_mode() else "inline", "queued": counts.get("queued", 0), "running": counts.get("running", 0), "failed": counts.get("failed", 0), "done": counts.get("done", 0)}
 
 
 def step_action(node: dict, previous: Any):
@@ -2241,7 +2321,7 @@ def scheduler_tick(at: datetime | None = None) -> int:
             # Advance first: if the server was off, a missed run happens once and then the normal rhythm resumes.
             upcoming = next_run_after(validate_schedule(node.get("data", {})), moment).isoformat()
             with conn() as db: db.execute("UPDATE workflows SET next_run_at=? WHERE id=?", (upcoming, row["id"]))
-            execute_workflow(doc, "schedule", {"scheduled_at": moment.isoformat(), "manual": False})
+            dispatch(doc, "schedule", {"scheduled_at": moment.isoformat(), "manual": False})
             started += 1
         except Exception:  # one broken workflow must never stop the scheduler
             log.exception("Scheduled run failed for %s", row["id"])
@@ -2252,8 +2332,9 @@ def scheduler_loop(stop: threading.Event) -> None:
     while not stop.wait(SCHEDULER_TICK_SECONDS):
         try: scheduler_tick()
         except Exception: log.exception("Scheduler tick failed")
-        try: resume_due_waits()
-        except Exception: log.exception("Resuming waits failed")
+        if not queue_mode():  # in queue mode the workers resume waiting runs
+            try: resume_due_waits()
+            except Exception: log.exception("Resuming waits failed")
         global _last_prune
         if time.time() - _last_prune > 3600:
             _last_prune = time.time()
@@ -2315,12 +2396,16 @@ def form_done_page(doc: dict, ok: bool) -> HTMLResponse:
     return page(doc.get("name", "Form"), f"<h1>{'Thank you' if ok else 'Something went wrong'}</h1><p>{'Your response was received.' if ok else 'Your response could not be processed. Please try again later.'}</p>")
 
 
+def lookup_hook(token: str) -> dict | None:
+    with conn() as db:
+        row = db.execute("SELECT * FROM workflows WHERE webhook_token=? AND active=1", (token,)).fetchone()
+    return workflow_row(row) if row else None
+
+
 @app.api_route("/api/hooks/{token}", methods=["GET", "POST"])
 async def receive_webhook(token: str, request: Request):
     """Public endpoint: the secret token in the URL is the credential. Only active webhook workflows respond."""
-    with conn() as db:
-        row = db.execute("SELECT * FROM workflows WHERE webhook_token=? AND active=1", (token,)).fetchone()
-    doc = workflow_row(row) if row else None
+    doc = await run_in_threadpool(lookup_hook, token)
     if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
     fields = form_fields(start_node(doc))
@@ -2340,6 +2425,16 @@ async def receive_webhook(token: str, request: Request):
             except ValueError: body = text
     is_form = ctype.split(";")[0].strip() == "application/x-www-form-urlencoded" and "text/html" in request.headers.get("accept", "")
     payload = webhook_payload(request.method, dict(request.query_params), body, ctype.split(";")[0].strip())
+    if queue_mode():
+        job_id = await run_in_threadpool(enqueue, doc, "webhook", payload)
+        if has_respond_node(doc):
+            done = await run_in_threadpool(wait_for_job, job_id)
+            if done and done["status"] == "done" and done["response"]:
+                reply = json.loads(done["response"])
+                return JSONResponse(reply["body"], status_code=reply["status"])
+            if done and done["status"] == "failed": return JSONResponse({"status": "failed", "job_id": job_id}, status_code=500)
+        if is_form: return form_done_page(doc, True)
+        return JSONResponse({"status": "queued", "job_id": job_id}, status_code=202)
     result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
     if result["status"] == "success" and result.get("response"):
         return JSONResponse(result["response"]["body"], status_code=result["response"]["status"])
@@ -2376,6 +2471,7 @@ def prune_executions() -> int:
         if cfg["max_executions"] > 0:
             removed += db.execute("DELETE FROM executions WHERE status != 'waiting' AND id NOT IN (SELECT id FROM executions WHERE status != 'waiting' ORDER BY started_at DESC LIMIT ?)", (cfg["max_executions"],)).rowcount
         db.execute("DELETE FROM waits WHERE execution_id NOT IN (SELECT id FROM executions)")
+        db.execute("DELETE FROM jobs WHERE status IN ('done','failed') AND finished_at < ?", ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),))
     return removed
 
 

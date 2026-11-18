@@ -437,7 +437,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.8</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<span className="ver">v0.9</span>
         </div>
       </aside>
 
