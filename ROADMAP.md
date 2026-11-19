@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.28
+- Fifteen more App Action operations on popular services: Slack edit/react/list channels, Notion read/update page, Airtable read/delete record, Stripe customer/refund/invoices, HubSpot update contact/create deal, Trello comment, Todoist list/complete (simulated-server tests only)
+- 1091 API tests and a 71-check browser suite
+
 ### v0.27
 - Docker image built and checked by hand once (see README); Make route filters with one plain comparison become Condition nodes
 - Import from Make: blueprint conversion with warnings for everything that cannot be carried over (tested with self-written blueprints only)

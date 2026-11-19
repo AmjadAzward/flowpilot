@@ -82,7 +82,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.27.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.28.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -665,7 +665,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.27.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.28.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -1521,19 +1521,19 @@ def github_action(d: dict, previous: Any) -> Any:
 # App Action: one node, many services. Each service is a small function over the HTTP helper.
 # ---------------------------------------------------------------------------
 APP_OPS = {
-    "slack": ["post_message"],
-    "notion": ["create_page", "query_database"],
-    "airtable": ["list_records", "create_record", "update_record"],
-    "stripe": ["list_customers", "create_customer", "list_payments"],
+    "slack": ["post_message", "update_message", "add_reaction", "list_channels"],
+    "notion": ["create_page", "query_database", "get_page", "update_page"],
+    "airtable": ["list_records", "create_record", "update_record", "get_record", "delete_record"],
+    "stripe": ["list_customers", "create_customer", "list_payments", "get_customer", "create_refund", "list_invoices"],
     "twilio": ["send_sms"],
     "linear": ["create_issue"],
-    "hubspot": ["create_contact", "list_contacts"],
+    "hubspot": ["create_contact", "list_contacts", "update_contact", "create_deal"],
     "sendgrid": ["send_email"],
     "mailchimp": ["add_subscriber"],
-    "trello": ["create_card"],
+    "trello": ["create_card", "add_comment"],
     "asana": ["create_task"],
     "jira": ["create_issue"],
-    "todoist": ["create_task"],
+    "todoist": ["create_task", "list_tasks", "close_task"],
     "gitlab": ["create_issue"],
     "discord": ["post_message"],
     "ntfy": ["publish"],
@@ -1619,8 +1619,25 @@ def _object(f: dict, key: str, label: str, required: bool = False) -> dict:
 
 def app_slack(op: str, secret: str, f: dict) -> Any:
     if not secret.startswith(("xoxb-", "xoxp-")): raise ValueError("The Slack credential must be a bot token starting with xoxb-")
+    h = {"Authorization": f"Bearer {secret}"}
+
+    def check(res: Any) -> dict:
+        if not isinstance(res, dict) or not res.get("ok"): raise ValueError(f"Slack error: {res.get('error', 'unknown') if isinstance(res, dict) else 'unexpected response'}")
+        return res
+    if op == "list_channels":
+        res = check(do_request("GET", "https://slack.com/api/conversations.list", h, params={"limit": _limit(f, 50, 200), "exclude_archived": "true"}))
+        return [{"id": c.get("id"), "name": c.get("name"), "members": c.get("num_members")} for c in res.get("channels") or []]
     channel = _text(f, "channel", "Channel", maxlen=80)
     if not re.fullmatch(r"[#@A-Za-z0-9_.\-]{1,80}", channel): raise ValueError("Channel must look like #general or a channel ID")
+    if op in ("update_message", "add_reaction"):
+        ts = _text(f, "ts", "Message timestamp", maxlen=30)
+        if not re.fullmatch(r"\d{6,12}\.\d{3,8}", ts): raise ValueError("Message timestamp looks like 1700000000.000100 (the ts that Post a message returns)")
+        if op == "update_message": res = check(do_request("POST", "https://slack.com/api/chat.update", h, json={"channel": channel, "ts": ts, "text": _text(f, "text", "Text")}))
+        else:
+            name = _text(f, "name", "Emoji name", maxlen=60).strip(":")
+            if not re.fullmatch(r"[a-z0-9_+\-]{1,60}", name): raise ValueError("Emoji name is lowercase, like thumbsup")
+            res = check(do_request("POST", "https://slack.com/api/reactions.add", h, json={"channel": channel, "timestamp": ts, "name": name}))
+        return {"ok": True, "channel": res.get("channel"), "ts": res.get("ts") or ts}
     res = do_request("POST", "https://slack.com/api/chat.postMessage", {"Authorization": f"Bearer {secret}"}, json={"channel": channel, "text": _text(f, "text", "Text")})
     if not isinstance(res, dict) or not res.get("ok"): raise ValueError(f"Slack error: {res.get('error', 'unknown') if isinstance(res, dict) else 'unexpected response'}")
     return {"ok": True, "channel": res.get("channel"), "ts": res.get("ts")}
@@ -1628,6 +1645,18 @@ def app_slack(op: str, secret: str, f: dict) -> Any:
 
 def app_notion(op: str, secret: str, f: dict) -> Any:
     headers = {"Authorization": f"Bearer {secret}", "Notion-Version": "2022-06-28"}
+    if op in ("get_page", "update_page"):
+        page = _text(f, "page_id", "Page ID", maxlen=40)
+        if not NOTION_ID_RE.fullmatch(page): raise ValueError("Page ID must be the 32-character ID from the page's URL")
+        if op == "get_page": res = do_request("GET", f"https://api.notion.com/v1/pages/{page}", headers)
+        else:
+            body: dict[str, Any] = {}
+            props = _object(f, "properties", "Properties")
+            if props: body["properties"] = props
+            if str(f.get("archived")).lower() in ("true", "false"): body["archived"] = str(f.get("archived")).lower() == "true"
+            if not body: raise ValueError("Give properties to change, or archived: true")
+            res = do_request("PATCH", f"https://api.notion.com/v1/pages/{page}", headers, json=body)
+        return {"id": res.get("id"), "url": res.get("url"), "archived": res.get("archived"), "properties": res.get("properties")} if isinstance(res, dict) else res
     db = _text(f, "database_id", "Database ID", maxlen=40)
     if not NOTION_ID_RE.fullmatch(db): raise ValueError("Database ID must be the 32-character ID from the database's URL")
     if op == "create_page":
@@ -1656,6 +1685,12 @@ def app_airtable(op: str, secret: str, f: dict) -> Any:
     if op == "list_records":
         res = do_request("GET", f"{url}?maxRecords={_limit(f)}", headers)
         return [{"_id": r.get("id"), **(r.get("fields") or {})} for r in (res.get("records") if isinstance(res, dict) else None) or []]
+    if op in ("get_record", "delete_record"):
+        rec = _text(f, "record_id", "Record ID", maxlen=30)
+        if not re.fullmatch(r"rec[A-Za-z0-9]{10,20}", rec): raise ValueError("Record ID looks like recXXXXXXXXXXXXXX")
+        res = do_request("GET" if op == "get_record" else "DELETE", f"{url}/{rec}", headers)
+        if op == "delete_record": return {"deleted": bool(res.get("deleted")) if isinstance(res, dict) else True, "id": rec}
+        return {"_id": res.get("id"), **(res.get("fields") or {})} if isinstance(res, dict) else res
     if op == "update_record":
         rec = _text(f, "record_id", "Record ID", maxlen=30)
         if not re.fullmatch(r"rec[A-Za-z0-9]{10,20}", rec): raise ValueError("Record ID looks like recXXXXXXXXXXXXXX")
@@ -1676,6 +1711,24 @@ def app_stripe(op: str, secret: str, f: dict) -> Any:
         if not form: raise ValueError("Provide an email or a name")
         res = do_request("POST", "https://api.stripe.com/v1/customers", headers, data=form)
         return {"id": res.get("id"), "email": res.get("email"), "name": res.get("name")} if isinstance(res, dict) else res
+    if op == "get_customer":
+        cid = _text(f, "customer_id", "Customer ID", maxlen=40)
+        if not re.fullmatch(r"cus_[A-Za-z0-9]{6,40}", cid): raise ValueError("Customer ID looks like cus_XXXXXXXX")
+        res = do_request("GET", f"https://api.stripe.com/v1/customers/{cid}", headers)
+        return {k: res.get(k) for k in ("id", "email", "name", "balance", "currency", "created")} if isinstance(res, dict) else res
+    if op == "create_refund":
+        pi = _text(f, "payment_intent", "Payment intent", maxlen=40)
+        if not re.fullmatch(r"pi_[A-Za-z0-9]{6,40}", pi): raise ValueError("Payment intent looks like pi_XXXXXXXX")
+        form = {"payment_intent": pi}
+        amount = _text(f, "amount", "Amount", required=False, maxlen=12)
+        if amount:
+            if not amount.isdigit() or int(amount) < 1: raise ValueError("Amount is a whole number in the smallest unit (cents), or leave it empty to refund everything")
+            form["amount"] = amount
+        res = do_request("POST", "https://api.stripe.com/v1/refunds", headers, data=form)
+        return {k: res.get(k) for k in ("id", "amount", "currency", "status")} if isinstance(res, dict) else res
+    if op == "list_invoices":
+        res = do_request("GET", f"https://api.stripe.com/v1/invoices?limit={_limit(f)}", headers)
+        return [{k: r.get(k) for k in ("id", "customer", "amount_due", "currency", "status")} for r in (res.get("data") if isinstance(res, dict) else None) or []]
     path = "customers" if op == "list_customers" else "payment_intents"
     res = do_request("GET", f"https://api.stripe.com/v1/{path}?limit={_limit(f)}", headers)
     rows = (res.get("data") if isinstance(res, dict) else None) or []
@@ -1706,6 +1759,22 @@ def app_linear(op: str, secret: str, f: dict) -> Any:
 def app_hubspot(op: str, secret: str, f: dict) -> Any:
     headers, url = {"Authorization": f"Bearer {secret}"}, "https://api.hubapi.com/crm/v3/objects/contacts"
     keys = ("email", "firstname", "lastname", "phone", "company")
+    if op == "update_contact":
+        cid = _text(f, "contact_id", "Contact ID", maxlen=20)
+        if not cid.isdigit(): raise ValueError("Contact ID is a number")
+        props = {k: _text(f, k, k, required=False, maxlen=200) for k in keys}
+        props = {k: v for k, v in props.items() if v}
+        if not props: raise ValueError("Give at least one property to change")
+        res = do_request("PATCH", f"{url}/{cid}", headers, json={"properties": props})
+        return {"id": res.get("id"), **(res.get("properties") or {})} if isinstance(res, dict) else res
+    if op == "create_deal":
+        props = {"dealname": _text(f, "dealname", "Deal name", maxlen=200)}
+        for k in ("amount", "dealstage", "pipeline"):
+            v = _text(f, k, k, required=False, maxlen=100)
+            if v: props[k] = v
+        if "amount" in props and not re.fullmatch(r"\d+(\.\d+)?", props["amount"]): raise ValueError("Amount is a number")
+        res = do_request("POST", "https://api.hubapi.com/crm/v3/objects/deals", headers, json={"properties": props})
+        return {"id": res.get("id"), **(res.get("properties") or {})} if isinstance(res, dict) else res
     if op == "create_contact":
         props = {k: _text(f, k, k, required=False, maxlen=200) for k in keys}
         props = {k: v for k, v in props.items() if v}
@@ -1746,6 +1815,11 @@ def app_mailchimp(op: str, secret: str, f: dict) -> Any:
 def app_trello(op: str, secret: str, f: dict) -> Any:
     key, _, tok = secret.partition(":")
     if not key or not tok: raise ValueError("The Trello credential must look like API_KEY:TOKEN")
+    if op == "add_comment":
+        card = _text(f, "card_id", "Card ID", maxlen=24)
+        if not re.fullmatch(r"[0-9a-f]{24}", card): raise ValueError("Card ID must be the 24-character ID of a Trello card")
+        res = do_request("POST", f"https://api.trello.com/1/cards/{card}/actions/comments", {}, params={"key": key, "token": tok, "text": _text(f, "text", "Comment", maxlen=16384)})
+        return {"id": res.get("id")} if isinstance(res, dict) else res
     list_id = _text(f, "list_id", "List ID", maxlen=24)
     if not re.fullmatch(r"[0-9a-f]{24}", list_id): raise ValueError("List ID must be the 24-character ID of a Trello list")
     res = do_request("POST", "https://api.trello.com/1/cards", {}, params={"key": key, "token": tok, "idList": list_id, "name": _text(f, "name", "Card name", maxlen=500), "desc": _text(f, "description", "Description", required=False, maxlen=16000)})
@@ -1778,6 +1852,16 @@ def app_jira(op: str, secret: str, f: dict) -> Any:
 
 
 def app_todoist(op: str, secret: str, f: dict) -> Any:
+    if op == "list_tasks":
+        project = _text(f, "project_id", "Project ID", required=False, maxlen=30)
+        if project and not re.fullmatch(r"[A-Za-z0-9]{1,30}", project): raise ValueError("Project ID has unsupported characters")
+        res = do_request("GET", "https://api.todoist.com/rest/v2/tasks", {"Authorization": f"Bearer {secret}"}, params={"project_id": project} if project else {})
+        return [{"id": x.get("id"), "content": x.get("content"), "due": (x.get("due") or {}).get("string"), "url": x.get("url")} for x in (res if isinstance(res, list) else [])][:_limit(f, 50, 200)]
+    if op == "close_task":
+        task = _text(f, "task_id", "Task ID", maxlen=30)
+        if not re.fullmatch(r"[A-Za-z0-9]{1,30}", task): raise ValueError("Task ID has unsupported characters")
+        do_request("POST", f"https://api.todoist.com/rest/v2/tasks/{task}/close", {"Authorization": f"Bearer {secret}"})
+        return {"closed": True, "id": task}
     body = {"content": _text(f, "content", "Task", maxlen=500), "description": _text(f, "description", "Description", required=False, maxlen=16000)}
     due = _text(f, "due", "Due", required=False, maxlen=60)
     if due: body["due_string"] = due

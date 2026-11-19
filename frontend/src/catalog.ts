@@ -258,6 +258,21 @@ appServices.discord = { label: 'Discord bot', credential: 'Bot token', operation
   post_message: { label: 'Post a message', example: '{"channel_id": "", "content": "Hello from FlowPilot"}', hint: 'channel_id (a long number) and content. The bot must be in the server with permission to post.' } } };
 appServices.ntfy = { label: 'ntfy (free push notifications)', credential: 'Optional access token (leave the credential empty for public topics)', operations: {
   publish: { label: 'Send a notification', example: '{"topic": "my-flowpilot-alerts", "message": "{{message}}", "title": "FlowPilot", "priority": "3"}', hint: 'topic and message. Optional: title, priority (1 to 5), server (default https://ntfy.sh). Anyone who knows a public topic name can read it, so pick a long random one.' } } };
+appServices.slack.operations.update_message = { label: 'Edit a message', example: '"{\\"channel\\": \\"#general\\", \\"ts\\": \\"1700000000.000100\\", \\"text\\": \\"{{message}}\\"}"', hint: 'channel, ts (returned by Post a message) and the new text.' };
+appServices.slack.operations.add_reaction = { label: 'Add a reaction', example: '"{\\"channel\\": \\"#general\\", \\"ts\\": \\"1700000000.000100\\", \\"name\\": \\"white_check_mark\\"}"', hint: 'channel, ts and name (the emoji name without colons).' };
+appServices.slack.operations.list_channels = { label: 'List channels', example: '"{\\"limit\\": 50}"', hint: 'Optional: limit (up to 200). Needs the channels:read permission.' };
+appServices.notion.operations.get_page = { label: 'Read a page', example: '"{\\"page_id\\": \\"\\"}"', hint: 'page_id (32 characters from the page address).' };
+appServices.notion.operations.update_page = { label: 'Update a page', example: '"{\\"page_id\\": \\"\\", \\"properties\\": {\\"Status\\": {\\"select\\": {\\"name\\": \\"Done\\"}}}}"', hint: 'page_id and properties in Notion format, or archived: true to archive.' };
+appServices.airtable.operations.get_record = { label: 'Read one record', example: '"{\\"base_id\\": \\"appXXXXXXXXXXXXXX\\", \\"table\\": \\"Tasks\\", \\"record_id\\": \\"recXXXXXXXXXXXXXX\\"}"', hint: 'base_id, table and record_id.' };
+appServices.airtable.operations.delete_record = { label: 'Delete a record', example: '"{\\"base_id\\": \\"appXXXXXXXXXXXXXX\\", \\"table\\": \\"Tasks\\", \\"record_id\\": \\"recXXXXXXXXXXXXXX\\"}"', hint: 'base_id, table and record_id. This cannot be undone.' };
+appServices.stripe.operations.get_customer = { label: 'Read a customer', example: '"{\\"customer_id\\": \\"cus_...\\"}"', hint: 'customer_id.' };
+appServices.stripe.operations.create_refund = { label: 'Refund a payment', example: '"{\\"payment_intent\\": \\"pi_...\\", \\"amount\\": \\"\\"}"', hint: 'payment_intent. Optional: amount in cents (leave empty to refund everything). Money moves, so test with a test-mode key first.' };
+appServices.stripe.operations.list_invoices = { label: 'List invoices', example: '"{\\"limit\\": 20}"', hint: 'Optional: limit (up to 100).' };
+appServices.hubspot.operations.update_contact = { label: 'Update a contact', example: '"{\\"contact_id\\": \\"\\", \\"phone\\": \\"{{phone}}\\"}"', hint: 'contact_id plus any of email, firstname, lastname, phone, company.' };
+appServices.hubspot.operations.create_deal = { label: 'Create a deal', example: '"{\\"dealname\\": \\"{{name}}\\", \\"amount\\": \\"1000\\"}"', hint: 'dealname. Optional: amount, dealstage, pipeline.' };
+appServices.trello.operations.add_comment = { label: 'Comment on a card', example: '"{\\"card_id\\": \\"\\", \\"text\\": \\"{{message}}\\"}"', hint: 'card_id (24 characters) and text.' };
+appServices.todoist.operations.list_tasks = { label: 'List tasks', example: '"{\\"project_id\\": \\"\\", \\"limit\\": 50}"', hint: 'Optional: project_id and limit (up to 200).' };
+appServices.todoist.operations.close_task = { label: 'Complete a task', example: '"{\\"task_id\\": \\"\\"}"', hint: 'task_id.' };
 
 export const operators = [
   { value: 'equals', label: 'equals' },
