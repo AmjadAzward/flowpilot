@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 import httpx
 from .n8n_import import convert as convert_n8n
 from .oidc import verify_id_token
+from .pgcompat import PgConnection
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -80,13 +81,18 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.22.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.23.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
 
+DATABASE_URL = os.getenv("FLOWPILOT_DATABASE_URL", "").strip()
+if DATABASE_URL and not DATABASE_URL.startswith(("postgresql://", "postgres://")): raise SystemExit("FLOWPILOT_DATABASE_URL must start with postgresql://")
+
+
 def conn():
+    if DATABASE_URL: return PgConnection(DATABASE_URL)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=15)
     db.row_factory = sqlite3.Row
@@ -650,7 +656,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.22.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.23.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -3027,8 +3033,8 @@ def poll_items(doc: dict, node: dict) -> None:
         batch = [] if not started else fresh[:MAX_POLL_ITEMS]  # the first check only records what already exists
         stamp = now()
         for item_id, _ in (fresh if not started else batch): db.execute("INSERT OR IGNORE INTO poll_seen (workflow_id,item_id,seen_at) VALUES (?,?,?)", (wid, item_id, stamp))
-        db.execute("INSERT OR REPLACE INTO poll_state (workflow_id, initialized) VALUES (?, 1)", (wid,))
-        db.execute("DELETE FROM poll_seen WHERE workflow_id=? AND rowid NOT IN (SELECT rowid FROM poll_seen WHERE workflow_id=? ORDER BY seen_at DESC, rowid DESC LIMIT ?)", (wid, wid, POLL_SEEN_KEEP))
+        db.execute("INSERT INTO poll_state (workflow_id, initialized) VALUES (?, 1) ON CONFLICT(workflow_id) DO UPDATE SET initialized=1", (wid,))
+        db.execute("DELETE FROM poll_seen WHERE workflow_id=? AND item_id NOT IN (SELECT item_id FROM poll_seen WHERE workflow_id=? ORDER BY seen_at DESC, item_id DESC LIMIT ?)", (wid, wid, POLL_SEEN_KEEP))
     for _, item in batch: dispatch(doc, "poll_in", item)
 
 
@@ -4432,6 +4438,7 @@ def restore_workflows(body: RestoreIn):
 @app.get("/api/backup/database")
 def backup_database():
     """A consistent copy of the whole database (workflows, runs, users, encrypted credentials). The key file is not included."""
+    if DATABASE_URL: raise HTTPException(400, "FlowPilot is using Postgres. Back it up with pg_dump (workflow export and import still work here).")
     tmp = Path(tempfile.mkdtemp(prefix="flowpilot-backup-")) / "flowpilot-backup.db"
     src, dst = conn(), sqlite3.connect(tmp)
     try:

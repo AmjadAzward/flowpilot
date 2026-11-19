@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.23
+- Postgres storage: set FLOWPILOT_DATABASE_URL and FlowPilot keeps everything in Postgres (all tests and all 70 browser checks pass against a real Postgres 16)
+- pg_test.py and e2e_pg.py run the tests against a throwaway Postgres with no installation
+
 ### v0.22
 - Data tables page (browse rows, remove a row, empty a table)
 - Overview search finds workflows by node type and node settings

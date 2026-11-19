@@ -104,6 +104,7 @@ def test_restore_skips_bad_items_and_rejects_foreign_files(client):
     assert client.post("/api/backup/restore", json={"format": "flowpilot-backup", "workflows": [good] * 201}).status_code == 422
 
 
+@pytest.mark.skipif(bool(main.DATABASE_URL), reason="the database download is a SQLite feature")
 def test_database_backup_is_a_clean_copy_without_sessions(client, tmp_path):
     res = client.get("/api/backup/database")
     assert res.status_code == 200
@@ -265,3 +266,9 @@ def test_broken_form_definition_means_no_form(client, anon):
 def test_new_types_are_accepted(client):
     for t in ("sticky", "ai"):
         make_flow(client, [node("t", "trigger"), node("x", t)], [edge("t", "x")])
+
+
+@pytest.mark.skipif(not main.DATABASE_URL, reason="only meaningful when FlowPilot itself runs on Postgres")
+def test_database_download_points_to_pg_dump_on_postgres(client):
+    res = client.get("/api/backup/database")
+    assert res.status_code == 400 and "pg_dump" in res.json()["detail"]

@@ -237,6 +237,7 @@ def test_old_finished_jobs_are_pruned(client):
     assert jobs() == []
 
 
+@pytest.mark.skipif(bool(main.DATABASE_URL), reason="WAL is a SQLite setting")
 def test_the_database_uses_wal_for_concurrent_processes():
     with main.conn() as db:
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

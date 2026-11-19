@@ -318,6 +318,7 @@ def test_manual_run_accepts_explicit_input(client):
 
 
 # ---------------------------------------------------------------- migration
+@pytest.mark.skipif(bool(main.DATABASE_URL), reason="builds and migrates an old SQLite file")
 def test_old_database_is_migrated_in_place(tmp_path, monkeypatch):
     path = tmp_path / "old.db"
     db = sqlite3.connect(path)
