@@ -149,6 +149,15 @@ appServices.whatsapp = { label: 'WhatsApp (Cloud API)', credential: 'Access toke
   send_text: { label: 'Send a text message', example: '{"phone_number_id": "", "to": "15551230000", "text": "Hello from FlowPilot"}', hint: 'phone_number_id (from the WhatsApp setup page), to (with country code) and text. Outside a conversation window WhatsApp only allows approved templates.' } } };
 appServices.pushover = { label: 'Pushover', credential: 'APP_TOKEN:USER_KEY', operations: {
   send: { label: 'Send a notification', example: '{"message": "{{message}}", "title": "FlowPilot", "priority": "0"}', hint: 'message. Optional: title and priority (-2, -1, 0 or 1).' } } };
+appServices.brevo = { label: 'Brevo (email)', credential: 'API key', operations: {
+  send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "You <you@yourdomain.com>", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
+appServices.mailgun = { label: 'Mailgun (email)', credential: 'Private API key', operations: {
+  send_email: { label: 'Send an email', example: '{"domain": "mg.yourdomain.com", "region": "us", "to": "{{email}}", "from": "you@mg.yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'domain, to, from, subject and text. Optional: region (us or eu).' } } };
+appServices.telegram = { label: 'Telegram bot', credential: 'Bot token from @BotFather', operations: {
+  send_message: { label: 'Send a message', example: '{"chat_id": "", "text": "{{message}}"}', hint: 'chat_id (a number; message your bot, then look it up with the getUpdates call) and text.' } } };
+appServices.github = { label: 'GitHub', credential: 'Personal access token with issues write permission', operations: {
+  create_issue: { label: 'Create an issue', example: '{"repo": "owner/name", "title": "{{title}}", "body": "", "labels": []}', hint: 'repo (owner/name) and title. Optional: body and labels (a list).' },
+  add_comment: { label: 'Comment on an issue', example: '{"repo": "owner/name", "number": "1", "body": "{{message}}"}', hint: 'repo, number (the issue or pull request number) and body.' } } };
 appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
   send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
 appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {

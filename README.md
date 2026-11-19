@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1007%20API%20%2B%2068%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1012%20API%20%2B%2068%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -90,7 +90,7 @@
 | **File uploads on webhooks** | A webhook can accept multipart file uploads, either from any sender (switch "Accept file uploads" on) or through its public form (a field of type `file`). Limits: 5 files, 5 MB each, 10 MB in total. Files are stored under `uploads/` in the files folder with safe names, described to the workflow as `{{body.files.0.filename}}`, `size`, `content_type` and `path` (the Files node can read the path), and deleted with the run-history cleanup. Without the switch, a multipart request is refused. Anyone who has the webhook address can upload, so keep it private |
 | **AI Agent node** | A model that can call tools before it answers: a calculator (the same safe expression engine), the current time, a "read this web page" tool (public HTTPS only), and up to five workflows you choose. It makes at most 6 tool rounds, stops after 150 seconds, and returns the answer plus the list of tool calls it made. It needs a model that supports tool calling and the same credential format as the AI Prompt node, and it is tested only with a scripted stand-in for the model, not a real one. A web page can contain text that tries to steer the model, so do not combine the web page tool with workflows that send messages or change data |
 | **Variables** | Shared, non-secret values (a website address, a rate) managed in Settings by admins and owners, and used anywhere as `{{vars.NAME}}`, including inside expressions. Everyone can read them, so secrets still belong on the Credentials page |
-| **App Action node** | Twenty-eight services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab, ntfy (free push notifications), Shopify, Zendesk, Pipedrive, ClickUp, monday.com, Dropbox, Resend, Postmark, WhatsApp (Cloud API), Pushover, and Google Calendar and Google Drive (which use a connected Google account). These are tested against simulated servers only, so try each one with a test account before relying on it |
+| **App Action node** | Thirty-two services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab, ntfy (free push notifications), Shopify, Zendesk, Pipedrive, ClickUp, monday.com, Dropbox, Resend, Postmark, WhatsApp (Cloud API), Pushover, Brevo, Mailgun, Telegram, GitHub, and Google Calendar and Google Drive (which use a connected Google account). These are tested against simulated servers only, so try each one with a test account before relying on it |
 | **Data tools** | Sort, Limit, Remove Duplicates, Split Out, Summarize (count, sum, average, min, max, collect), Rename Keys, Date and Time (add, subtract, compare, format) and Crypto and Encoding (SHA, MD5, HMAC signatures, base64, random IDs) |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
@@ -280,7 +280,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1007 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1012 tests, use a temporary database and key):
 
 ```powershell
 cd backend

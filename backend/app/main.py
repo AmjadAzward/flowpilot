@@ -79,7 +79,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.19.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.20.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -647,7 +647,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.19.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.20.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -1518,6 +1518,10 @@ APP_OPS = {
     "postmark": ["send_email"],
     "whatsapp": ["send_text"],
     "pushover": ["send"],
+    "brevo": ["send_email"],
+    "mailgun": ["send_email"],
+    "telegram": ["send_message"],
+    "github": ["create_issue", "add_comment"],
     "gcalendar": ["list_events", "create_event"],
     "gdrive": ["list_files", "create_folder"],
 }
@@ -1930,7 +1934,54 @@ def app_pushover(op: str, secret: str, f: dict) -> Any:
     return {"status": res.get("status"), "request": res.get("request")} if isinstance(res, dict) else res
 
 
-APP_HANDLERS = {"shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def app_brevo(op: str, secret: str, f: dict) -> Any:
+    to, sender, subject, text = _mail_fields(f)
+    name, _, rest = sender.partition("<")
+    email = rest.rstrip(">").strip() if rest else sender
+    res = do_request("POST", "https://api.brevo.com/v3/smtp/email", {"api-key": secret, "Accept": "application/json"}, json={"sender": {"email": email, **({"name": name.strip()} if name.strip() else {})}, "to": [{"email": to}], "subject": subject, "textContent": text})
+    return {"message_id": res.get("messageId")} if isinstance(res, dict) else res
+
+
+def app_mailgun(op: str, secret: str, f: dict) -> Any:
+    to, sender, subject, text = _mail_fields(f)
+    domain = _text(f, "domain", "Domain", maxlen=100)
+    if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?)+", domain): raise ValueError("Domain is your sending domain, like mg.example.com")
+    region = _text(f, "region", "Region", required=False, maxlen=2).lower() or "us"
+    if region not in ("us", "eu"): raise ValueError("Region is us or eu")
+    host = "api.eu.mailgun.net" if region == "eu" else "api.mailgun.net"
+    auth = base64.b64encode(f"api:{secret}".encode()).decode()
+    res = do_request("POST", f"https://{host}/v3/{domain}/messages", {"Authorization": f"Basic {auth}"}, data={"from": sender, "to": to, "subject": subject, "text": text})
+    return {"id": res.get("id"), "message": res.get("message")} if isinstance(res, dict) else res
+
+
+def app_telegram(op: str, secret: str, f: dict) -> Any:
+    if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_\-]{20,60}", secret): raise ValueError("The Telegram credential is the bot token from @BotFather (like 123456:ABC...)")
+    chat = _text(f, "chat_id", "Chat ID", maxlen=60)
+    if not re.fullmatch(r"-?\d{1,20}|@[A-Za-z0-9_]{4,60}", chat): raise ValueError("Chat ID is a number (or @channelname for public channels)")
+    res = do_request("POST", f"https://api.telegram.org/bot{secret}/sendMessage", {}, json={"chat_id": chat, "text": _text(f, "text", "Message", maxlen=4000)})
+    msg = (res.get("result") if isinstance(res, dict) else None) or {}
+    return {"message_id": msg.get("message_id")}
+
+
+def app_github(op: str, secret: str, f: dict) -> Any:
+    repo = _text(f, "repo", "Repository", maxlen=140)
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]{1,100}/[A-Za-z0-9_.\-]{1,100}", repo) or any(part.strip(".") == "" for part in repo.split("/")): raise ValueError("Repository looks like owner/name")
+    headers = {"Authorization": f"Bearer {secret}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if op == "add_comment":
+        num = _text(f, "number", "Issue number", maxlen=10)
+        if not num.isdigit() or int(num) < 1: raise ValueError("Issue number is a positive number")
+        res = do_request("POST", f"https://api.github.com/repos/{repo}/issues/{int(num)}/comments", headers, json={"body": _text(f, "body", "Comment", maxlen=60_000)})
+        return {"id": res.get("id"), "url": res.get("html_url")} if isinstance(res, dict) else res
+    body: dict[str, Any] = {"title": _text(f, "title", "Title", maxlen=250), "body": _text(f, "body", "Description", required=False, maxlen=60_000)}
+    labels = f.get("labels")
+    if labels:
+        if not isinstance(labels, list) or len(labels) > 10 or not all(isinstance(x, str) and 0 < len(x) <= 50 for x in labels): raise ValueError("Labels is a list of up to 10 short names")
+        body["labels"] = labels
+    res = do_request("POST", f"https://api.github.com/repos/{repo}/issues", headers, json=body)
+    return {"number": res.get("number"), "url": res.get("html_url")} if isinstance(res, dict) else res
+
+
+APP_HANDLERS = {"brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:

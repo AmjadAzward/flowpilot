@@ -1087,7 +1087,7 @@ await check('HTTP paging, webhook protection, Wait for Response and the new serv
   await page.getByLabel('If nobody answers').waitFor();
   await expectText(page.locator('.inspector'), /run\.approve_url/);
   await page.getByTestId('add-app').click();
-  for (const [service, field] of [['shopify', '"shop"'], ['zendesk', 'subdomain'], ['pipedrive', '"name"'], ['clickup', 'list_id'], ['monday', 'board_id'], ['dropbox', '"path"'], ['resend', '"from"'], ['postmark', '"from"'], ['whatsapp', 'phone_number_id'], ['pushover', '"message"']]) {
+  for (const [service, field] of [['shopify', '"shop"'], ['zendesk', 'subdomain'], ['pipedrive', '"name"'], ['clickup', 'list_id'], ['monday', 'board_id'], ['dropbox', '"path"'], ['resend', '"from"'], ['postmark', '"from"'], ['whatsapp', 'phone_number_id'], ['pushover', '"message"'], ['brevo', '"from"'], ['mailgun', 'domain'], ['telegram', 'chat_id'], ['github', '"repo"']]) {
     await page.getByLabel('Service').selectOption(service);
     if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes(field)) throw new Error(service + ' example fields missing ' + field);
   }
