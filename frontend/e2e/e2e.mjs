@@ -743,7 +743,7 @@ await check('data tools: sort, limit, remove duplicates, split, summarize, renam
   await page.getByTestId('template-fetch-todo').click();
   await page.locator('.react-flow__node').first().waitFor();
   await openLibrary();
-  for (const t of ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'convert']) await page.getByTestId(`add-${t}`).waitFor();
+  for (const t of ['sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'convert', 'table']) await page.getByTestId(`add-${t}`).waitFor();
   await page.getByTestId('add-aggregate').click();
   await page.getByLabel('Result').selectOption('sum');
   await page.getByLabel(/^Field/).fill('amount');
@@ -1087,7 +1087,7 @@ await check('HTTP paging, webhook protection, Wait for Response and the new serv
   await page.getByLabel('If nobody answers').waitFor();
   await expectText(page.locator('.inspector'), /run\.approve_url/);
   await page.getByTestId('add-app').click();
-  for (const [service, field] of [['shopify', '"shop"'], ['zendesk', 'subdomain'], ['pipedrive', '"name"'], ['clickup', 'list_id'], ['monday', 'board_id'], ['dropbox', '"path"'], ['resend', '"from"'], ['postmark', '"from"'], ['whatsapp', 'phone_number_id'], ['pushover', '"message"'], ['brevo', '"from"'], ['mailgun', 'domain'], ['telegram', 'chat_id'], ['github', '"repo"'], ['pagerduty', 'summary'], ['opsgenie', '"message"'], ['intercom', '"email"'], ['freshdesk', 'subdomain'], ['supabase', 'table'], ['bitly', '"url"'], ['convertkit', 'form_id']]) {
+  for (const [service, field] of [['shopify', '"shop"'], ['zendesk', 'subdomain'], ['pipedrive', '"name"'], ['clickup', 'list_id'], ['monday', 'board_id'], ['dropbox', '"path"'], ['resend', '"from"'], ['postmark', '"from"'], ['whatsapp', 'phone_number_id'], ['pushover', '"message"'], ['brevo', '"from"'], ['mailgun', 'domain'], ['telegram', 'chat_id'], ['github', '"repo"'], ['pagerduty', 'summary'], ['opsgenie', '"message"'], ['intercom', '"email"'], ['freshdesk', 'subdomain'], ['supabase', 'table'], ['bitly', '"url"'], ['convertkit', 'form_id'], ['mattermost', 'channel_id'], ['gotify', 'server'], ['cloudflare', 'zone_id'], ['posthog', 'distinct_id'], ['mixpanel', 'distinct_id'], ['vonage', '"from"']]) {
     await page.getByLabel('Service').selectOption(service);
     if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes(field)) throw new Error(service + ' example fields missing ' + field);
   }

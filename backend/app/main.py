@@ -80,7 +80,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.20.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.21.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -147,6 +147,8 @@ def initialize():
         if "kind" not in {r["name"] for r in db.execute("PRAGMA table_info(waits)")}: db.execute("ALTER TABLE waits ADD COLUMN kind TEXT NOT NULL DEFAULT 'timer'")
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS data_rows (id INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_data_rows_tbl ON data_rows (tbl, id)")
         db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
         db.execute("CREATE TABLE IF NOT EXISTS poll_state (workflow_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)")
@@ -203,7 +205,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "callback", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "callback", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "table"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -648,7 +650,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.20.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.21.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -1253,9 +1255,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
+PINNABLE = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "table", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
+ERROR_SETTINGS = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "table", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1495,7 +1497,7 @@ def github_action(d: dict, previous: Any) -> Any:
 APP_OPS = {
     "slack": ["post_message"],
     "notion": ["create_page", "query_database"],
-    "airtable": ["list_records", "create_record"],
+    "airtable": ["list_records", "create_record", "update_record"],
     "stripe": ["list_customers", "create_customer", "list_payments"],
     "twilio": ["send_sms"],
     "linear": ["create_issue"],
@@ -1530,6 +1532,12 @@ APP_OPS = {
     "supabase": ["insert_row", "select_rows"],
     "bitly": ["shorten"],
     "convertkit": ["add_subscriber"],
+    "mattermost": ["post_message"],
+    "gotify": ["send"],
+    "cloudflare": ["purge_cache"],
+    "posthog": ["capture"],
+    "mixpanel": ["track"],
+    "vonage": ["send_sms"],
     "gcalendar": ["list_events", "create_event"],
     "gdrive": ["list_files", "create_folder"],
 }
@@ -1603,6 +1611,13 @@ def app_airtable(op: str, secret: str, f: dict) -> Any:
     if op == "list_records":
         res = do_request("GET", f"{url}?maxRecords={_limit(f)}", headers)
         return [{"_id": r.get("id"), **(r.get("fields") or {})} for r in (res.get("records") if isinstance(res, dict) else None) or []]
+    if op == "update_record":
+        rec = _text(f, "record_id", "Record ID", maxlen=30)
+        if not re.fullmatch(r"rec[A-Za-z0-9]{10,20}", rec): raise ValueError("Record ID looks like recXXXXXXXXXXXXXX")
+        changes = _object(f, "record", "Record", required=True)
+        if not changes: raise ValueError("Record needs at least one field to change")
+        res = do_request("PATCH", f"{url}/{rec}", headers, json={"fields": changes})
+        return {"_id": res.get("id"), **(res.get("fields") or {})} if isinstance(res, dict) else res
     res = do_request("POST", url, headers, json={"fields": _object(f, "record", "Record", required=True)})
     return {"_id": res.get("id"), **(res.get("fields") or {})} if isinstance(res, dict) else res
 
@@ -2070,7 +2085,75 @@ def app_convertkit(op: str, secret: str, f: dict) -> Any:
     return {"id": sub.get("id"), "state": sub.get("state")}
 
 
-APP_HANDLERS = {"pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def _origin(f: dict, label: str = "Server") -> str:
+    """The https origin of a self-hosted service the user names, checked like any other outgoing address."""
+    server = _text(f, "server", label, maxlen=200)
+    parsed = urlparse(safe_url(server))
+    if parsed.path.strip("/") or parsed.query or parsed.fragment: raise ValueError(f"{label} is the address only, like https://chat.example.com")
+    return f"https://{parsed.hostname}"
+
+
+def app_mattermost(op: str, secret: str, f: dict) -> Any:
+    channel = _text(f, "channel_id", "Channel ID", maxlen=26)
+    if not re.fullmatch(r"[a-z0-9]{26}", channel): raise ValueError("Channel ID is 26 letters and numbers (channel menu, View Info)")
+    res = do_request("POST", f"{_origin(f)}/api/v4/posts", {"Authorization": f"Bearer {secret}"}, json={"channel_id": channel, "message": _text(f, "message", "Message", maxlen=16000)})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_gotify(op: str, secret: str, f: dict) -> Any:
+    body: dict[str, Any] = {"message": _text(f, "message", "Message", maxlen=4000)}
+    title = _text(f, "title", "Title", required=False, maxlen=200)
+    if title: body["title"] = title
+    prio = _text(f, "priority", "Priority", required=False, maxlen=2)
+    if prio:
+        if not prio.isdigit() or int(prio) > 10: raise ValueError("Priority is a number from 0 to 10")
+        body["priority"] = int(prio)
+    res = do_request("POST", f"{_origin(f)}/message", {"X-Gotify-Key": secret}, json=body)
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_cloudflare(op: str, secret: str, f: dict) -> Any:
+    zone = _text(f, "zone_id", "Zone ID", maxlen=32)
+    if not re.fullmatch(r"[0-9a-f]{32}", zone): raise ValueError("Zone ID is 32 letters and numbers from the zone's overview page")
+    files = f.get("files")
+    if files:
+        if not isinstance(files, list) or len(files) > 30 or not all(isinstance(x, str) and re.match(r"^https?://\S+$", x) for x in files): raise ValueError("Files is a list of up to 30 full addresses")
+        body: dict[str, Any] = {"files": files}
+    else: body = {"purge_everything": True}
+    res = do_request("POST", f"https://api.cloudflare.com/client/v4/zones/{zone}/purge_cache", {"Authorization": f"Bearer {secret}"}, json=body)
+    return {"success": res.get("success")} if isinstance(res, dict) else res
+
+
+def _event_name(f: dict, key: str = "event") -> str:
+    return _text(f, key, "Event", maxlen=200)
+
+
+def app_posthog(op: str, secret: str, f: dict) -> Any:
+    region = _text(f, "region", "Region", required=False, maxlen=2).lower() or "us"
+    if region not in ("us", "eu"): raise ValueError("Region is us or eu")
+    res = do_request("POST", f"https://{region}.i.posthog.com/capture/", {}, json={"api_key": secret, "event": _event_name(f), "distinct_id": _text(f, "distinct_id", "Distinct ID", maxlen=200), "properties": _object(f, "properties", "Properties")})
+    return {"status": res.get("status")} if isinstance(res, dict) else res
+
+
+def app_mixpanel(op: str, secret: str, f: dict) -> Any:
+    props = {**_object(f, "properties", "Properties"), "token": secret, "distinct_id": _text(f, "distinct_id", "Distinct ID", maxlen=200)}
+    res = do_request("POST", "https://api.mixpanel.com/track", {"Accept": "application/json"}, params={"ip": 0}, json=[{"event": _event_name(f), "properties": props}])
+    return {"status": res.get("status")} if isinstance(res, dict) else {"status": res}
+
+
+def app_vonage(op: str, secret: str, f: dict) -> Any:
+    key, _, sec = secret.partition(":")
+    if not key or not sec: raise ValueError("The Vonage credential must look like API_KEY:API_SECRET")
+    to, sender = _text(f, "to", "To", maxlen=20).lstrip("+"), _text(f, "from", "From", maxlen=11)
+    if not re.fullmatch(r"\d{6,15}", to): raise ValueError("To is a phone number with country code, for example 15551230000")
+    if not re.fullmatch(r"[A-Za-z0-9]{1,11}", sender): raise ValueError("From is a number or a short name (letters and numbers, up to 11)")
+    res = do_request("POST", "https://rest.nexmo.com/sms/json", {}, data={"api_key": key, "api_secret": sec, "to": to, "from": sender, "text": _text(f, "text", "Message", maxlen=1600)})
+    msgs = (res.get("messages") if isinstance(res, dict) else None) or [{}]
+    if msgs[0].get("status") not in (None, "0"): raise ValueError(f"Vonage refused the message: {str(msgs[0].get('error-text') or 'unknown error')[:200]}")
+    return {"message_id": msgs[0].get("message-id")}
+
+
+APP_HANDLERS = {"mattermost": app_mattermost, "gotify": app_gotify, "cloudflare": app_cloudflare, "posthog": app_posthog, "mixpanel": app_mixpanel, "vonage": app_vonage, "pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:
@@ -2282,7 +2365,90 @@ def tool_convert(d: dict, previous: Any) -> Any:
     raise ValueError(f"Unknown operation: {op}")
 
 
-ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto, "convert": tool_convert}
+TABLE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
+MAX_TABLE_ROWS, MAX_TABLES, MAX_ROW_BYTES, MAX_TABLE_READ = 10_000, 50, 65_536, 1000
+
+
+def _table_json(d: dict, key: str, previous: Any, label: str, required: bool = False) -> dict:
+    text = str(d.get(key) or "").strip()
+    if not text:
+        if required: raise ValueError(f"{label} is required")
+        return {}
+    value = read_json(render_template(text, previous, json_escape=True))
+    if not isinstance(value, dict): raise ValueError(f"{label} must be a JSON object")
+    return value
+
+
+def _row_matches(data: dict, flt: dict) -> bool:
+    for path, want in flt.items():
+        got = get_path(data, str(path))
+        if got != want and str(got) != str(want): return False
+    return True
+
+
+def tool_table(d: dict, previous: Any) -> Any:
+    """Built-in data tables: small named tables stored with FlowPilot, so workflows can remember things between runs."""
+    op, name = str(d.get("operation") or "find"), str(d.get("table") or "").strip()
+    if not TABLE_NAME_RE.fullmatch(name): raise ValueError("Table name starts with a letter and uses letters, numbers and _ (up to 40 characters)")
+    try: limit = max(1, min(int(float(d.get("limit") or 100)), MAX_TABLE_READ))
+    except (TypeError, ValueError): raise ValueError("Limit must be a number")
+    flt = _table_json(d, "filter", previous, "Filter")
+    shown = lambda r: {"_id": r["id"], **json.loads(r["data"])}
+    with conn() as db:
+        def room(adding: int) -> None:
+            if not db.execute("SELECT 1 FROM data_rows WHERE tbl=? LIMIT 1", (name,)).fetchone() and db.execute("SELECT COUNT(DISTINCT tbl) AS n FROM data_rows").fetchone()["n"] >= MAX_TABLES: raise ValueError(f"At most {MAX_TABLES} tables")
+            if db.execute("SELECT COUNT(*) AS n FROM data_rows WHERE tbl=?", (name,)).fetchone()["n"] + adding > MAX_TABLE_ROWS: raise ValueError(f"A table holds at most {MAX_TABLE_ROWS} rows")
+
+        def encode(row: Any) -> str:
+            if not isinstance(row, dict) or not row: raise ValueError("A row must be a JSON object with at least one field")
+            text = json.dumps(row, default=str)
+            if len(text.encode()) > MAX_ROW_BYTES: raise ValueError("A row is too large (limit 64 KB)")
+            return text
+
+        def matching() -> list:
+            rows = db.execute("SELECT id, data FROM data_rows WHERE tbl=? ORDER BY id", (name,)).fetchall()
+            return [r for r in rows if _row_matches(json.loads(r["data"]), flt)]
+
+        if op == "insert":
+            text = encode(_table_json(d, "row", previous, "Row", required=True))
+            room(1)
+            cur = db.execute("INSERT INTO data_rows (tbl, data, created_at) VALUES (?,?,?)", (name, text, now()))
+            return {"_id": cur.lastrowid, **json.loads(text)}
+        if op == "insert_all":
+            if not isinstance(previous, list) or not previous: raise ValueError("Insert every item needs a list of objects as input")
+            if len(previous) > 1000: raise ValueError("Insert at most 1000 rows at a time")
+            texts = [encode(x) for x in previous]
+            room(len(texts))
+            db.executemany("INSERT INTO data_rows (tbl, data, created_at) VALUES (?,?,?)", [(name, x, now()) for x in texts])
+            return {"inserted": len(texts)}
+        if op == "find":
+            found = matching()
+            if str(d.get("order") or "oldest") == "newest": found.reverse()
+            return [shown(r) for r in found[:limit]]
+        if op == "count": return {"count": len(matching())}
+        if op == "get":
+            rid = render_template(str(d.get("row_id") or ""), previous).strip()
+            if not rid.isdigit(): raise ValueError("Row ID is a number")
+            r = db.execute("SELECT id, data FROM data_rows WHERE tbl=? AND id=?", (name, int(rid))).fetchone()
+            return shown(r) if r else None
+        if op == "update":
+            changes = _table_json(d, "values", previous, "Values", required=True)
+            if not changes: raise ValueError("Values needs at least one field")
+            if not flt: raise ValueError("Update needs a filter, so it cannot change every row by accident")
+            hits = matching()[:MAX_TABLE_READ]
+            for r in hits: db.execute("UPDATE data_rows SET data=? WHERE id=?", (encode({**json.loads(r["data"]), **changes}), r["id"]))
+            return {"updated": len(hits)}
+        if op == "delete":
+            if not flt: raise ValueError("Delete needs a filter. To remove everything, choose Empty the table")
+            hits = matching()
+            db.executemany("DELETE FROM data_rows WHERE id=?", [(r["id"],) for r in hits])
+            return {"deleted": len(hits)}
+        if op == "clear":
+            return {"deleted": db.execute("DELETE FROM data_rows WHERE tbl=?", (name,)).rowcount}
+    raise ValueError(f"Unknown operation: {op}")
+
+
+ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto, "convert": tool_convert, "table": tool_table}
 
 
 def param_text(value: Any) -> str:
@@ -3239,7 +3405,7 @@ def run_repeat(g: Graph, nid: str, node: dict, value: Any):
     return {"attempts": attempts, "condition_met": met}, current
 
 
-EACH_ITEM_TYPES = {"agent", "datetime", "crypto", "convert", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
+EACH_ITEM_TYPES = {"agent", "datetime", "crypto", "convert", "table", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
 MAX_EACH_ITEMS = 200
 
 

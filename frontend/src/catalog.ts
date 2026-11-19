@@ -5,7 +5,7 @@ export type FlowDoc = { settings?: { timeout_seconds?: number; save_runs?: strin
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { waiting_for?: string | null; id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay'; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
-export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'callback' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'convert' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
+export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'callback' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'convert' | 'table' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
 
 export const catalog: { type: NodeKind; label: string; desc: string; category: Category; color: string; icon: string }[] = [
@@ -45,6 +45,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
   { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
   { type: 'convert', label: 'Convert Data', desc: 'JSON, XML, web page text, URL encoding', category: 'Data', color: '#0d9488', icon: 'Braces' },
+  { type: 'table', label: 'Data Table', desc: 'Remember rows between runs', category: 'Data', color: '#0d9488', icon: 'ListTree' },
   { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
   { type: 'app', label: 'App Action', desc: '28 services: Slack, Shopify, Jira, Stripe, WhatsApp and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
   { type: 'github', label: 'GitHub Issues', desc: 'Create or list issues', category: 'Network', color: '#475569', icon: 'Github' },
@@ -61,11 +62,11 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
 
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in', 'poll_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
-export const pinnableTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'convert', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
+export const pinnableTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'convert', 'table', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];
 /** Nodes that support retries and continue-on-error. */
 /** Nodes that can run once for every element of a list. */
 export const eachItemTypes: string[] = ['agent', 'datetime', 'crypto', 'convert', 'convert', 'app', 'transform', 'template', 'set', 'code', 'http', 'ai', 'sql', 'notify', 'email', 'telegram', 'gmail', 'github', 'sheets', 'file', 'rss'];
-export const errorTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'convert', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
+export const errorTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'convert', 'table', 'app', 'input', 'transform', 'template', 'set', 'filter', 'csv', 'http', 'notify', 'email', 'subflow', 'code', 'delay', 'sql', 'rss', 'telegram', 'github', 'sheets', 'gmail', 'file'];
 
 type AppOp = { label: string; example: string; hint: string };
 export const appServices: Record<string, { label: string; credential: string; oauth?: boolean; operations: Record<string, AppOp> }> = {
@@ -76,7 +77,8 @@ export const appServices: Record<string, { label: string; credential: string; oa
     query_database: { label: 'List database rows', example: '{"database_id": "", "limit": 20}', hint: 'database_id and an optional limit (up to 100).' } } },
   airtable: { label: 'Airtable', credential: 'Personal access token', operations: {
     list_records: { label: 'List records', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "limit": 20}', hint: 'base_id, table and an optional limit (up to 100).' },
-    create_record: { label: 'Create a record', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "record": {"Name": "{{name}}"}}', hint: 'base_id, table and record (an object of field values).' } } },
+    create_record: { label: 'Create a record', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "record": {"Name": "{{name}}"}}', hint: 'base_id, table and record (an object of field values).' },
+    update_record: { label: 'Update a record', example: '{"base_id": "appXXXXXXXXXXXXXX", "table": "Tasks", "record_id": "recXXXXXXXXXXXXXX", "record": {"Status": "Done"}}', hint: 'base_id, table, record_id and record (only the fields to change).' } } },
   stripe: { label: 'Stripe', credential: 'Secret key starting with sk_ (use a restricted key)', operations: {
     list_customers: { label: 'List customers', example: '{"limit": 20}', hint: 'Optional limit (up to 100).' },
     create_customer: { label: 'Create a customer', example: '{"email": "{{email}}", "name": "{{name}}"}', hint: 'email and/or name.' },
@@ -115,6 +117,15 @@ export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = 
     { key: 'unit', label: 'Unit', kind: 'select', options: [['seconds', 'Seconds'], ['minutes', 'Minutes'], ['hours', 'Hours'], ['days', 'Days'], ['weeks', 'Weeks']], when: { operation: ['add', 'subtract', 'diff'] } },
     { key: 'other', label: 'Second date', kind: 'text', when: { operation: ['diff'] } },
     { key: 'format', label: 'Format', kind: 'text', placeholder: '%Y-%m-%d', when: { operation: ['format'] } }] },
+  table: { hint: 'A small table kept inside FlowPilot (up to 10,000 rows, 50 tables). It is shared by every workflow that uses the same table name, so use it to remember what a workflow has already handled. Filters match fields exactly, like {"email": "a@b.co"}.', fields: [
+    { key: 'table', label: 'Table name', kind: 'text', placeholder: 'customers' },
+    { key: 'operation', label: 'Action', kind: 'select', options: [['insert', 'Add a row'], ['insert_all', 'Add every item of the list'], ['find', 'Find rows'], ['get', 'Get a row by ID'], ['count', 'Count rows'], ['update', 'Change rows'], ['delete', 'Delete rows'], ['clear', 'Empty the table']] },
+    { key: 'row', label: 'Row (JSON)', kind: 'text', placeholder: '{"email": "{{email}}", "plan": "free"}', when: { operation: ['insert'] } },
+    { key: 'filter', label: 'Match (JSON, blank for all rows)', kind: 'text', placeholder: '{"email": "{{email}}"}', when: { operation: ['find', 'count', 'update', 'delete'] } },
+    { key: 'values', label: 'New values (JSON)', kind: 'text', placeholder: '{"plan": "pro"}', when: { operation: ['update'] } },
+    { key: 'row_id', label: 'Row ID', kind: 'text', placeholder: '{{_id}}', when: { operation: ['get'] } },
+    { key: 'limit', label: 'Most rows to return', kind: 'text', placeholder: '100', when: { operation: ['find'] } },
+    { key: 'order', label: 'Order', kind: 'select', options: [['oldest', 'Oldest first'], ['newest', 'Newest first']], when: { operation: ['find'] } }] },
   convert: { hint: 'Turn text into data and back. Web page text reads simple selectors (a tag, .class or #id) from HTML you fetched with the HTTP Request node.', fields: [
     { key: 'operation', label: 'Action', kind: 'select', options: [['json_parse', 'Text to JSON'], ['json_stringify', 'JSON to text'], ['xml_to_json', 'XML to JSON'], ['html_extract', 'Pick text from a web page'], ['url_encode', 'URL encode'], ['url_decode', 'URL decode']] },
     { key: 'value', label: 'Input', kind: 'text', placeholder: '{{body}}' },
@@ -179,6 +190,18 @@ appServices.bitly = { label: 'Bitly (short links)', credential: 'Access token', 
   shorten: { label: 'Shorten a link', example: '{"url": "{{url}}"}', hint: 'url, starting with http:// or https://.' } } };
 appServices.convertkit = { label: 'ConvertKit (Kit)', credential: 'API key', operations: {
   add_subscriber: { label: 'Add a subscriber to a form', example: '{"form_id": "", "email": "{{email}}", "first_name": "{{name}}"}', hint: 'form_id (a number) and email. Optional: first_name.' } } };
+appServices.mattermost = { label: 'Mattermost (self-hosted chat)', credential: 'Personal access token or bot token', operations: {
+  post_message: { label: 'Post a message', example: '{"server": "https://chat.example.com", "channel_id": "", "message": "{{message}}"}', hint: 'server (the address only), channel_id (26 letters and numbers) and message.' } } };
+appServices.gotify = { label: 'Gotify (self-hosted push)', credential: 'Application token', operations: {
+  send: { label: 'Send a notification', example: '{"server": "https://push.example.com", "message": "{{message}}", "title": "FlowPilot", "priority": "5"}', hint: 'server (the address only) and message. Optional: title and priority (0 to 10).' } } };
+appServices.cloudflare = { label: 'Cloudflare', credential: 'API token with the Cache Purge permission', operations: {
+  purge_cache: { label: 'Purge the cache', example: '{"zone_id": "", "files": []}', hint: 'zone_id (32 characters). Leave files empty to purge everything, or list up to 30 full addresses.' } } };
+appServices.posthog = { label: 'PostHog (analytics)', credential: 'Project API key (phc_...)', operations: {
+  capture: { label: 'Record an event', example: '{"event": "signup", "distinct_id": "{{email}}", "properties": {"plan": "free"}, "region": "us"}', hint: 'event and distinct_id. Optional: properties and region (us or eu).' } } };
+appServices.mixpanel = { label: 'Mixpanel (analytics)', credential: 'Project token', operations: {
+  track: { label: 'Track an event', example: '{"event": "signup", "distinct_id": "{{email}}", "properties": {"plan": "free"}}', hint: 'event and distinct_id. Optional: properties.' } } };
+appServices.vonage = { label: 'Vonage (SMS)', credential: 'API_KEY:API_SECRET', operations: {
+  send_sms: { label: 'Send an SMS', example: '{"to": "15551230000", "from": "FlowPilot", "text": "{{message}}"}', hint: 'to (with country code), from (a number or a name up to 11 letters) and text.' } } };
 appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
   send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
 appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {
@@ -239,6 +262,7 @@ export const defaultData = (type: string): Record<string, string> => {
     case 'rename': return { mapping: '{"old_name": "new_name"}' };
     case 'datetime': return { operation: 'add', value: '', amount: '1', unit: 'days', other: '', format: '%Y-%m-%d' };
     case 'crypto': return { operation: 'sha256', value: '{{}}', key: '' };
+    case 'table': return { table: '', operation: 'find', row: '', filter: '', values: '', row_id: '', limit: '100', order: 'oldest' };
     case 'convert': return { operation: 'json_parse', value: '{{body}}', selector: '', attribute: '' };
     case 'app': return { service: 'slack', operation: 'post_message', credential: '', fields: appServices.slack.operations.post_message.example };
     case 'github': return { credential: '', repo: 'owner/name', operation: 'create_issue', title: 'New issue', body: '', state: 'open' };

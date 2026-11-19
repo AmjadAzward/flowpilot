@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.21
+- Data Table node: small named tables inside FlowPilot (add, find, get, count, change, delete, empty), so workflows remember things between runs
+- Six more App Action services (45 in all): Mattermost, Gotify, Cloudflare, PostHog, Mixpanel, Vonage; Airtable update record
+- 1042 API tests and a 68-check browser suite
+
 ### v0.20
 - Eleven more App Action services (39 in all): Brevo, Mailgun, Telegram bot, GitHub, PagerDuty, Opsgenie, Intercom, Freshdesk, Supabase, Bitly, ConvertKit
 - Convert Data node (text to JSON and back, XML to JSON with entity definitions refused, pick text from a web page, URL encoding)
