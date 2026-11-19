@@ -81,7 +81,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.25.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.26.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -657,7 +657,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.25.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.26.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -1556,10 +1556,29 @@ APP_OPS = {
     "posthog": ["capture"],
     "mixpanel": ["track"],
     "vonage": ["send_sms"],
+    "msteams": ["post_message"],
+    "googlechat": ["post_message"],
+    "datadog": ["create_event"],
+    "segment": ["track"],
+    "webex": ["post_message"],
+    "rocketchat": ["post_message"],
+    "pushbullet": ["push_note"],
+    "messagebird": ["send_sms"],
+    "mailjet": ["send_email"],
+    "loops": ["create_contact"],
+    "buttondown": ["add_subscriber"],
+    "baserow": ["create_row"],
+    "healthchecks": ["ping"],
+    "mastodon": ["post_status"],
+    "matrix": ["send_message"],
+    "telnyx": ["send_sms"],
+    "zulip": ["send_message"],
+    "ifttt": ["trigger"],
+    "uptimekuma": ["push"],
     "gcalendar": ["list_events", "create_event"],
     "gdrive": ["list_files", "create_folder"],
 }
-OPTIONAL_CREDENTIAL = {"ntfy"}
+OPTIONAL_CREDENTIAL = {"ntfy", "healthchecks", "uptimekuma"}
 OAUTH_SERVICES = {"gcalendar", "gdrive"}
 NOTION_ID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
 AIRTABLE_BASE_RE = re.compile(r"^app[A-Za-z0-9]{8,30}$")
@@ -2171,7 +2190,176 @@ def app_vonage(op: str, secret: str, f: dict) -> Any:
     return {"message_id": msgs[0].get("message-id")}
 
 
-APP_HANDLERS = {"mattermost": app_mattermost, "gotify": app_gotify, "cloudflare": app_cloudflare, "posthog": app_posthog, "mixpanel": app_mixpanel, "vonage": app_vonage, "pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def _webhook(secret: str, hosts: tuple[str, ...], label: str) -> str:
+    """A chat webhook address kept as the credential. Only the service's own hosts are accepted."""
+    host = (urlparse(secret).hostname or "").lower()
+    if not any(host == h or host.endswith("." + h) for h in hosts): raise ValueError(f"The {label} credential must be the webhook address from {label} ({', '.join(hosts)})")
+    return safe_url(secret)
+
+
+def _basic(user: str, pw: str) -> dict:
+    return {"Authorization": "Basic " + base64.b64encode(f"{user}:{pw}".encode()).decode()}
+
+
+def _pair(secret: str, name: str, left: str, right: str) -> tuple[str, str]:
+    a, _, b = secret.partition(":")
+    if not a or not b: raise ValueError(f"The {name} credential must look like {left}:{right}")
+    return a, b
+
+
+def app_msteams(op: str, secret: str, f: dict) -> Any:
+    url = _webhook(secret, ("webhook.office.com", "outlook.office.com", "logic.azure.com", "powerplatform.com"), "Microsoft Teams")
+    do_request("POST", url, {}, json={"text": _text(f, "text", "Message", maxlen=20000)})
+    return {"sent": True}
+
+
+def app_googlechat(op: str, secret: str, f: dict) -> Any:
+    url = _webhook(secret, ("chat.googleapis.com",), "Google Chat")
+    res = do_request("POST", url, {}, json={"text": _text(f, "text", "Message", maxlen=4000)})
+    return {"name": res.get("name")} if isinstance(res, dict) else {"sent": True}
+
+
+def app_datadog(op: str, secret: str, f: dict) -> Any:
+    site = _text(f, "site", "Site", required=False, maxlen=30).lower() or "datadoghq.com"
+    if site not in ("datadoghq.com", "datadoghq.eu", "us3.datadoghq.com", "us5.datadoghq.com", "ap1.datadoghq.com"): raise ValueError("Site is datadoghq.com, datadoghq.eu, us3.datadoghq.com, us5.datadoghq.com or ap1.datadoghq.com")
+    alert = _text(f, "alert_type", "Alert type", required=False, maxlen=10).lower() or "info"
+    if alert not in ("error", "warning", "info", "success"): raise ValueError("Alert type is error, warning, info or success")
+    body: dict[str, Any] = {"title": _text(f, "title", "Title", maxlen=100), "text": _text(f, "text", "Text", maxlen=4000), "alert_type": alert}
+    tags = f.get("tags")
+    if tags:
+        if not isinstance(tags, list) or len(tags) > 20 or not all(isinstance(x, str) and len(x) <= 100 for x in tags): raise ValueError("Tags is a list of up to 20 short texts")
+        body["tags"] = tags
+    res = do_request("POST", f"https://api.{site}/api/v1/events", {"DD-API-KEY": secret}, json=body)
+    ev = (res.get("event") if isinstance(res, dict) else None) or {}
+    return {"id": ev.get("id"), "url": ev.get("url")}
+
+
+def app_segment(op: str, secret: str, f: dict) -> Any:
+    body = {"event": _event_name(f), "userId": _text(f, "user_id", "User ID", maxlen=200), "properties": _object(f, "properties", "Properties")}
+    res = do_request("POST", "https://api.segment.io/v1/track", _basic(secret, ""), json=body)
+    return {"success": res.get("success")} if isinstance(res, dict) else res
+
+
+def app_webex(op: str, secret: str, f: dict) -> Any:
+    room = _text(f, "room_id", "Room ID", maxlen=300)
+    if not re.fullmatch(r"[A-Za-z0-9_=\-]{20,300}", room): raise ValueError("Room ID is the long id of the space")
+    res = do_request("POST", "https://webexapis.com/v1/messages", {"Authorization": f"Bearer {secret}"}, json={"roomId": room, "text": _text(f, "text", "Message", maxlen=7000)})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_rocketchat(op: str, secret: str, f: dict) -> Any:
+    uid, token = _pair(secret, "Rocket.Chat", "USER_ID", "AUTH_TOKEN")
+    channel = _text(f, "channel", "Channel", maxlen=100)
+    if not re.fullmatch(r"[#@][A-Za-z0-9_.\-]{1,99}", channel): raise ValueError("Channel looks like #general or @someone")
+    res = do_request("POST", f"{_origin(f)}/api/v1/chat.postMessage", {"X-User-Id": uid, "X-Auth-Token": token}, json={"channel": channel, "text": _text(f, "text", "Message", maxlen=5000)})
+    return {"ok": res.get("success")} if isinstance(res, dict) else res
+
+
+def app_pushbullet(op: str, secret: str, f: dict) -> Any:
+    body = {"type": "note", "title": _text(f, "title", "Title", required=False, maxlen=200), "body": _text(f, "body", "Message", maxlen=4000)}
+    res = do_request("POST", "https://api.pushbullet.com/v2/pushes", {"Access-Token": secret}, json=body)
+    return {"iden": res.get("iden")} if isinstance(res, dict) else res
+
+
+def app_messagebird(op: str, secret: str, f: dict) -> Any:
+    to, sender = _text(f, "to", "To", maxlen=20).lstrip("+"), _text(f, "from", "From", maxlen=11)
+    if not re.fullmatch(r"\d{6,15}", to): raise ValueError("To is a phone number with country code, for example 15551230000")
+    if not re.fullmatch(r"[A-Za-z0-9]{1,16}", sender): raise ValueError("From is a number or a short name (letters and numbers)")
+    res = do_request("POST", "https://rest.messagebird.com/messages", {"Authorization": f"AccessKey {secret}"}, json={"originator": sender, "recipients": [to], "body": _text(f, "text", "Message", maxlen=1600)})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_mailjet(op: str, secret: str, f: dict) -> Any:
+    key, sec = _pair(secret, "Mailjet", "API_KEY", "SECRET_KEY")
+    to, sender, subject, text = _mail_fields(f)
+    res = do_request("POST", "https://api.mailjet.com/v3.1/send", _basic(key, sec), json={"Messages": [{"From": {"Email": sender.split("<")[-1].rstrip(">").strip()}, "To": [{"Email": to}], "Subject": subject, "TextPart": text}]})
+    msgs = (res.get("Messages") if isinstance(res, dict) else None) or [{}]
+    return {"status": msgs[0].get("Status")}
+
+
+def app_loops(op: str, secret: str, f: dict) -> Any:
+    body: dict[str, Any] = {"email": _email(f)}
+    for key, label in (("first_name", "First name"), ("last_name", "Last name"), ("user_group", "User group")):
+        v = _text(f, key, label, required=False, maxlen=100)
+        if v: body[{"first_name": "firstName", "last_name": "lastName", "user_group": "userGroup"}[key]] = v
+    res = do_request("POST", "https://app.loops.so/api/v1/contacts/create", {"Authorization": f"Bearer {secret}"}, json=body)
+    return {"success": res.get("success"), "id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_buttondown(op: str, secret: str, f: dict) -> Any:
+    res = do_request("POST", "https://api.buttondown.email/v1/subscribers", {"Authorization": f"Token {secret}"}, json={"email_address": _email(f)})
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_baserow(op: str, secret: str, f: dict) -> Any:
+    table = _text(f, "table_id", "Table ID", maxlen=12)
+    if not table.isdigit(): raise ValueError("Table ID is a number from the table's address")
+    row = _object(f, "row", "Row", required=True)
+    if not row: raise ValueError("Row needs at least one field")
+    origin = _origin(f) if f.get("server") else "https://api.baserow.io"
+    res = do_request("POST", f"{origin}/api/database/rows/table/{table}/?user_field_names=true", {"Authorization": f"Token {secret}"}, json=row)
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_healthchecks(op: str, secret: str, f: dict) -> Any:
+    check = _text(f, "check_id", "Check ID", maxlen=36)
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", check): raise ValueError("Check ID is the UUID in the check's ping address")
+    status = _text(f, "status", "Status", required=False, maxlen=5).lower()
+    if status not in ("", "start", "fail"): raise ValueError("Status is empty (success), start or fail")
+    res = do_request("GET", f"https://hc-ping.com/{check}" + (f"/{status}" if status else ""), {})
+    return {"ok": str(res).strip() == "OK"}
+
+
+def app_mastodon(op: str, secret: str, f: dict) -> Any:
+    vis = _text(f, "visibility", "Visibility", required=False, maxlen=10).lower() or "unlisted"
+    if vis not in ("public", "unlisted", "private", "direct"): raise ValueError("Visibility is public, unlisted, private or direct")
+    res = do_request("POST", f"{_origin(f)}/api/v1/statuses", {"Authorization": f"Bearer {secret}"}, json={"status": _text(f, "status", "Status", maxlen=5000), "visibility": vis})
+    return {"id": res.get("id"), "url": res.get("url")} if isinstance(res, dict) else res
+
+
+def app_matrix(op: str, secret: str, f: dict) -> Any:
+    room = _text(f, "room_id", "Room ID", maxlen=200)
+    if not re.fullmatch(r"![A-Za-z0-9]{1,100}:[A-Za-z0-9.\-]{1,100}", room): raise ValueError("Room ID looks like !abcdef:example.org (room settings, Advanced)")
+    res = do_request("PUT", f"{_origin(f)}/_matrix/client/v3/rooms/{quote(room, safe='')}/send/m.room.message/{uuid.uuid4().hex}", {"Authorization": f"Bearer {secret}"}, json={"msgtype": "m.text", "body": _text(f, "text", "Message", maxlen=16000)})
+    return {"event_id": res.get("event_id")} if isinstance(res, dict) else res
+
+
+def app_telnyx(op: str, secret: str, f: dict) -> Any:
+    to, sender = _text(f, "to", "To", maxlen=20), _text(f, "from", "From", maxlen=20)
+    for label, num in (("To", to), ("From", sender)):
+        if not re.fullmatch(r"\+\d{6,15}", num): raise ValueError(f"{label} is a phone number in international form, like +15551230000")
+    res = do_request("POST", "https://api.telnyx.com/v2/messages", {"Authorization": f"Bearer {secret}"}, json={"from": sender, "to": to, "text": _text(f, "text", "Message", maxlen=1600)})
+    return {"id": (res.get("data") or {}).get("id")} if isinstance(res, dict) else res
+
+
+def app_zulip(op: str, secret: str, f: dict) -> Any:
+    email, key = _pair(secret, "Zulip", "BOT_EMAIL", "API_KEY")
+    kind = _text(f, "type", "Type", required=False, maxlen=7).lower() or "stream"
+    if kind not in ("stream", "direct"): raise ValueError("Type is stream or direct")
+    data = {"type": kind, "to": _text(f, "to", "To", maxlen=200), "content": _text(f, "content", "Message", maxlen=10000)}
+    if kind == "stream": data["topic"] = _text(f, "topic", "Topic", maxlen=60)
+    res = do_request("POST", f"{_origin(f)}/api/v1/messages", _basic(email, key), data=data)
+    return {"id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_ifttt(op: str, secret: str, f: dict) -> Any:
+    event = _text(f, "event", "Event", maxlen=100)
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,100}", event): raise ValueError("Event name uses letters, numbers, _ and - only")
+    body = {f"value{i}": _text(f, f"value{i}", f"Value {i}", required=False, maxlen=2000) for i in (1, 2, 3)}
+    res = do_request("POST", f"https://maker.ifttt.com/trigger/{event}/with/key/{quote(secret, safe='')}", {}, json={k: v for k, v in body.items() if v})
+    return {"message": str(res)[:200]}
+
+
+def app_uptimekuma(op: str, secret: str, f: dict) -> Any:
+    token = _text(f, "token", "Push token", maxlen=64)
+    if not re.fullmatch(r"[A-Za-z0-9]{8,64}", token): raise ValueError("Push token is the code in the monitor's push address")
+    status = _text(f, "status", "Status", required=False, maxlen=4).lower() or "up"
+    if status not in ("up", "down"): raise ValueError("Status is up or down")
+    res = do_request("GET", f"{_origin(f)}/api/push/{token}", {}, params={"status": status, "msg": _text(f, "message", "Message", required=False, maxlen=200) or "OK"})
+    return {"ok": res.get("ok")} if isinstance(res, dict) else res
+
+
+APP_HANDLERS = {"msteams": app_msteams, "googlechat": app_googlechat, "datadog": app_datadog, "segment": app_segment, "webex": app_webex, "rocketchat": app_rocketchat, "pushbullet": app_pushbullet, "messagebird": app_messagebird, "mailjet": app_mailjet, "loops": app_loops, "buttondown": app_buttondown, "baserow": app_baserow, "healthchecks": app_healthchecks, "mastodon": app_mastodon, "matrix": app_matrix, "telnyx": app_telnyx, "zulip": app_zulip, "ifttt": app_ifttt, "uptimekuma": app_uptimekuma, "mattermost": app_mattermost, "gotify": app_gotify, "cloudflare": app_cloudflare, "posthog": app_posthog, "mixpanel": app_mixpanel, "vonage": app_vonage, "pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:

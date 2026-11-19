@@ -202,6 +202,44 @@ appServices.mixpanel = { label: 'Mixpanel (analytics)', credential: 'Project tok
   track: { label: 'Track an event', example: '{"event": "signup", "distinct_id": "{{email}}", "properties": {"plan": "free"}}', hint: 'event and distinct_id. Optional: properties.' } } };
 appServices.vonage = { label: 'Vonage (SMS)', credential: 'API_KEY:API_SECRET', operations: {
   send_sms: { label: 'Send an SMS', example: '{"to": "15551230000", "from": "FlowPilot", "text": "{{message}}"}', hint: 'to (with country code), from (a number or a name up to 11 letters) and text.' } } };
+appServices.msteams = { label: 'Microsoft Teams', credential: 'Incoming webhook address', operations: {
+  post_message: { label: 'Post a message', example: '"{\\"text\\": \\"{{message}}\\"}"', hint: "text. The credential is the webhook address from the channel's Workflows or Incoming Webhook connector." } } };
+appServices.googlechat = { label: 'Google Chat', credential: 'Space webhook address', operations: {
+  post_message: { label: 'Post a message', example: '"{\\"text\\": \\"{{message}}\\"}"', hint: "text. The credential is the webhook address from the space's Apps and integrations." } } };
+appServices.datadog = { label: 'Datadog', credential: 'API key', operations: {
+  create_event: { label: 'Create an event', example: '"{\\"title\\": \\"Deploy finished\\", \\"text\\": \\"{{message}}\\", \\"alert_type\\": \\"info\\", \\"tags\\": [\\"env:prod\\"], \\"site\\": \\"datadoghq.com\\"}"', hint: 'title and text. Optional: alert_type (error, warning, info, success), tags (list) and site (datadoghq.com, datadoghq.eu, us3., us5. or ap1.datadoghq.com).' } } };
+appServices.segment = { label: 'Segment', credential: 'Source write key', operations: {
+  track: { label: 'Track an event', example: '"{\\"event\\": \\"Signed Up\\", \\"user_id\\": \\"{{email}}\\", \\"properties\\": {\\"plan\\": \\"free\\"}}"', hint: 'event and user_id. Optional: properties.' } } };
+appServices.webex = { label: 'Webex', credential: 'Bot or personal access token', operations: {
+  post_message: { label: 'Post a message', example: '"{\\"room_id\\": \\"\\", \\"text\\": \\"{{message}}\\"}"', hint: 'room_id (the long id of the space) and text.' } } };
+appServices.rocketchat = { label: 'Rocket.Chat (self-hosted chat)', credential: 'USER_ID:AUTH_TOKEN', operations: {
+  post_message: { label: 'Post a message', example: '"{\\"server\\": \\"https://chat.example.com\\", \\"channel\\": \\"#general\\", \\"text\\": \\"{{message}}\\"}"', hint: 'server (the address only), channel (#name or @person) and text. The credential is your user id and a personal access token joined by a colon.' } } };
+appServices.pushbullet = { label: 'Pushbullet', credential: 'Access token', operations: {
+  push_note: { label: 'Push a note', example: '"{\\"title\\": \\"FlowPilot\\", \\"body\\": \\"{{message}}\\"}"', hint: 'body. Optional: title.' } } };
+appServices.messagebird = { label: 'MessageBird (Bird)', credential: 'Access key', operations: {
+  send_sms: { label: 'Send an SMS', example: '"{\\"to\\": \\"15551230000\\", \\"from\\": \\"FlowPilot\\", \\"text\\": \\"{{message}}\\"}"', hint: 'to (with country code), from (a number or a name) and text.' } } };
+appServices.mailjet = { label: 'Mailjet', credential: 'API_KEY:SECRET_KEY', operations: {
+  send_email: { label: 'Send an email', example: '"{\\"to\\": \\"{{email}}\\", \\"from\\": \\"you@yourdomain.com\\", \\"subject\\": \\"Hello\\", \\"text\\": \\"Hi {{name}}\\"}"', hint: 'to, from (a verified sender), subject and text.' } } };
+appServices.loops = { label: 'Loops (email for SaaS)', credential: 'API key', operations: {
+  create_contact: { label: 'Create a contact', example: '"{\\"email\\": \\"{{email}}\\", \\"first_name\\": \\"{{name}}\\"}"', hint: 'email. Optional: first_name, last_name, user_group.' } } };
+appServices.buttondown = { label: 'Buttondown (newsletter)', credential: 'API key', operations: {
+  add_subscriber: { label: 'Add a subscriber', example: '"{\\"email\\": \\"{{email}}\\"}"', hint: 'email.' } } };
+appServices.baserow = { label: 'Baserow (database)', credential: 'Database token', operations: {
+  create_row: { label: 'Create a row', example: '"{\\"table_id\\": \\"\\", \\"row\\": {\\"Name\\": \\"{{name}}\\"}}"', hint: 'table_id (a number) and row (an object of field names and values). Optional: server for a self-hosted Baserow (the address only).' } } };
+appServices.healthchecks = { label: 'Healthchecks.io (cron monitoring)', credential: 'None needed (leave the credential empty)', operations: {
+  ping: { label: 'Send a ping', example: '"{\\"check_id\\": \\"\\", \\"status\\": \\"\\"}"', hint: "check_id (the UUID in the check's ping address). Optional: status (leave empty for success, or start or fail)." } } };
+appServices.uptimekuma = { label: 'Uptime Kuma (self-hosted monitor)', credential: 'None needed (leave the credential empty)', operations: {
+  push: { label: 'Send a push heartbeat', example: '"{\\"server\\": \\"https://status.example.com\\", \\"token\\": \\"\\", \\"status\\": \\"up\\", \\"message\\": \\"OK\\"}"', hint: "server (the address only) and token (the code in the monitor's push address). Optional: status (up or down) and message." } } };
+appServices.mastodon = { label: 'Mastodon', credential: 'Access token with write:statuses', operations: {
+  post_status: { label: 'Post a status', example: '"{\\"server\\": \\"https://mastodon.social\\", \\"status\\": \\"{{message}}\\", \\"visibility\\": \\"unlisted\\"}"', hint: 'server (your instance, the address only) and status. Optional: visibility (public, unlisted, private, direct).' } } };
+appServices.matrix = { label: 'Matrix (Element)', credential: 'Access token', operations: {
+  send_message: { label: 'Send a message', example: '"{\\"server\\": \\"https://matrix.example.org\\", \\"room_id\\": \\"!abc:example.org\\", \\"text\\": \\"{{message}}\\"}"', hint: 'server (your homeserver, the address only), room_id (like !abc:example.org) and text.' } } };
+appServices.telnyx = { label: 'Telnyx (SMS)', credential: 'API key', operations: {
+  send_sms: { label: 'Send an SMS', example: '"{\\"to\\": \\"+15551230000\\", \\"from\\": \\"+15559990000\\", \\"text\\": \\"{{message}}\\"}"', hint: 'to and from, both in international form starting with +, and text.' } } };
+appServices.zulip = { label: 'Zulip (team chat)', credential: 'BOT_EMAIL:API_KEY', operations: {
+  send_message: { label: 'Send a message', example: '"{\\"server\\": \\"https://chat.example.com\\", \\"type\\": \\"stream\\", \\"to\\": \\"general\\", \\"topic\\": \\"news\\", \\"content\\": \\"{{message}}\\"}"', hint: 'server (the address only), to (a stream name, or an email for direct), content, and topic for streams. Optional: type (stream or direct).' } } };
+appServices.ifttt = { label: 'IFTTT Webhooks', credential: 'Webhooks key', operations: {
+  trigger: { label: 'Trigger an event', example: '"{\\"event\\": \\"my_event\\", \\"value1\\": \\"{{message}}\\"}"', hint: 'event (the name you chose in IFTTT). Optional: value1, value2, value3.' } } };
 appServices.sendgrid = { label: 'SendGrid', credential: 'API key starting with SG.', operations: {
   send_email: { label: 'Send an email', example: '{"to": "{{email}}", "from": "you@yourdomain.com", "subject": "Hello", "text": "Hi {{name}}"}', hint: 'to, from (a verified sender), subject and text.' } } };
 appServices.mailchimp = { label: 'Mailchimp', credential: 'API key ending in a data centre, like ...-us21', operations: {
