@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.25
+- Data tables follow projects: a workflow uses the tables of its own project, and people only see the tables of projects they belong to
+- 1065 API tests and a 71-check browser suite
+
 ### v0.24
 - Live run view: the editor follows a run step by step (running nodes pulse, finished nodes turn green or red)
 - 1063 API tests and a 71-check browser suite

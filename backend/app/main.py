@@ -81,7 +81,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.24.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.25.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -154,6 +154,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS oauth_pending (state TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, created_at REAL NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS data_rows (id INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL)")
+        if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(data_rows)")}: db.execute("ALTER TABLE data_rows ADD COLUMN project_id TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_data_rows_tbl ON data_rows (tbl, id)")
         db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
@@ -656,7 +657,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.24.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.25.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -2403,6 +2404,19 @@ def _row_matches(data: dict, flt: dict) -> bool:
     return True
 
 
+def table_scope(project_id: str | None) -> tuple[str, tuple]:
+    """The SQL condition and parameters that limit a query to one project's tables (None means workflows without a project)."""
+    return ("project_id IS NULL", ()) if project_id is None else ("project_id=?", (project_id,))
+
+
+def _table_project() -> str | None:
+    """Tables belong to the project of the workflow that is running (a Run Workflow call uses the called workflow's project)."""
+    stack = _stack_var.get()
+    if not stack: return None
+    with conn() as db: row = db.execute("SELECT project_id FROM workflows WHERE id=?", (stack[-1],)).fetchone()
+    return row["project_id"] if row else None
+
+
 def tool_table(d: dict, previous: Any) -> Any:
     """Built-in data tables: small named tables stored with FlowPilot, so workflows can remember things between runs."""
     op, name = str(d.get("operation") or "find"), str(d.get("table") or "").strip()
@@ -2411,10 +2425,12 @@ def tool_table(d: dict, previous: Any) -> Any:
     except (TypeError, ValueError): raise ValueError("Limit must be a number")
     flt = _table_json(d, "filter", previous, "Filter")
     shown = lambda r: {"_id": r["id"], **json.loads(r["data"])}
+    pid = _table_project()
+    sc, sp = table_scope(pid)
     with conn() as db:
         def room(adding: int) -> None:
-            if not db.execute("SELECT 1 FROM data_rows WHERE tbl=? LIMIT 1", (name,)).fetchone() and db.execute("SELECT COUNT(DISTINCT tbl) AS n FROM data_rows").fetchone()["n"] >= MAX_TABLES: raise ValueError(f"At most {MAX_TABLES} tables")
-            if db.execute("SELECT COUNT(*) AS n FROM data_rows WHERE tbl=?", (name,)).fetchone()["n"] + adding > MAX_TABLE_ROWS: raise ValueError(f"A table holds at most {MAX_TABLE_ROWS} rows")
+            if not db.execute(f"SELECT 1 FROM data_rows WHERE tbl=? AND {sc} LIMIT 1", (name, *sp)).fetchone() and db.execute("SELECT COUNT(*) AS n FROM (SELECT DISTINCT tbl, project_id FROM data_rows) t").fetchone()["n"] >= MAX_TABLES: raise ValueError(f"At most {MAX_TABLES} tables")
+            if db.execute(f"SELECT COUNT(*) AS n FROM data_rows WHERE tbl=? AND {sc}", (name, *sp)).fetchone()["n"] + adding > MAX_TABLE_ROWS: raise ValueError(f"A table holds at most {MAX_TABLE_ROWS} rows")
 
         def encode(row: Any) -> str:
             if not isinstance(row, dict) or not row: raise ValueError("A row must be a JSON object with at least one field")
@@ -2423,20 +2439,20 @@ def tool_table(d: dict, previous: Any) -> Any:
             return text
 
         def matching() -> list:
-            rows = db.execute("SELECT id, data FROM data_rows WHERE tbl=? ORDER BY id", (name,)).fetchall()
+            rows = db.execute(f"SELECT id, data FROM data_rows WHERE tbl=? AND {sc} ORDER BY id", (name, *sp)).fetchall()
             return [r for r in rows if _row_matches(json.loads(r["data"]), flt)]
 
         if op == "insert":
             text = encode(_table_json(d, "row", previous, "Row", required=True))
             room(1)
-            cur = db.execute("INSERT INTO data_rows (tbl, data, created_at) VALUES (?,?,?)", (name, text, now()))
+            cur = db.execute("INSERT INTO data_rows (tbl, data, created_at, project_id) VALUES (?,?,?,?)", (name, text, now(), pid))
             return {"_id": cur.lastrowid, **json.loads(text)}
         if op == "insert_all":
             if not isinstance(previous, list) or not previous: raise ValueError("Insert every item needs a list of objects as input")
             if len(previous) > 1000: raise ValueError("Insert at most 1000 rows at a time")
             texts = [encode(x) for x in previous]
             room(len(texts))
-            db.executemany("INSERT INTO data_rows (tbl, data, created_at) VALUES (?,?,?)", [(name, x, now()) for x in texts])
+            db.executemany("INSERT INTO data_rows (tbl, data, created_at, project_id) VALUES (?,?,?,?)", [(name, x, now(), pid) for x in texts])
             return {"inserted": len(texts)}
         if op == "find":
             found = matching()
@@ -2446,7 +2462,7 @@ def tool_table(d: dict, previous: Any) -> Any:
         if op == "get":
             rid = render_template(str(d.get("row_id") or ""), previous).strip()
             if not rid.isdigit(): raise ValueError("Row ID is a number")
-            r = db.execute("SELECT id, data FROM data_rows WHERE tbl=? AND id=?", (name, int(rid))).fetchone()
+            r = db.execute(f"SELECT id, data FROM data_rows WHERE tbl=? AND id=? AND {sc}", (name, int(rid), *sp)).fetchone()
             return shown(r) if r else None
         if op == "update":
             changes = _table_json(d, "values", previous, "Values", required=True)
@@ -2461,7 +2477,7 @@ def tool_table(d: dict, previous: Any) -> Any:
             db.executemany("DELETE FROM data_rows WHERE id=?", [(r["id"],) for r in hits])
             return {"deleted": len(hits)}
         if op == "clear":
-            return {"deleted": db.execute("DELETE FROM data_rows WHERE tbl=?", (name,)).rowcount}
+            return {"deleted": db.execute(f"DELETE FROM data_rows WHERE tbl=? AND {sc}", (name, *sp)).rowcount}
     raise ValueError(f"Unknown operation: {op}")
 
 
@@ -3638,34 +3654,50 @@ def _table_or_404(name: str) -> str:
     return name
 
 
+def check_table_project(request: Request, project_id: str | None) -> None:
+    actor = getattr(request.state, "actor", None)
+    if project_id is None or sees_everything(actor): return
+    if project_id not in my_project_ids(actor): raise HTTPException(404, "Table not found")
+
+
 @app.get("/api/tables")
-def list_tables():
-    with conn() as db: rows = db.execute("SELECT tbl AS name, COUNT(*) AS rows, MAX(created_at) AS last_added FROM data_rows GROUP BY tbl ORDER BY tbl").fetchall()
-    return [dict(r) for r in rows]
+def list_tables(request: Request):
+    actor = getattr(request.state, "actor", None)
+    with conn() as db:
+        rows = db.execute("SELECT tbl AS name, project_id, COUNT(*) AS rows, MAX(created_at) AS last_added FROM data_rows GROUP BY tbl, project_id ORDER BY tbl").fetchall()
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM projects").fetchall()}
+    allowed_projects = None if sees_everything(actor) else my_project_ids(actor)
+    return [{**dict(r), "project_name": names.get(r["project_id"])} for r in rows if allowed_projects is None or r["project_id"] is None or r["project_id"] in allowed_projects]
 
 
 @app.get("/api/tables/{name}")
-def read_table(name: str, limit: int = 200):
+def read_table(name: str, request: Request, project_id: str | None = None, limit: int = 200):
     name = _table_or_404(name)
+    check_table_project(request, project_id)
+    sc, sp = table_scope(project_id)
     with conn() as db:
-        total = db.execute("SELECT COUNT(*) AS n FROM data_rows WHERE tbl=?", (name,)).fetchone()["n"]
+        total = db.execute(f"SELECT COUNT(*) AS n FROM data_rows WHERE tbl=? AND {sc}", (name, *sp)).fetchone()["n"]
         if not total: raise HTTPException(404, "Table not found")
-        rows = db.execute("SELECT id, data, created_at FROM data_rows WHERE tbl=? ORDER BY id DESC LIMIT ?", (name, max(1, min(limit, 1000)))).fetchall()
-    return {"name": name, "total": total, "rows": [{"_id": r["id"], "added": r["created_at"], **json.loads(r["data"])} for r in rows]}
+        rows = db.execute(f"SELECT id, data, created_at FROM data_rows WHERE tbl=? AND {sc} ORDER BY id DESC LIMIT ?", (name, *sp, max(1, min(limit, 1000)))).fetchall()
+    return {"name": name, "project_id": project_id, "total": total, "rows": [{"_id": r["id"], "added": r["created_at"], **json.loads(r["data"])} for r in rows]}
 
 
 @app.delete("/api/tables/{name}/rows/{row_id}")
-def delete_table_row(name: str, row_id: int):
+def delete_table_row(name: str, row_id: int, request: Request, project_id: str | None = None):
     name = _table_or_404(name)
+    check_table_project(request, project_id)
+    sc, sp = table_scope(project_id)
     with conn() as db:
-        if not db.execute("DELETE FROM data_rows WHERE tbl=? AND id=?", (name, row_id)).rowcount: raise HTTPException(404, "Row not found")
+        if not db.execute(f"DELETE FROM data_rows WHERE tbl=? AND id=? AND {sc}", (name, row_id, *sp)).rowcount: raise HTTPException(404, "Row not found")
     return {"deleted": 1}
 
 
 @app.delete("/api/tables/{name}")
-def clear_table(name: str):
+def clear_table(name: str, request: Request, project_id: str | None = None):
     name = _table_or_404(name)
-    with conn() as db: n = db.execute("DELETE FROM data_rows WHERE tbl=?", (name,)).rowcount
+    check_table_project(request, project_id)
+    sc, sp = table_scope(project_id)
+    with conn() as db: n = db.execute(f"DELETE FROM data_rows WHERE tbl=? AND {sc}", (name, *sp)).rowcount
     if not n: raise HTTPException(404, "Table not found")
     return {"deleted": n}
 

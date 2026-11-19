@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from conftest import edge, make_flow, node
 
@@ -126,3 +127,84 @@ def test_workflow_list_carries_search_text(client):
     wid = make_flow(client, [node("t", "trigger"), node("d", "table", table="Quarterly_Leads", operation="count"), node("o", "output")], [edge("t", "d"), edge("d", "o")], name="Search me")
     row = next(w for w in client.get("/api/workflows").json() if w["id"] == wid)
     assert "quarterly_leads" in row["search"] and "table" in row["search"]
+
+
+# ---------------------------------------------------------------- projects
+def _project_world(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    a = client.post("/api/projects", json={"name": "Alpha"}).json()["id"]
+    b = client.post("/api/projects", json={"name": "Beta"}).json()["id"]
+    ids = {}
+    for name in ("ann", "bob"):
+        res = client.post("/api/users", json={"username": name, "password": "long-enough-pw", "role": "editor"})
+        assert res.status_code == 201
+        ids[name] = res.json()["id"]
+    client.put(f"/api/projects/{a}", json={"user_ids": [ids["ann"]]})
+    client.put(f"/api/projects/{b}", json={"user_ids": [ids["bob"]]})
+    people = {}
+    for name in ("ann", "bob"):
+        c = TestClient(app)
+        assert c.post("/api/auth/login", json={"username": name, "password": "long-enough-pw"}).status_code == 200
+        people[name] = c
+    return a, b, people
+
+
+def _table_flow(client, project, row):
+    nodes = [node("t", "trigger"), node("d", "table", table="shared", operation="insert", row=row), node("o", "output")]
+    wid = make_flow(client, nodes, [edge("t", "d"), edge("d", "o")])
+    if project:
+        from app import main
+        with main.conn() as db: db.execute("UPDATE workflows SET project_id=? WHERE id=?", (project, wid))
+    return wid
+
+
+@pytest.fixture()
+def project_cleanup(client):
+    yield
+    from app import main
+    with main.conn() as db:
+        db.execute("DELETE FROM project_members")
+        db.execute("DELETE FROM projects")
+        db.execute("UPDATE workflows SET project_id=NULL")
+        db.execute("DELETE FROM users WHERE role != 'owner'")
+
+
+def test_each_project_has_its_own_tables_with_the_same_name(client, project_cleanup):
+    a, b, people = _project_world(client)
+    for project, who in ((a, "alpha"), (b, "beta"), (None, "plain")):
+        wid = _table_flow(client, project, json.dumps({"who": who}))
+        assert client.post(f"/api/workflows/{wid}/run").json()["status"] == "success"
+    # a workflow only finds the rows of its own project
+    def finder(project):
+        nodes = [node("t", "trigger"), node("d", "table", table="shared", operation="find"), node("o", "output")]
+        wid = make_flow(client, nodes, [edge("t", "d"), edge("d", "o")])
+        if project:
+            from app import main
+            with main.conn() as db: db.execute("UPDATE workflows SET project_id=? WHERE id=?", (project, wid))
+        return [r["who"] for r in client.post(f"/api/workflows/{wid}/run").json()["output"]]
+    assert finder(a) == ["alpha"] and finder(b) == ["beta"] and finder(None) == ["plain"]
+
+
+def test_people_only_see_and_change_tables_of_their_projects(client, project_cleanup):
+    a, b, people = _project_world(client)
+    for project, who in ((a, "alpha"), (b, "beta"), (None, "plain")):
+        client.post(f"/api/workflows/{_table_flow(client, project, json.dumps({'who': who}))}/run")
+    owner_view = {(t["project_id"], t["name"]) for t in client.get("/api/tables").json()}
+    assert owner_view == {(a, "shared"), (b, "shared"), (None, "shared")}
+    ann = {(t["project_id"], t["project_name"]) for t in people["ann"].get("/api/tables").json()}
+    assert ann == {(a, "Alpha"), (None, None)}
+    assert people["ann"].get("/api/tables/shared", params={"project_id": a}).json()["rows"][0]["who"] == "alpha"
+    assert people["ann"].get("/api/tables/shared").json()["rows"][0]["who"] == "plain"
+    # Beta's table looks like it does not exist to Ann, for reading and for changing
+    assert people["ann"].get("/api/tables/shared", params={"project_id": b}).status_code == 404
+    beta_row = client.get("/api/tables/shared", params={"project_id": b}).json()["rows"][0]["_id"]
+    assert people["ann"].delete(f"/api/tables/shared/rows/{beta_row}", params={"project_id": b}).status_code == 404
+    assert people["ann"].delete("/api/tables/shared", params={"project_id": b}).status_code == 404
+    assert client.get("/api/tables/shared", params={"project_id": b}).json()["total"] == 1
+    # her own table can be changed
+    own_row = people["ann"].get("/api/tables/shared", params={"project_id": a}).json()["rows"][0]["_id"]
+    assert people["ann"].delete(f"/api/tables/shared/rows/{own_row}", params={"project_id": a}).status_code == 200
+    # the unassigned table and the other project's table are separate rows
+    assert client.get("/api/tables/shared").json()["total"] == 1
+    assert client.delete("/api/tables/shared", params={"project_id": b}).json() == {"deleted": 1}

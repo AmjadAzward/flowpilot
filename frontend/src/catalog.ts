@@ -117,7 +117,7 @@ export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = 
     { key: 'unit', label: 'Unit', kind: 'select', options: [['seconds', 'Seconds'], ['minutes', 'Minutes'], ['hours', 'Hours'], ['days', 'Days'], ['weeks', 'Weeks']], when: { operation: ['add', 'subtract', 'diff'] } },
     { key: 'other', label: 'Second date', kind: 'text', when: { operation: ['diff'] } },
     { key: 'format', label: 'Format', kind: 'text', placeholder: '%Y-%m-%d', when: { operation: ['format'] } }] },
-  table: { hint: 'A small table kept inside FlowPilot (up to 10,000 rows, 50 tables). It is shared by every workflow that uses the same table name, so use it to remember what a workflow has already handled. Filters match fields exactly, like {"email": "a@b.co"}.', fields: [
+  table: { hint: 'A small table kept inside FlowPilot (up to 10,000 rows, 50 tables). It is shared by every workflow of the same project that uses the same table name (workflows without a project share one set), so use it to remember what a workflow has already handled. Filters match fields exactly, like {"email": "a@b.co"}.', fields: [
     { key: 'table', label: 'Table name', kind: 'text', placeholder: 'customers' },
     { key: 'operation', label: 'Action', kind: 'select', options: [['insert', 'Add a row'], ['insert_all', 'Add every item of the list'], ['find', 'Find rows'], ['get', 'Get a row by ID'], ['count', 'Count rows'], ['update', 'Change rows'], ['delete', 'Delete rows'], ['clear', 'Empty the table']] },
     { key: 'row', label: 'Row (JSON)', kind: 'text', placeholder: '{"email": "{{email}}", "plan": "free"}', when: { operation: ['insert'] } },

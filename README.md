@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1063%20API%20%2B%2071%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1065%20API%20%2B%2071%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -93,7 +93,7 @@
 | **App Action node** | Forty-five services behind one node: Slack, Discord, Notion, Airtable, Stripe, Twilio, Linear, HubSpot, SendGrid, Mailchimp, Trello, Asana, Jira, Todoist, GitLab, ntfy (free push notifications), Shopify, Zendesk, Pipedrive, ClickUp, monday.com, Dropbox, Resend, Postmark, WhatsApp (Cloud API), Pushover, Brevo, Mailgun, Telegram, GitHub, PagerDuty, Opsgenie, Intercom, Freshdesk, Supabase, Bitly, ConvertKit, Mattermost, Gotify, Cloudflare, PostHog, Mixpanel, Vonage, and Google Calendar and Google Drive (which use a connected Google account). These are tested against simulated servers only, so try each one with a test account before relying on it |
 | **Data tools** | Sort, Limit, Remove Duplicates, Split Out, Summarize (count, sum, average, min, max, collect), Rename Keys, Date and Time (add, subtract, compare, format), Crypto and Encoding, Data Table (small tables kept inside FlowPilot to remember rows between runs), and Convert Data (text to JSON and back, XML to JSON, pick text from a web page, URL encoding) (SHA, MD5, HMAC signatures, base64, random IDs) |
 | **Live run view** | The Run button follows the run while it works: each node pulses while it runs and turns green or red as it finishes, and the run panel fills in step by step. Credential values are hidden in the live view as they are in finished runs. Only runs started from the editor are live, and a run is kept in memory for two minutes after it ends (it is stored in the history as usual) |
-| **Data tables page** | The Data tables page in the sidebar lists every table and its rows (newest first) and lets editors remove a row or empty a table. Tables are not limited by project: every signed-in person (viewers included) can read every table, so do not store anything in a table that some of your users should not see |
+| **Data tables page** | The Data tables page in the sidebar lists every table and its rows (newest first) and lets editors remove a row or empty a table. Tables follow projects: a workflow reads and writes the tables of its own project, workflows without a project share one set, and people only see the tables of projects they belong to (owners and admins see all). Moving a workflow to another project makes it see that project's tables instead. Rows added before v0.25 count as belonging to no project |
 | **Search inside workflows** | The Overview search also finds workflows by node type and the text typed into node settings, not just by name and tag |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
@@ -283,7 +283,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1063 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1065 tests, use a temporary database and key):
 
 ```powershell
 cd backend
