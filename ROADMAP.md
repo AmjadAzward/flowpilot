@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.24
+- Live run view: the editor follows a run step by step (running nodes pulse, finished nodes turn green or red)
+- 1063 API tests and a 71-check browser suite
+
 ### v0.23
 - Postgres storage: set FLOWPILOT_DATABASE_URL and FlowPilot keeps everything in Postgres (all tests and all 70 browser checks pass against a real Postgres 16)
 - pg_test.py and e2e_pg.py run the tests against a throwaway Postgres with no installation

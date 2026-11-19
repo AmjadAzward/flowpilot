@@ -6,7 +6,7 @@ import { catalog, startTypes } from './catalog';
 export const icons: Record<string, typeof Zap> = { Zap, Braces, ListTree, Type, GitBranch, Timer, Globe, ArrowRight, Flag, CalendarClock, Webhook, Repeat, GitMerge, Workflow, PenLine, Filter, Table, Bell, Mail, Code, OctagonX, Split, Database, Rss, Hourglass, Send, Github, Reply, Sheet, MailCheck, Bot, StickyNote, FileText, MailOpen, RotateCw, Plug, Radar, Sparkles, UserCheck, ArrowUpDown, ListEnd, CopyMinus, Ungroup, Sigma, TextCursorInput, CalendarDays, KeyRound };
 
 /** Per-node result of the latest run: success, error, or skipped (branch not taken). */
-export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped'>>({});
+export const RunStateContext = createContext<Record<string, 'success' | 'error' | 'skipped' | 'running'>>({});
 
 export function WorkflowNode({ id, data, selected, type }: NodeProps) {
   const states = useContext(RunStateContext);
@@ -26,7 +26,7 @@ export function WorkflowNode({ id, data, selected, type }: NodeProps) {
       {!!String(data.pin ?? '').trim() && <span className="fp-pin" title="Pinned data: this node will not run"><Pin size={10} /></span>}
       {state && (
         <span className={`fp-node-badge ${state}`} title={state}>
-          {state === 'success' ? <Check size={11} /> : state === 'error' ? <X size={11} /> : <Minus size={11} />}
+          {state === 'success' ? <Check size={11} /> : state === 'error' ? <X size={11} /> : state === 'running' ? <span className="run-dot" /> : <Minus size={11} />}
         </span>
       )}
       {type === 'loop' || type === 'repeat' ? (

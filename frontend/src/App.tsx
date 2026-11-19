@@ -4,7 +4,7 @@ import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
   History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
 } from 'lucide-react';
-import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templateGroup, templateGroups, templates, type FlowDoc, type Run, type TriggerKind } from './catalog';
+import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templateGroup, templateGroups, templates, type FlowDoc, type Run, type Step, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
 import { MiniFlow } from './MiniFlow';
 import { NodeSettings } from './NodeSettings';
@@ -194,7 +194,14 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     setBusy(true);
     try {
       if (!(await saveFlow(true))) return;
-      const result = await api<Run>(`/api/workflows/${selectedId}/run`, { method: 'POST' });
+      const started = await api<{ id: string }>(`/api/workflows/${selectedId}/run?live=true`, { method: 'POST' });
+      let result: Run | null = null;
+      while (!result) {
+        await new Promise(r => setTimeout(r, 250));
+        const snap = await api<{ steps: Step[]; result: Run | null }>(`/api/live/${started.id}`);
+        if (snap.result) result = snap.result;
+        else setLastRun({ id: started.id, status: 'running', error: null, output: null, steps: snap.steps });
+      }
       setLastRun(result); await refresh();
       notify(result.status === 'success' ? 'Workflow completed' : result.status === 'waiting' ? `Workflow is waiting until ${formatTime(result.wait?.resume_at)}` : 'Workflow failed: see the run panel', result.status === 'failed' ? 'error' : 'ok');
     } catch (e) { notify((e as Error).message, 'error'); } finally { setBusy(false); }
@@ -465,9 +472,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   const runStates = useMemo(() => {
     if (!lastRun) return {};
-    const done = new Map<string, 'success' | 'error'>();
-    for (const s of lastRun.steps) done.set(s.node_id, s.status === 'error' || done.get(s.node_id) === 'error' ? 'error' : 'success');
-    return Object.fromEntries(nodes.map(n => [n.id, done.get(n.id) ?? 'skipped'])) as Record<string, 'success' | 'error' | 'skipped'>;
+    const done = new Map<string, 'success' | 'error' | 'running'>();
+    for (const s of lastRun.steps) done.set(s.node_id, !s.status ? 'running' : s.status === 'error' || done.get(s.node_id) === 'error' ? 'error' : 'success');
+    if (lastRun.status === 'running') return Object.fromEntries(nodes.filter(n => done.has(n.id)).map(n => [n.id, done.get(n.id)!])) as Record<string, 'success' | 'error' | 'skipped' | 'running'>;
+    return Object.fromEntries(nodes.map(n => [n.id, done.get(n.id) ?? 'skipped'])) as Record<string, 'success' | 'error' | 'skipped' | 'running'>;
   }, [lastRun, nodes]);
 
   const startKind = useMemo(() => {
@@ -726,21 +734,21 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             {lastRun && (
               <div className="run-panel" data-testid="run-panel">
                 <div className="run-head">
-                  <strong><span className={'dot ' + (lastRun.status === 'success' ? 'on' : lastRun.status === 'waiting' ? 'warn' : 'off')} />{lastRun.status === 'success' ? 'Execution successful' : lastRun.status === 'waiting' ? 'Waiting to continue' : 'Execution failed'}
+                  <strong><span className={'dot ' + (lastRun.status === 'success' ? 'on' : lastRun.status === 'waiting' || lastRun.status === 'running' ? 'warn' : 'off')} />{lastRun.status === 'success' ? 'Execution successful' : lastRun.status === 'running' ? 'Running...' : lastRun.status === 'waiting' ? 'Waiting to continue' : 'Execution failed'}
                     <small>{lastRun.steps.reduce((t, s) => t + (s.duration_ms ?? 0), 0).toFixed(1)} ms total</small></strong>
                   <button className="icon-button" aria-label="Close run panel" onClick={() => setLastRun(null)}><X size={17} /></button>
                 </div>
                 <div className="run-body">
                   <div className="run-steps">
                     {lastRun.steps.map((s, i) => (
-                      <div key={i} className={'run-step ' + s.status}>
-                        <span className="step-mark">{s.status === 'success' ? '✓' : s.status === 'waiting' ? '…' : '!'}</span>
+                      <div key={i} className={'run-step ' + (s.status ?? 'running')}>
+                        <span className="step-mark">{s.status === 'success' ? '✓' : s.status === 'waiting' || !s.status ? '…' : '!'}</span>
                         <span className="step-label">{s.label}{s.iteration && <em className="iter">#{s.iteration.map(k => k + 1).join('.')}</em>}{s.pinned && <em className="pin-chip">pinned</em>}{s.branch && <em className={'branch-tag ' + s.branch}>{s.branch}</em>}</span>
                         <span className="step-ms">{s.duration_ms != null ? `${s.duration_ms} ms` : ''}</span>
                       </div>
                     ))}
                   </div>
-                  <pre>{pretty(lastRun.status === 'success' ? lastRun.output : lastRun.status === 'waiting' ? { waiting_until: lastRun.wait?.resume_at, note: 'The run continues by itself. Follow it on the Executions page.' } : { error: lastRun.error, steps: lastRun.steps })}</pre>
+                  <pre>{pretty(lastRun.status === 'running' ? { running: 'The workflow is still working. Steps appear as they finish.' } : lastRun.status === 'success' ? lastRun.output : lastRun.status === 'waiting' ? { waiting_until: lastRun.wait?.resume_at, note: 'The run continues by itself. Follow it on the Executions page.' } : { error: lastRun.error, steps: lastRun.steps })}</pre>
                 </div>
               </div>
             )}

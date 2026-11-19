@@ -81,7 +81,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.23.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.24.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -656,7 +656,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.23.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.24.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -866,6 +866,7 @@ _fernets: dict[str, Fernet] = {}
 _secrets_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_secrets", default={})
 _vars_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_vars", default={})
 _run_var: contextvars.ContextVar[dict] = contextvars.ContextVar("fp_run", default={})
+_live_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("fp_live", default=None)
 _stack_var: contextvars.ContextVar[tuple] = contextvars.ContextVar("fp_call_stack", default=())
 
 
@@ -3332,6 +3333,8 @@ class Graph:
                 self.inc[e["target"]].append(e)
         self.steps: list[dict] = []
         self.iter: list[int] = []
+        live = _live_var.get()
+        if live is not None and live["steps"] is None: live["steps"] = self.steps
         self.suspended: dict | None = None
         timeout = (doc.get("settings") or {}).get("timeout_seconds")
         self.limit = int(timeout) if timeout else 0
@@ -3723,6 +3726,8 @@ def run_links(exec_id: str | None) -> dict:
 def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_id: str | None = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
     secrets_ = load_secrets()
+    live = _live_var.get()
+    if live is not None: live["secrets"] = secrets_
     holder: dict = {}
     t1, t2, t3, t4, t5 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables()), _run_var.set(run_links(exec_id))
     try: result = _execute(doc, initial, resume)
@@ -3736,9 +3741,9 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_i
     return redact(result, secrets_)
 
 
-def execute_workflow(doc: dict, kind: str, initial: Any = None) -> dict:
+def execute_workflow(doc: dict, kind: str, initial: Any = None, exec_id: str | None = None) -> dict:
     """Run a workflow and store the execution. `initial` may be a callable so input errors are recorded as failed runs."""
-    exec_id, started = str(uuid.uuid4()), now()
+    exec_id, started = exec_id or str(uuid.uuid4()), now()
     try: result = run_flow(doc, initial() if callable(initial) else initial, exec_id=exec_id)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     policy = (doc.get("settings") or {}).get("save_runs", "all")
@@ -3944,8 +3949,50 @@ class RunIn(BaseModel):
     input: Any = None
 
 
+# Live runs: a manual run started with ?live=true runs in a background thread, and its steps can be read while it works.
+LIVE_RUNS: dict[str, dict] = {}
+LIVE_LOCK = threading.Lock()
+MAX_LIVE_RUNS = 40
+LIVE_KEEP_SECONDS = 120
+
+
+def live_register(workflow_id: str) -> dict:
+    with LIVE_LOCK:
+        cutoff = time.time() - LIVE_KEEP_SECONDS
+        for key in [k for k, r in LIVE_RUNS.items() if r.get("finished") and r["finished"] < cutoff]: LIVE_RUNS.pop(key, None)
+        if len(LIVE_RUNS) >= MAX_LIVE_RUNS: raise HTTPException(429, "Too many runs are in progress. Try again in a moment.")
+        rec = {"id": str(uuid.uuid4()), "workflow_id": workflow_id, "steps": None, "secrets": {}, "result": None, "finished": None}
+        LIVE_RUNS[rec["id"]] = rec
+        return rec
+
+
+def live_steps(rec: dict) -> list:
+    """A copy of the steps so far with credential values hidden. The list is being changed by the run, so a rare clash is retried."""
+    for _ in range(5):
+        try: return redact(json.loads(json.dumps(list(rec["steps"] or []), default=str)), rec.get("secrets") or {})
+        except RuntimeError: time.sleep(0.01)
+    return []
+
+
+def live_worker(rec: dict, doc: dict, initial: Any) -> None:
+    _live_var.set(rec)
+    try: result = execute_workflow(doc, "manual", initial, exec_id=rec["id"])
+    except Exception as exc: result = {"id": rec["id"], "workflow_id": doc["id"], "trigger": "manual", "status": "failed", "output": None, "steps": [], "error": str(exc)}
+    rec["result"], rec["finished"] = result, time.time()
+
+
+@app.get("/api/live/{run_id}")
+def live_run(run_id: str, request: Request):
+    rec = LIVE_RUNS.get(run_id)
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    if not rec or (visible is not None and rec["workflow_id"] not in visible): raise HTTPException(404, "That run is no longer available")
+    result = rec["result"]
+    if result is not None: return {"id": run_id, "status": result["status"], "steps": result["steps"], "result": result}
+    return {"id": run_id, "status": "running", "steps": live_steps(rec), "result": None}
+
+
 @app.post("/api/workflows/{workflow_id}/run")
-def run_workflow(workflow_id: str, body: RunIn | None = None):
+def run_workflow(workflow_id: str, body: RunIn | None = None, live: bool = False):
     """Manual run. Schedule and webhook workflows are fed a test event so they can be tried before activating."""
     doc = get_workflow(workflow_id)
     node = start_node(doc)
@@ -3961,6 +4008,10 @@ def run_workflow(workflow_id: str, body: RunIn | None = None):
         if node and node["type"] == "email_in": return SAMPLE_EMAIL
         if node and node["type"] == "poll_in": return SAMPLE_POLL_ITEM
         return None
+    if live:
+        rec = live_register(workflow_id)
+        threading.Thread(target=live_worker, args=(rec, doc, initial), daemon=True, name="flowpilot-live-run").start()
+        return {"id": rec["id"], "workflow_id": workflow_id, "status": "running", "live": True}
     return execute_workflow(doc, "manual", initial)
 
 

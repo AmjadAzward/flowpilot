@@ -1366,6 +1366,25 @@ await check('workflow search also finds node settings', async () => {
   await page.getByLabel('Search workflows').fill('');
 });
 
+await check('a run shows its progress live: the slow step pulses, then everything completes', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 600 : id === 'd' ? 400 : id === 'i' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Live view flow', description: '', nodes: [node('t', 'trigger'), node('i', 'input', { json: '{"a": 1}' }), node('d', 'delay', { seconds: '2.5' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'i' }, { id: 'b', source: 'i', target: 'd' }, { id: 'c', source: 'd', target: 'o' }] };
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Live view flow$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await page.locator('.fp-node.state-running').waitFor({ timeout: 5000 });
+  await expectText(runPanel(), /Running/);
+  if ((await page.locator('.fp-node.state-success').count()) < 2) throw new Error('finished steps should already show as done while the delay runs');
+  await expectText(runPanel(), /Execution successful/);
+  if ((await page.locator('.fp-node.state-running').count()) !== 0) throw new Error('nothing should still be running');
+  await shot('23-live-run');
+});
+
 await check('settings page renders', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await expectText(page.locator('h1'), /Settings/);
