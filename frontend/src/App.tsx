@@ -297,10 +297,11 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     try {
       const doc = JSON.parse(await file.text());
       const looksLikeN8n = doc && typeof doc.connections === 'object' && Array.isArray(doc.nodes) && doc.nodes.some((n: { type?: unknown }) => typeof n.type === 'string' && n.type.includes('.'));
-      if (looksLikeN8n) {
-        const conv = await api<{ name: string; description: string; nodes: Node[]; edges: Edge[]; warnings: ImportInfo['warnings']; summary: { nodes: number; placeholders: number } }>('/api/import/n8n', { method: 'POST', body: JSON.stringify(doc) });
+      const looksLikeMake = doc && Array.isArray(doc.flow) && !Array.isArray(doc.nodes);
+      if (looksLikeN8n || looksLikeMake) {
+        const conv = await api<{ name: string; description: string; nodes: Node[]; edges: Edge[]; warnings: ImportInfo['warnings']; summary: { nodes: number; placeholders: number } }>(looksLikeMake ? '/api/import/make' : '/api/import/n8n', { method: 'POST', body: JSON.stringify(doc) });
         await createFlow(conv.name, conv.description, conv.nodes, conv.edges);
-        setImportInfo({ name: conv.name, nodes: conv.summary.nodes, placeholders: conv.summary.placeholders, warnings: conv.warnings });
+        setImportInfo({ name: conv.name, nodes: conv.summary.nodes, placeholders: conv.summary.placeholders, warnings: conv.warnings, source: looksLikeMake ? 'Make' : 'n8n' });
         return;
       }
       if (!Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) throw Error('Invalid workflow file');

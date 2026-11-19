@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.27
+- Import from Make: blueprint conversion with warnings for everything that cannot be carried over (tested with self-written blueprints only)
+- 1083 API tests and a 71-check browser suite
+
 ### v0.26
 - Nineteen more App Action services (64 in all): Microsoft Teams, Google Chat, Datadog, Segment, Webex, Rocket.Chat, Pushbullet, MessageBird, Mailjet, Loops, Buttondown, Baserow, Healthchecks.io, Uptime Kuma, Mastodon, Matrix, Telnyx, Zulip, IFTTT (simulated-server tests only)
 - 1075 API tests and a 71-check browser suite
