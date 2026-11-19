@@ -482,7 +482,7 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
       if (!form) return null;
       return (
         <>
-          {form.fields.filter(f => !f.when || Object.entries(f.when).every(([k, vals]) => vals.includes(v(k, k === 'operation' ? (node.type === 'crypto' ? 'sha256' : node.type === 'aggregate' ? 'count' : 'add') : '')))).map(f => (
+          {form.fields.filter(f => !f.when || Object.entries(f.when).every(([k, vals]) => vals.includes(v(k, k === 'operation' ? (node.type === 'crypto' ? 'sha256' : node.type === 'convert' ? 'json_parse' : node.type === 'aggregate' ? 'count' : 'add') : '')))).map(f => (
             <label key={f.key}>{f.label}
               {f.kind === 'select'
                 ? <select value={v(f.key, f.options?.[0][0])} onChange={text(f.key)}>{f.options?.map(([val, lab]) => <option key={val} value={val}>{lab}</option>)}</select>

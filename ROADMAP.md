@@ -28,8 +28,9 @@ This file describes planned functionality, **not current features**.
 - 126 API tests and a 27-check browser suite
 
 ### v0.20
-- Four more App Action services (32 in all): Brevo, Mailgun, Telegram bot, GitHub issues and comments
-- 1012 API tests and a 68-check browser suite
+- Eleven more App Action services (39 in all): Brevo, Mailgun, Telegram bot, GitHub, PagerDuty, Opsgenie, Intercom, Freshdesk, Supabase, Bitly, ConvertKit
+- Convert Data node (text to JSON and back, XML to JSON with entity definitions refused, pick text from a web page, URL encoding)
+- 1026 API tests and a 68-check browser suite
 
 ### v0.19
 - Single sign-on with OpenID Connect (code flow with PKCE, ID tokens verified in FlowPilot, domain allow-list, no takeover of local accounts)

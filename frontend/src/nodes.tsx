@@ -79,6 +79,7 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'aggregate': return clip(`${s('operation') || 'count'}${s('path') ? ' of ' + s('path') : ''}`);
     case 'rename': return 'change field names';
     case 'datetime': return clip((s('operation') || 'add').replace('diff', 'time between'));
+    case 'convert': return clip((s('operation') || 'json_parse').replace(/_/g, ' '));
     case 'crypto': return clip((s('operation') || 'sha256').replace(/_/g, ' '));
     case 'app': return s('service') ? clip(`${s('service')}: ${s('operation').replace(/_/g, ' ')}`) : 'choose a service';
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';

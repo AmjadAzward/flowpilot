@@ -30,6 +30,7 @@ import tempfile
 import ssl
 import uuid
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -202,7 +203,7 @@ def validate_flow(body: WorkflowIn):
     if any(not isinstance(i, str) or not i for i in ids) or len(ids) != len(set(ids)):
         raise HTTPException(400, "Node IDs must be unique nonempty strings")
     valid = START_TYPES | {"input", "transform", "condition", "output", "http", "note", "template", "delay",
-                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "callback", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto"}
+                           "loop", "merge", "set", "filter", "csv", "notify", "email", "subflow", "switch", "code", "fail", "sql", "rss", "telegram", "github", "wait", "respond", "sheets", "gmail", "sticky", "ai", "repeat", "file", "app", "agent", "callback", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert"}
     if any(n.get("type") not in valid for n in body.nodes): raise HTTPException(400, "Unknown node type")
     for e in body.edges:
         if e.get("source") not in ids or e.get("target") not in ids:
@@ -1252,9 +1253,9 @@ def parse_csv_text(d: dict, previous: Any) -> list:
     return [dict(zip(keys, row)) for row in rows[1:]]
 
 
-PINNABLE = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
+PINNABLE = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "app", "input", "transform", "template", "http", "delay", "set", "filter", "csv", "notify", "email", "subflow", "code", "sql", "rss", "sheets", "ai", "file"}
 # Nodes that support retries and "continue on error".
-ERROR_SETTINGS = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
+ERROR_SETTINGS = {"agent", "sort", "limit", "dedupe", "split", "aggregate", "rename", "datetime", "crypto", "convert", "app", "input", "transform", "template", "set", "filter", "csv", "http", "notify", "email", "subflow", "code", "delay", "sql", "rss", "telegram", "github", "sheets", "gmail", "ai", "file"}
 MAX_RETRIES = 5
 MAX_RETRY_WAIT = 3.0
 CODE_TIMEOUT = 5
@@ -1522,6 +1523,13 @@ APP_OPS = {
     "mailgun": ["send_email"],
     "telegram": ["send_message"],
     "github": ["create_issue", "add_comment"],
+    "pagerduty": ["trigger_event"],
+    "opsgenie": ["create_alert"],
+    "intercom": ["create_contact"],
+    "freshdesk": ["create_ticket"],
+    "supabase": ["insert_row", "select_rows"],
+    "bitly": ["shorten"],
+    "convertkit": ["add_subscriber"],
     "gcalendar": ["list_events", "create_event"],
     "gdrive": ["list_files", "create_folder"],
 }
@@ -1981,7 +1989,88 @@ def app_github(op: str, secret: str, f: dict) -> Any:
     return {"number": res.get("number"), "url": res.get("html_url")} if isinstance(res, dict) else res
 
 
-APP_HANDLERS = {"brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
+def _email(f: dict, key: str = "email", required: bool = True) -> str:
+    addr = _text(f, key, "Email", required=required, maxlen=200)
+    if addr and not EMAIL_RE.fullmatch(addr): raise ValueError(f"Invalid email address: {addr!r}")
+    return addr
+
+
+def app_pagerduty(op: str, secret: str, f: dict) -> Any:
+    severity = _text(f, "severity", "Severity", required=False, maxlen=10).lower() or "error"
+    if severity not in ("critical", "error", "warning", "info"): raise ValueError("Severity is critical, error, warning or info")
+    body: dict[str, Any] = {"routing_key": secret, "event_action": "trigger", "payload": {"summary": _text(f, "summary", "Summary", maxlen=1024), "source": _text(f, "source", "Source", required=False, maxlen=255) or "flowpilot", "severity": severity}}
+    key = _text(f, "dedup_key", "Dedup key", required=False, maxlen=255)
+    if key: body["dedup_key"] = key
+    res = do_request("POST", "https://events.pagerduty.com/v2/enqueue", {}, json=body)
+    return {"status": res.get("status"), "dedup_key": res.get("dedup_key")} if isinstance(res, dict) else res
+
+
+def app_opsgenie(op: str, secret: str, f: dict) -> Any:
+    region = _text(f, "region", "Region", required=False, maxlen=2).lower() or "us"
+    if region not in ("us", "eu"): raise ValueError("Region is us or eu")
+    body = {"message": _text(f, "message", "Message", maxlen=130), "description": _text(f, "description", "Description", required=False, maxlen=15000)}
+    prio = _text(f, "priority", "Priority", required=False, maxlen=2).upper()
+    if prio:
+        if prio not in ("P1", "P2", "P3", "P4", "P5"): raise ValueError("Priority is P1 to P5")
+        body["priority"] = prio
+    res = do_request("POST", f"https://api.{'eu.' if region == 'eu' else ''}opsgenie.com/v2/alerts", {"Authorization": f"GenieKey {secret}"}, json=body)
+    return {"request_id": res.get("requestId"), "result": res.get("result")} if isinstance(res, dict) else res
+
+
+def app_intercom(op: str, secret: str, f: dict) -> Any:
+    body: dict[str, Any] = {"role": "user", "email": _email(f)}
+    for key, label in (("name", "Name"), ("phone", "Phone")):
+        val = _text(f, key, label, required=False, maxlen=100)
+        if val: body[key] = val
+    res = do_request("POST", "https://api.intercom.io/contacts", {"Authorization": f"Bearer {secret}", "Accept": "application/json"}, json=body)
+    return {"id": res.get("id"), "email": res.get("email")} if isinstance(res, dict) else res
+
+
+def app_freshdesk(op: str, secret: str, f: dict) -> Any:
+    sub = _subdomain(f, "subdomain", "Subdomain")
+    prio = _text(f, "priority", "Priority", required=False, maxlen=1) or "1"
+    if prio not in "1234": raise ValueError("Priority is 1 (low) to 4 (urgent)")
+    body = {"subject": _text(f, "subject", "Subject", maxlen=250), "description": _text(f, "description", "Description", maxlen=100_000), "email": _email(f), "priority": int(prio), "status": 2}
+    auth = base64.b64encode(f"{secret}:X".encode()).decode()
+    res = do_request("POST", f"https://{sub}.freshdesk.com/api/v2/tickets", {"Authorization": f"Basic {auth}"}, json=body)
+    return {"id": res.get("id"), "url": f"https://{sub}.freshdesk.com/a/tickets/{res.get('id')}"} if isinstance(res, dict) else res
+
+
+def app_supabase(op: str, secret: str, f: dict) -> Any:
+    ref = _text(f, "project", "Project", maxlen=40)
+    if not re.fullmatch(r"[a-z0-9]{6,40}", ref): raise ValueError("Project is the short id in your Supabase address (abcdefgh.supabase.co)")
+    table = _text(f, "table", "Table", maxlen=63)
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", table): raise ValueError("Table uses letters, numbers and _ only")
+    headers = {"apikey": secret, "Authorization": f"Bearer {secret}"}
+    url = f"https://{ref}.supabase.co/rest/v1/{table}"
+    if op == "insert_row":
+        row = f.get("row")
+        if not isinstance(row, dict) or not row: raise ValueError("Row must be an object of column values")
+        res = do_request("POST", url, {**headers, "Prefer": "return=representation"}, json=row)
+        return res if isinstance(res, list) else [res]
+    res = do_request("GET", url, headers, params={"select": "*", "limit": _limit(f, 50, 200)})
+    return res if isinstance(res, list) else []
+
+
+def app_bitly(op: str, secret: str, f: dict) -> Any:
+    link = _text(f, "url", "URL", maxlen=2000)
+    if not re.match(r"^https?://[^\s]+$", link): raise ValueError("URL must start with http:// or https://")
+    res = do_request("POST", "https://api-ssl.bit.ly/v4/shorten", {"Authorization": f"Bearer {secret}"}, json={"long_url": link})
+    return {"link": res.get("link"), "id": res.get("id")} if isinstance(res, dict) else res
+
+
+def app_convertkit(op: str, secret: str, f: dict) -> Any:
+    form = _text(f, "form_id", "Form ID", maxlen=15)
+    if not form.isdigit(): raise ValueError("Form ID is a number from the form's address")
+    body = {"api_key": secret, "email": _email(f)}
+    first = _text(f, "first_name", "First name", required=False, maxlen=100)
+    if first: body["first_name"] = first
+    res = do_request("POST", f"https://api.convertkit.com/v3/forms/{form}/subscribe", {}, json=body)
+    sub = (res.get("subscription") if isinstance(res, dict) else None) or {}
+    return {"id": sub.get("id"), "state": sub.get("state")}
+
+
+APP_HANDLERS = {"pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
 def app_action(d: dict, previous: Any) -> Any:
@@ -2121,7 +2210,79 @@ def tool_crypto(d: dict, previous: Any) -> Any:
     raise ValueError(f"Unknown operation: {op}")
 
 
-ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto}
+class _TextExtractor(HTMLParser):
+    """Collects the text, or an attribute, of elements matching a simple selector: tag, .class, #id, tag.class or tag#id."""
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+    def __init__(self, tag: str, cls: str, ident: str, attr: str):
+        super().__init__(convert_charrefs=True)
+        self.tag, self.cls, self.ident, self.attr = tag, cls, ident, attr
+        self.out: list[str] = []
+        self.stack: list[tuple[str, bool]] = []
+        self.buf: list[str] | None = None
+        self.depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        hit = (not self.tag or tag == self.tag) and (not self.cls or self.cls in (a.get("class") or "").split()) and (not self.ident or a.get("id") == self.ident)
+        if self.buf is not None and tag not in self.VOID: self.depth += 1
+        if hit and self.buf is None:
+            if self.attr:
+                if a.get(self.attr) is not None: self.out.append(a[self.attr])
+            elif tag not in self.VOID:
+                self.buf, self.depth = [], 1
+
+    def handle_endtag(self, tag):
+        if self.buf is None: return
+        self.depth -= 1
+        if self.depth <= 0:
+            self.out.append(re.sub(r"\s+", " ", "".join(self.buf)).strip())
+            self.buf = None
+
+    def handle_data(self, data):
+        if self.buf is not None: self.buf.append(data)
+
+
+def tool_convert(d: dict, previous: Any) -> Any:
+    op = str(d.get("operation") or "json_parse")
+    data = render_template(str(d.get("value") or ""), previous)
+    if len(data) > 2_000_000: raise ValueError("Input is too large (limit 2 MB)")
+    if op == "json_parse":
+        try: return json.loads(data)
+        except ValueError: raise ValueError("That text is not valid JSON")
+    if op == "json_stringify":
+        # The value is rendered text, so a JSON document typed into the field is re-encoded compactly.
+        try: return json.dumps(json.loads(data), separators=(",", ":"), ensure_ascii=False)
+        except ValueError: return json.dumps(data, ensure_ascii=False)
+    if op == "url_encode": return quote(data, safe="")
+    if op == "url_decode": return unquote(data)
+    if op == "xml_to_json":
+        if re.search(r"<!(DOCTYPE|ENTITY)", data, re.I): raise ValueError("XML with a DOCTYPE or entity definitions is not accepted")
+        try: root = ET.fromstring(data)
+        except ET.ParseError as e: raise ValueError(f"That text is not valid XML ({e})")
+        def conv(el):
+            node: dict[str, Any] = {f"@{k}": v for k, v in el.attrib.items()}
+            kids: dict[str, list] = {}
+            for c in el: kids.setdefault(re.sub(r"^\{.*\}", "", c.tag), []).append(conv(c))
+            for k, v in kids.items(): node[k] = v[0] if len(v) == 1 else v
+            text = (el.text or "").strip()
+            if not node: return text
+            if text: node["#text"] = text
+            return node
+        return {re.sub(r"^\{.*\}", "", root.tag): conv(root)}
+    if op == "html_extract":
+        sel = str(d.get("selector") or "").strip()
+        m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)?(?:\.([A-Za-z0-9_\-]+))?(?:#([A-Za-z0-9_\-]+))?", sel)
+        if not sel or not m: raise ValueError("Selector is a tag, .class or #id, like a, h1.title or #price")
+        attr = str(d.get("attribute") or "").strip().lower()
+        if attr and not re.fullmatch(r"[a-z][a-z0-9\-]{0,40}", attr): raise ValueError("Attribute is a name like href or src")
+        ex = _TextExtractor((m.group(1) or "").lower(), m.group(2) or "", m.group(3) or "", attr)
+        ex.feed(data); ex.close()
+        return ex.out[:1000]
+    raise ValueError(f"Unknown operation: {op}")
+
+
+ITEM_TOOLS = {"sort": tool_sort, "limit": tool_limit, "dedupe": tool_dedupe, "split": tool_split, "aggregate": tool_aggregate, "rename": tool_rename, "datetime": tool_datetime, "crypto": tool_crypto, "convert": tool_convert}
 
 
 def param_text(value: Any) -> str:
@@ -3078,7 +3239,7 @@ def run_repeat(g: Graph, nid: str, node: dict, value: Any):
     return {"attempts": attempts, "condition_met": met}, current
 
 
-EACH_ITEM_TYPES = {"agent", "datetime", "crypto", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
+EACH_ITEM_TYPES = {"agent", "datetime", "crypto", "convert", "app", "transform", "template", "set", "code", "http", "ai", "sql", "notify", "email", "telegram", "gmail", "github", "sheets", "file", "rss"}
 MAX_EACH_ITEMS = 200
 
 
