@@ -74,3 +74,23 @@ def test_an_imported_scenario_can_be_saved_and_run(client, fake_http):
     res = client.post(f"/api/workflows/{wid}/run").json()
     assert res["status"] == "success", res.get("error")
     assert fake_http.calls[-1]["url"] == "https://api.example.com/7"
+
+
+def test_simple_route_filters_become_condition_nodes():
+    flt = {"name": "paid", "conditions": [[{"a": "{{1.status}}", "b": "paid", "o": "text:equal"}]]}
+    r = convert({"flow": [mod(1, "gateway:CustomWebHook"), mod(2, "builtin:BasicRouter", routes=[
+        {"flow": [mod(3, "util:SetVariable", {"name": "a", "value": "1"}, filter=flt)]},
+        {"flow": [mod(4, "util:SetVariable", {"name": "b", "value": "1"}, filter={"conditions": [[{"a": "{{9.x}}", "b": "y", "o": "text:equal"}]]})]}]) ]})
+    cond = next(n for n in r["nodes"] if n["id"] == "m3_if")
+    assert cond["type"] == "condition" and cond["data"]["path"] == "status" and cond["data"]["op"] == "equals" and cond["data"]["equals"] == "paid"
+    edges = {(e["source"], e["target"], e.get("sourceHandle")) for e in r["edges"]}
+    assert ("m2", "m3_if", None) in edges and ("m3_if", "m3", "true") in edges and ("m2", "m4", None) in edges
+    assert not any(n["id"] == "m4_if" for n in r["nodes"])
+    assert any("not a single plain comparison" in w["message"] for w in r["warnings"] if w["node"].endswith("4"))
+
+
+def test_a_filtered_import_runs(client):
+    flt = {"conditions": [[{"a": "{{1.n}}", "b": "5", "o": "number:greater"}]]}
+    r = client.post("/api/import/make", json={"name": "F", "flow": [mod(1, "util:SetVariable", {"name": "n", "value": "9"}), mod(2, "util:SetVariable", {"name": "big", "value": "yes"}, filter=flt)]}).json()
+    wid = client.post("/api/workflows", json={"name": "F", "description": "", "nodes": r["nodes"], "edges": r["edges"]}).json()["id"]
+    assert client.post(f"/api/workflows/{wid}/run").json()["status"] == "success"

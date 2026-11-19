@@ -11,6 +11,8 @@ import re
 from typing import Any
 
 MAX_MODULES = 60
+FILTER_OPS = {"text:equal": "equals", "text:equal:ci": "equals", "number:equal": "equals", "text:notequal": "not_equals", "text:notequal:ci": "not_equals", "number:notequal": "not_equals",
+              "text:contain": "contains", "text:contain:ci": "contains", "number:greater": "gt", "number:less": "lt", "exist": "exists", "notexist": "not_exists"}
 REF = re.compile(r"^(\d+)((?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*)$")
 
 
@@ -39,6 +41,18 @@ class Maker:
             self.warn(node, f"The value {{{{{inner[:60]}}}}} refers to another module or uses a Make function, which FlowPilot cannot read. Rewrite it by hand.")
             return m.group(0)
         return re.sub(r"\{\{(.*?)\}\}", sub, value, flags=re.S)
+
+    def simple_filter(self, flt: Any, node: str) -> dict | None:
+        """A Make route filter with one plain comparison on the previous module's output, as Condition node settings (otherwise None)."""
+        groups = flt.get("conditions") if isinstance(flt, dict) else None
+        if not (isinstance(groups, list) and len(groups) == 1 and isinstance(groups[0], list) and len(groups[0]) == 1 and isinstance(groups[0][0], dict)): return None
+        c = groups[0][0]
+        op = FILTER_OPS.get(str(c.get("o")))
+        ref = REF.fullmatch(str(c.get("a") or "").strip()[2:-2].strip()) if str(c.get("a") or "").strip().startswith("{{") else None
+        if not op or not ref or ref.group(1) not in self.allowed or not ref.group(2): return None
+        right = self.text(c.get("b"), node)
+        if "{{" in right: return None
+        return {"path": ref.group(2).lstrip("."), "op": op, "equals": right}
 
     def pairs(self, items: Any, node: str) -> dict:
         out = {}
@@ -111,8 +125,15 @@ def convert(doc: Any) -> dict:
             x = float(dx) if isinstance(dx, (int, float)) else count * 240.0
             y = float(dy) if isinstance(dy, (int, float)) else 120.0
             mk.nodes.append({"id": nid, "type": typ, "position": {"x": x, "y": y}, "data": {"label": label, **data}})
-            if prev: mk.edges.append({"id": f"{prev}-{nid}", "source": prev, "target": nid})
-            if mod.get("filter"): mk.warn(label, "A filter on this module (a Make route condition) was not carried over. Add a Condition node before it.")
+            cond = mk.simple_filter(mod.get("filter"), label) if mod.get("filter") else None
+            if cond and prev:
+                cid = nid + "_if"
+                mk.nodes.insert(len(mk.nodes) - 1, {"id": cid, "type": "condition", "position": {"x": x - 120, "y": y}, "data": {"label": f"Filter for {label}"[:60], **cond}})
+                mk.edges.append({"id": f"{prev}-{cid}", "source": prev, "target": cid})
+                mk.edges.append({"id": f"{cid}-{nid}-true", "source": cid, "target": nid, "sourceHandle": "true"})
+                mk.warn(f"Filter for {label}"[:60], "Converted from a Make filter. Items that do not match stop here (the false output is not connected).")
+            elif prev: mk.edges.append({"id": f"{prev}-{nid}", "source": prev, "target": nid})
+            if mod.get("filter") and not cond: mk.warn(label, "A filter on this module (a Make route condition) was not carried over, because it is not a single plain comparison. Add a Condition node before it.")
             if kind == "builtin:BasicRouter":
                 if depth >= 3: raise ValueError("Routers are nested too deeply to import.")
                 for route in mod.get("routes") or []:
