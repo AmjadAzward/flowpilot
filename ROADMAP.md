@@ -28,6 +28,7 @@ This file describes planned functionality, **not current features**.
 - 126 API tests and a 27-check browser suite
 
 ### v0.27
+- Docker image built and checked by hand once (see README); Make route filters with one plain comparison become Condition nodes
 - Import from Make: blueprint conversion with warnings for everything that cannot be carried over (tested with self-written blueprints only)
 - 1083 API tests and a 71-check browser suite
 

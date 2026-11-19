@@ -156,7 +156,7 @@ The steps above are for building and developing. To simply use FlowPilot, run it
 - **Docker:** `docker compose up -d --build`, then open http://127.0.0.1:8000. Everything lives in the `flowpilot-data` volume, so back that volume up. The port is published to this computer only; put an HTTPS reverse proxy in front before exposing it, and set `FLOWPILOT_PUBLIC_URL` so webhook addresses show your public name.
 - **Any platform, by hand:** build once with `npm run build` in `frontend`, then start the API with `FLOWPILOT_SERVE_UI=1`.
 
-The Docker files and the sign-in task were written carefully but have not been run in this project's test setup (no Docker engine was available, and a scheduled task changes the computer it is installed on). The production serving itself is tested.
+The Docker image was built and run once with Docker Desktop 29.8 (WSL 2) on Windows 11: it started healthy, served the interface, created the owner, ran a workflow that wrote a Data Table row, and kept the login, workflow, table row and a saved credential after a container restart; it runs as a non-root user and `docker compose config` validates. That was a single manual check, not an automated test, and `docker compose up` itself was not run (port 8000 was in use). The sign-in task has been registered on one Windows machine but not tested across a real logon. The production serving itself is tested.
 
 
 ---
