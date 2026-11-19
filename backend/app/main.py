@@ -80,7 +80,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.21.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.22.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -650,7 +650,17 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.21.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.22.0", "mode": "local", "queue": queue_mode(), "scheduler": scheduler}
+
+def search_text(doc: dict) -> str:
+    """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
+    parts: list[str] = []
+    for n in doc.get("nodes") or []:
+        parts.append(str(n.get("type") or ""))
+        for v in (n.get("data") or {}).values():
+            if isinstance(v, str) and v and len(v) < 500: parts.append(v)
+    return " ".join(parts).lower()[:6000]
+
 
 @app.get("/api/workflows")
 def workflows(request: Request):
@@ -662,7 +672,7 @@ def workflows(request: Request):
     for r in rows:
         if visible is not None and r["id"] not in visible: continue
         doc = json.loads(r["definition"])
-        out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"], "tags": doc.get("tags", []),
+        out.append({"id": r["id"], "name": r["name"], "description": r["description"], "updated_at": r["updated_at"], "tags": doc.get("tags", []), "search": search_text(doc),
                     "active": bool(r["active"]), "trigger": trigger_kind(doc), "next_run_at": r["next_run_at"],
                     "project_id": r["project_id"], "project_name": names.get(r["project_id"])})
     return out
@@ -3609,6 +3619,46 @@ def _execute(doc: dict, initial: Any = None, resume: tuple | None = None) -> dic
 
 def load_variables() -> dict:
     with conn() as db: return {r["name"]: r["value"] for r in db.execute("SELECT name, value FROM variables").fetchall()}
+
+
+# ---------------------------------------------------------------------------
+# Data Tables browser (read for everyone, changes for editors and above through the default role rules)
+# ---------------------------------------------------------------------------
+def _table_or_404(name: str) -> str:
+    if not TABLE_NAME_RE.fullmatch(name): raise HTTPException(404, "Table not found")
+    return name
+
+
+@app.get("/api/tables")
+def list_tables():
+    with conn() as db: rows = db.execute("SELECT tbl AS name, COUNT(*) AS rows, MAX(created_at) AS last_added FROM data_rows GROUP BY tbl ORDER BY tbl").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/tables/{name}")
+def read_table(name: str, limit: int = 200):
+    name = _table_or_404(name)
+    with conn() as db:
+        total = db.execute("SELECT COUNT(*) AS n FROM data_rows WHERE tbl=?", (name,)).fetchone()["n"]
+        if not total: raise HTTPException(404, "Table not found")
+        rows = db.execute("SELECT id, data, created_at FROM data_rows WHERE tbl=? ORDER BY id DESC LIMIT ?", (name, max(1, min(limit, 1000)))).fetchall()
+    return {"name": name, "total": total, "rows": [{"_id": r["id"], "added": r["created_at"], **json.loads(r["data"])} for r in rows]}
+
+
+@app.delete("/api/tables/{name}/rows/{row_id}")
+def delete_table_row(name: str, row_id: int):
+    name = _table_or_404(name)
+    with conn() as db:
+        if not db.execute("DELETE FROM data_rows WHERE tbl=? AND id=?", (name, row_id)).rowcount: raise HTTPException(404, "Row not found")
+    return {"deleted": 1}
+
+
+@app.delete("/api/tables/{name}")
+def clear_table(name: str):
+    name = _table_or_404(name)
+    with conn() as db: n = db.execute("DELETE FROM data_rows WHERE tbl=?", (name,)).rowcount
+    if not n: raise HTTPException(404, "Table not found")
+    return {"deleted": n}
 
 
 MAX_VARIABLES = 200

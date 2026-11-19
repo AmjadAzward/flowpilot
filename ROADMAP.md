@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.22
+- Data tables page (browse rows, remove a row, empty a table)
+- Overview search finds workflows by node type and node settings
+- 1053 API tests and a 70-check browser suite
+
 ### v0.21
 - Data Table node: small named tables inside FlowPilot (add, find, get, count, change, delete, empty), so workflows remember things between runs
 - Six more App Action services (45 in all): Mattermost, Gotify, Cloudflare, PostHog, Mixpanel, Vonage; Airtable update record

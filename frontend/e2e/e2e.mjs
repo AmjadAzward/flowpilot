@@ -1338,6 +1338,34 @@ await check('clear execution history', async () => {
   await expectText(page.locator('.empty'), /No executions yet/);
 });
 
+await check('data tables page lists rows added by a workflow and removes a row', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Table writer', description: '', nodes: [node('t', 'trigger'), node('d', 'table', { table: 'e2e_people', operation: 'insert', row: '{"name": "Ada", "plan": "free"}' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'd' }, { id: 'b', source: 'd', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.getByTestId('nav-tables').click();
+  await page.getByTestId('table-pick').filter({ hasText: 'e2e_people' }).click();
+  await page.getByTestId('table-row').first().waitFor();
+  if ((await page.getByTestId('table-row').count()) !== 2) throw new Error('expected two rows');
+  await expectText(page.getByTestId('table-rows'), /Ada/);
+  await shot('22-tables');
+  await page.getByRole('button', { name: /Delete row/ }).first().click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=table-row]').length === 1);
+});
+
+await check('workflow search also finds node settings', async () => {
+  await page.reload();
+  await goOverview();
+  await page.getByLabel('Search workflows').fill('e2e_people');
+  await page.getByText('Table writer').first().waitFor();
+  await page.getByLabel('Search workflows').fill('no-such-setting-anywhere');
+  await page.waitForFunction(() => !document.body.innerText.includes('Table writer'));
+  await page.getByLabel('Search workflows').fill('');
+});
+
 await check('settings page renders', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await expectText(page.locator('h1'), /Settings/);

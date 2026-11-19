@@ -10,6 +10,7 @@ import { MiniFlow } from './MiniFlow';
 import { NodeSettings } from './NodeSettings';
 import { Login } from './Login';
 import { ChangePassword, UsersPage } from './UsersPage';
+import { TablesPage } from './TablesPage';
 import { HistoryPanel } from './HistoryPanel';
 import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
@@ -19,7 +20,15 @@ import { VariablesPanel } from './VariablesPanel';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
-type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'users' | 'settings';
+/** Search a workflow by name, description, tags, node names and types, and the text typed into node settings. */
+function flowMatches(f: FlowDoc, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (f.name.toLowerCase().includes(q) || (f.description ?? '').toLowerCase().includes(q) || (f.tags ?? []).some(t => t.toLowerCase().includes(q))) return true;
+  return (f.search ?? '').includes(q) || (f.nodes ?? []).some(n => Object.values((n.data ?? {}) as Record<string, unknown>).some(v => typeof v === 'string' && v.length < 2000 && v.toLowerCase().includes(q)));
+}
+
+type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'tables' | 'users' | 'settings';
 type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
 type Theme = 'dark' | 'light';
 
@@ -474,12 +483,12 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     return m;
   }, [runs]);
   const allTags = Array.from(new Set(flows.flatMap(f => f.tags ?? []))).sort((a, b) => a.localeCompare(b));
-  const filtered = flows.filter(f => (f.name.toLowerCase().includes(query.toLowerCase()) || (f.tags ?? []).some(t => t.toLowerCase().includes(query.toLowerCase()))) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
+  const filtered = flows.filter(f => flowMatches(f, query) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
   const success = runs.filter(r => r.status === 'success').length;
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
   const shownRuns = runs.filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
-  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', users: 'Users', settings: 'Settings' }[page];
+  const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', tables: 'Data Tables', users: 'Users', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);
   const flowName_ = (id?: string) => flows.find(f => f.id === id)?.name || 'Deleted workflow';
 
@@ -498,6 +507,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'editor' ? 'active' : '')} onClick={() => (selectedId ? setPage('editor') : void createFlow())}><Workflow size={17} />Workflow Studio</button>
           <button className={'nav ' + (page === 'executions' ? 'active' : '')} onClick={() => { void refresh(); setPage('executions'); }}><Activity size={17} />Executions<span className="nav-count">{runs.length}</span></button>
           <button className={'nav ' + (page === 'credentials' ? 'active' : '')} onClick={() => { void refresh(); setPage('credentials'); }}><KeyRound size={17} />Credentials<span className="nav-count">{creds.length}</span></button>
+          <button className={'nav ' + (page === 'tables' ? 'active' : '')} data-testid="nav-tables" onClick={() => setPage('tables')}><Database size={17} />Data tables</button>
           {isOwner && <button className={'nav ' + (page === 'users' ? 'active' : '')} onClick={() => setPage('users')}><UsersIcon size={17} />Users</button>}
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
@@ -543,7 +553,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               <div className="card-head">
                 <div className="seg-title"><h2>All workflows</h2><span className="count-chip">{flows.length}</span></div>
                 <div className="panel-tools">
-                  <label className="search"><Search size={15} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search workflows" aria-label="Search workflows" /></label>
+                  <label className="search"><Search size={15} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search workflows, nodes and settings" aria-label="Search workflows" /></label>
                   <button className="icon-button" title="Refresh" aria-label="Refresh" onClick={() => void refresh()}><RefreshCcw size={15} /></button>
                 </div>
               </div>
@@ -802,6 +812,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           </div>
         )}
 
+        {page === 'tables' && <TablesPage notify={notify} canEdit={role !== 'viewer'} />}
         {page === 'users' && isOwner && <UsersPage notify={notify} me={username} onProjectsChanged={() => void refreshProjects()} />}
 
         {page === 'settings' && (

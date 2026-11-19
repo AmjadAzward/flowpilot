@@ -96,3 +96,33 @@ def test_limits(client, monkeypatch):
 def test_row_values_are_data_not_templates(client):
     ok(tab(client, '{"email": "x\\"y@z.io"}', table="q", operation="insert", row='{"email": "{{email}}"}'))
     assert ok(tab(client, table="q", operation="find"))[0]["email"] == 'x"y@z.io'
+
+
+def test_tables_api_lists_reads_and_deletes(client):
+    assert client.get("/api/tables").json() == []
+    a = ok(tab(client, table="people", operation="insert", row='{"name": "Ada", "tags": ["x"]}'))
+    ok(tab(client, table="people", operation="insert", row='{"name": "Bob"}'))
+    listing = client.get("/api/tables").json()
+    assert [(t["name"], t["rows"]) for t in listing] == [("people", 2)]
+    data = client.get("/api/tables/people").json()
+    assert data["total"] == 2 and [r["name"] for r in data["rows"]] == ["Bob", "Ada"] and data["rows"][1]["tags"] == ["x"] and "added" in data["rows"][0]
+    assert len(client.get("/api/tables/people?limit=1").json()["rows"]) == 1
+    assert client.delete(f"/api/tables/people/rows/{a['_id']}").json() == {"deleted": 1}
+    assert client.delete(f"/api/tables/people/rows/{a['_id']}").status_code == 404
+    assert client.delete("/api/tables/people").json() == {"deleted": 1}
+    assert client.get("/api/tables/people").status_code == 404
+    assert client.get("/api/tables/bad name").status_code == 404 and client.delete("/api/tables/1bad").status_code == 404
+
+
+def test_tables_api_needs_sign_in(client):
+    from fastapi.testclient import TestClient
+    from app import main
+    with TestClient(main.app) as anon:
+        assert anon.get("/api/tables").status_code == 401
+        assert anon.delete("/api/tables/x").status_code == 401
+
+
+def test_workflow_list_carries_search_text(client):
+    wid = make_flow(client, [node("t", "trigger"), node("d", "table", table="Quarterly_Leads", operation="count"), node("o", "output")], [edge("t", "d"), edge("d", "o")], name="Search me")
+    row = next(w for w in client.get("/api/workflows").json() if w["id"] == wid)
+    assert "quarterly_leads" in row["search"] and "table" in row["search"]

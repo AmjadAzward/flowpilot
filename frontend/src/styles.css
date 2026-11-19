@@ -562,3 +562,12 @@ button:disabled { cursor: not-allowed; }
 .var-form-actions { display: flex; gap: 8px; }
 .sso-chip { color: var(--accent-ink, var(--accent)); font-style: normal; font-size: 12px; margin-left: 6px; }
 @media (max-width: 900px) { .sso-form { grid-template-columns: 1fr; } }
+
+.table-pick { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 16px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.table-pick:hover, .table-pick.active { background: var(--surface-2); }
+.table-pick .muted { margin-left: auto; }
+.table-scroll { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th, .data-table td { text-align: left; padding: 8px 14px; border-top: 1px solid var(--border); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-table th { color: var(--muted); font-weight: 600; }
+.pad { padding: 0 16px 12px; }
