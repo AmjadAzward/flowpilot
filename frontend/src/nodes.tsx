@@ -90,7 +90,7 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'email_in': return s('credential') ? `every ${s('minutes') || '5'} min` : 'choose an inbox';
     case 'repeat': return `until ${s('path') || 'value'} ${s('op') || 'equals'} ${s('equals')}`.trim().slice(0, 34);
     case 'file': return `${s('operation') || 'read'} ${s('path')}`.trim().slice(0, 34);
-    case 'ai': return s('prompt') ? clip(s('prompt')) : 'write a prompt';
+    case 'ai': return (({ extract: 'extract fields', classify: 'classify', sentiment: 'sentiment', summarize: 'summarize' } as Record<string, string>)[s('task')] ?? '') || (s('prompt') ? clip(s('prompt')) : 'write a prompt');
     case 'switch': return s('path') ? clip(`by ${s('path')}`) : 'choose a field';
     case 'code': return 'Python snippet';
     case 'fail': return clip(s('message'));

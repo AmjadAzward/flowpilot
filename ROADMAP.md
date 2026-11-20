@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.36
+- AI node tasks: extract fields, classify, sentiment, summarize (simulated-model tests only)
+- 1204 API tests and a 73-check browser suite
+
 ### v0.35
 - Credentials can be limited to one project (shared ones keep working everywhere)
 - 1186 API tests and a 73-check browser suite

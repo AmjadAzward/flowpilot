@@ -652,6 +652,15 @@ await check('tags filter the dashboard, and sticky notes and the AI node work in
   await page.getByTestId('add-ai').click();
   await page.getByLabel(/^Prompt/).waitFor();
   await page.getByLabel(/^AI credential/).waitFor();
+  await page.getByLabel(/^What should the AI do/).selectOption('extract');
+  await page.getByLabel(/^Fields to extract/).fill('{"email": "sender email"}');
+  await page.getByLabel(/^Text to work on/).waitFor();
+  await page.getByLabel(/^What should the AI do/).selectOption('classify');
+  await page.getByLabel(/^Categories/).fill('Billing, Support');
+  await page.getByLabel(/^What should the AI do/).selectOption('summarize');
+  await page.getByLabel(/^Length/).selectOption('medium');
+  await page.getByLabel(/^What should the AI do/).selectOption('prompt');
+  await page.getByLabel(/^Prompt/).waitFor();
   await page.getByRole('button', { name: /^Save/ }).click();
   await goOverview();
   await page.getByTestId('tag-bar').waitFor();

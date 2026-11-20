@@ -376,17 +376,31 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
         </>
       );
     }
-    case 'ai':
+    case 'ai': {
+      const task = v('task', 'prompt');
       return (
         <>
           {credSelect('credential', 'AI credential')}
-          <label>System instruction (optional)<textarea rows={2} spellCheck={false} value={v('system')} onChange={text('system')} placeholder="You are a helpful assistant. Answer briefly." /></label>
-          <label>Prompt<textarea rows={5} spellCheck={false} value={v('prompt')} onChange={text('prompt')} /></label>
+          <label>What should the AI do?
+            <select value={task} onChange={text('task')}>
+              <option value="prompt">Answer a prompt</option>
+              <option value="extract">Extract fields from text</option>
+              <option value="classify">Sort text into categories</option>
+              <option value="sentiment">Judge sentiment (positive, neutral, negative)</option>
+              <option value="summarize">Summarize text</option>
+            </select>
+          </label>
+          {task === 'prompt' && <label>System instruction (optional)<textarea rows={2} spellCheck={false} value={v('system')} onChange={text('system')} placeholder="You are a helpful assistant. Answer briefly." /></label>}
+          <label>{task === 'prompt' ? 'Prompt' : 'Text to work on'}<textarea rows={task === 'prompt' ? 5 : 3} spellCheck={false} value={v('prompt')} onChange={text('prompt')} placeholder={task === 'prompt' ? '' : '{{body.message}}'} /></label>
+          {task === 'extract' && <label>Fields to extract (JSON)<textarea rows={5} spellCheck={false} value={v('schema')} onChange={text('schema')} placeholder={'{"name": "the sender full name", "amount": {"type": "number", "description": "total in dollars"}}'} /><span className="hint">Types: text, number, integer, true_false, list. Anything the text does not say comes back as null. The result has exactly these fields.</span></label>}
+          {task === 'classify' && <label>Categories (comma separated)<input value={v('categories')} onChange={text('categories')} placeholder="Billing, Support, Sales" /><span className="hint">The result is {'{category, confidence}'}. Follow it with a Switch or Condition on category.</span></label>}
+          {task === 'summarize' && <label>Length<select value={v('length', 'short')} onChange={text('length')}><option value="short">One or two sentences</option><option value="medium">A short paragraph</option><option value="long">Several paragraphs</option></select></label>}
           <label>Creativity (0 to 2)<input type="number" min={0} max={2} step={0.1} value={v('temperature', '0.2')} onChange={text('temperature')} /></label>
-          <label>Reply as<select value={v('json_output', 'false')} onChange={text('json_output')}><option value="false">Text: {'{"text": ...}'}</option><option value="true">JSON: the reply becomes data</option></select></label>
-          <span className="hint">Works with any OpenAI-compatible service. Free and private on your own computer with Ollama or LM Studio. Save the credential as <b>http://127.0.0.1:11434/v1?model=llama3.2</b> (start the API with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 for local models), or as <b>https://host/v1?model=NAME&amp;key=TOKEN</b> for a hosted one. Use {'{{field}}'} in the prompt. Local models can take a while, up to 90 seconds.</span>
+          {task === 'prompt' && <label>Reply as<select value={v('json_output', 'false')} onChange={text('json_output')}><option value="false">Text: {'{"text": ...}'}</option><option value="true">JSON: the reply becomes data</option></select></label>}
+          <span className="hint">Works with any OpenAI-compatible service. Free and private on your own computer with Ollama or LM Studio. Save the credential as <b>http://127.0.0.1:11434/v1?model=llama3.2</b> (start the API with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 for local models), or as <b>https://host/v1?model=NAME&amp;key=TOKEN</b> for a hosted one. Use {'{{field}}'} in the text. Small local models can get structured answers wrong, so check the results. Local models can take up to 90 seconds.</span>
         </>
       );
+    }
     case 'switch':
       return (
         <>

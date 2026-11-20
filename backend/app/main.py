@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.35.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.36.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -672,7 +672,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.35.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.36.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -3076,24 +3076,95 @@ def ai_connection(d: dict) -> tuple[str, str, str]:
     return f"{cred.scheme}://{cred.hostname}{':' + str(cred.port) if cred.port else ''}{cred.path.rstrip('/')}", model, key
 
 
-def run_ai(d: dict, previous: Any) -> Any:
-    base, model, key = ai_connection(d)
-    prompt = render_template(str(d.get("prompt", "")), previous)
-    system = render_template(str(d.get("system", "")), previous)
-    if not prompt.strip(): raise ValueError("Write a prompt")
-    if len(prompt) > 50_000 or len(system) > 10_000: raise ValueError("The prompt is too long")
-    try: temperature = max(0.0, min(float(d.get("temperature") or 0.2), 2.0))
-    except (TypeError, ValueError): raise ValueError("Temperature must be a number")
-    messages = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": prompt}]
+def _chat(base: str, model: str, key: str, messages: list[dict], temperature: float) -> str:
     res = do_request("POST", base + "/chat/completions", {"Authorization": f"Bearer {key}"} if key else {},
                      json={"model": model, "messages": messages, "temperature": temperature, "stream": False}, timeout=90.0)
     try: text = str(res["choices"][0]["message"]["content"])
     except (TypeError, KeyError, IndexError): raise ValueError("The AI service returned an unexpected reply")
     if len(text) > 200_000: raise ValueError("The AI reply is too large")
-    if str(d.get("json_output") or "false").lower() == "true":
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-        try: return json.loads(cleaned)
-        except ValueError: raise ValueError("The AI reply was not valid JSON. Ask for JSON only in the prompt.")
+    return text
+
+
+def _json_reply(text: str) -> Any:
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    try: return json.loads(cleaned)
+    except ValueError: raise ValueError("The AI reply was not valid JSON. Ask for JSON only in the prompt.")
+
+
+AI_TASKS = ("prompt", "extract", "classify", "sentiment", "summarize")
+EXTRACT_TYPES = ("text", "number", "integer", "true_false", "list")
+
+
+def _coerce(value: Any, kind: str) -> Any:
+    if value is None or value == "": return None
+    try:
+        if kind == "number": return float(str(value).replace(",", "")) if not isinstance(value, (int, float)) or isinstance(value, bool) else value
+        if kind == "integer": return int(float(str(value).replace(",", "")))
+    except (TypeError, ValueError): return None
+    if kind == "true_false":
+        if isinstance(value, bool): return value
+        return {"true": True, "yes": True, "false": False, "no": False}.get(str(value).strip().lower())
+    if kind == "list": return value if isinstance(value, list) else [value]
+    return value if isinstance(value, str) else json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+
+
+def ai_extract_schema(d: dict) -> dict[str, tuple[str, str]]:
+    """Fields to pull out of the text, from a JSON object of name -> description or {"type": ..., "description": ...}."""
+    raw = read_json(str(d.get("schema") or ""))
+    if not isinstance(raw, dict) or not 1 <= len(raw) <= 30: raise ValueError("Fields to extract is a JSON object with 1 to 30 entries, like {\"email\": \"the sender's email address\"}")
+    out = {}
+    for name, spec in raw.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", str(name)): raise ValueError(f"Field name {str(name)[:30]!r} must use letters, numbers and _")
+        kind, desc = ("text", str(spec)) if not isinstance(spec, dict) else (str(spec.get("type") or "text"), str(spec.get("description") or ""))
+        if kind not in EXTRACT_TYPES: raise ValueError(f"Field {name}: type must be one of {', '.join(EXTRACT_TYPES)}")
+        out[str(name)] = (kind, desc[:300])
+    return out
+
+
+def ai_categories(d: dict) -> list[str]:
+    cats = [c.strip() for c in str(d.get("categories") or "").split(",") if c.strip()]
+    if not 2 <= len(cats) <= 20 or len(set(c.lower() for c in cats)) != len(cats) or any(len(c) > 60 for c in cats): raise ValueError("Categories is a comma-separated list of 2 to 20 different names")
+    return cats
+
+
+def run_ai(d: dict, previous: Any) -> Any:
+    base, model, key = ai_connection(d)
+    task = str(d.get("task") or "prompt")
+    if task not in AI_TASKS: raise ValueError(f"Task must be one of: {', '.join(AI_TASKS)}")
+    prompt = render_template(str(d.get("prompt", "")), previous)
+    system = render_template(str(d.get("system", "")), previous)
+    if not prompt.strip(): raise ValueError("Write a prompt" if task == "prompt" else "Provide the text to work on")
+    if len(prompt) > 50_000 or len(system) > 10_000: raise ValueError("The prompt is too long")
+    try: temperature = max(0.0, min(float(d.get("temperature") or 0.2), 2.0))
+    except (TypeError, ValueError): raise ValueError("Temperature must be a number")
+    if task == "extract":
+        schema = ai_extract_schema(d)
+        spec = "\n".join(f"- {n} ({k}): {desc}" for n, (k, desc) in schema.items())
+        system = ("Extract information from the user's text. Reply with one JSON object only, no commentary, with exactly these keys:\n" + spec +
+                  "\nUse null for anything the text does not say. Never invent values.")
+    elif task in ("classify", "sentiment"):
+        cats = ["positive", "neutral", "negative"] if task == "sentiment" else ai_categories(d)
+        system = ("Classify the user's text into exactly one of these categories: " + ", ".join(cats) + '. Reply with one JSON object only: {"category": "<one of the categories>", "confidence": <number from 0 to 1>}.')
+    elif task == "summarize":
+        length = {"short": "one or two sentences", "medium": "a short paragraph", "long": "several paragraphs"}.get(str(d.get("length") or "short"))
+        if not length: raise ValueError("Length must be short, medium or long")
+        system = f"Summarize the user's text in {length}. Reply with the summary only."
+    messages = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": prompt}]
+    text = _chat(base, model, key, messages, temperature)
+    if task == "extract":
+        got = _json_reply(text)
+        if not isinstance(got, dict): raise ValueError("The AI reply was not a JSON object")
+        return {name: _coerce(got.get(name), kind) for name, (kind, _) in schema.items()}
+    if task in ("classify", "sentiment"):
+        got = _json_reply(text)
+        picked = str(got.get("category") if isinstance(got, dict) else got).strip()
+        match = next((c for c in cats if c.lower() == picked.lower()), None)
+        if match is None: raise ValueError(f"The AI chose {picked[:60]!r}, which is not one of the categories")
+        try: confidence = max(0.0, min(float(got.get("confidence")), 1.0)) if isinstance(got, dict) and got.get("confidence") is not None else None
+        except (TypeError, ValueError): confidence = None
+        return {"category": match, "confidence": confidence, "model": model}
+    if task == "summarize": return {"text": text.strip(), "model": model}
+    if str(d.get("json_output") or "false").lower() == "true": return _json_reply(text)
     return {"text": text, "model": model}
 
 
