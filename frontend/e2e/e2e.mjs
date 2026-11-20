@@ -1009,6 +1009,25 @@ await check('a custom connector is described in Settings and chosen in an App Ac
   if (gone !== 204) throw new Error('connector not deleted: ' + gone);
 });
 
+await check('a credential can be limited to one project and changed back', async () => {
+  const pid = await page.evaluate(async () => (await (await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Credential scope team' }) })).json()).id);
+  await page.reload();
+  await page.getByRole('button', { name: /^Credentials/ }).click();
+  await page.getByTestId('cred-name').fill('SCOPED_KEY');
+  await page.getByTestId('cred-value').fill('scoped-secret-value');
+  await page.getByTestId('cred-project').selectOption(pid);
+  await page.getByTestId('cred-save').click();
+  await expectText(toast(), /Credential saved/);
+  const mine = page.getByTestId('cred-row').filter({ hasText: 'SCOPED_KEY' });
+  await mine.waitFor();
+  if ((await mine.getByLabel('Who can use SCOPED_KEY').inputValue()) !== pid) throw new Error('the credential was not limited to the project');
+  await mine.getByLabel('Who can use SCOPED_KEY').selectOption('');
+  await expectText(toast(), /shared with every workflow/);
+  const row = await page.evaluate(async () => (await (await fetch('/api/credentials')).json()).find(c => c.name === 'SCOPED_KEY'));
+  if (row.project_id !== null) throw new Error('scope was not cleared');
+  await page.evaluate(async id => { await fetch('/api/credentials/SCOPED_KEY', { method: 'DELETE' }); await fetch('/api/projects/' + id, { method: 'DELETE' }); }, pid);
+});
+
 await check('Variables can be added, edited and deleted on the Settings page', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('variables-panel').waitFor();

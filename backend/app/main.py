@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.34.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.35.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -147,6 +147,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS project_members (project_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (project_id, user_id))")
         if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(workflows)")}: db.execute("ALTER TABLE workflows ADD COLUMN project_id TEXT")
+        if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(credentials)")}: db.execute("ALTER TABLE credentials ADD COLUMN project_id TEXT")
         if "auth_source" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}: db.execute("ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'")
         if "role" not in {r["name"] for r in db.execute("PRAGMA table_info(users)")}:
             db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
@@ -659,6 +660,7 @@ def delete_project(project_id: str):
     with conn() as db:
         if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone(): raise HTTPException(404, "Project not found")
         if db.execute("SELECT 1 FROM workflows WHERE project_id=? LIMIT 1", (project_id,)).fetchone(): raise HTTPException(400, "Move or delete the project's workflows first")
+        if db.execute("SELECT 1 FROM credentials WHERE project_id=? LIMIT 1", (project_id,)).fetchone(): raise HTTPException(400, "Share or delete the project's credentials first")
         db.execute("DELETE FROM project_members WHERE project_id=?", (project_id,))
         db.execute("DELETE FROM projects WHERE id=?", (project_id,))
 
@@ -670,7 +672,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.34.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.35.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -927,9 +929,21 @@ def rotate_encryption_key(drop_old: bool = False) -> int:
     return len(rows)
 
 
-def load_secrets() -> dict[str, str | None]:
+ALL_PROJECTS = "*"
+
+
+def workflow_project(doc: dict) -> str | None:
+    with conn() as db: row = db.execute("SELECT project_id FROM workflows WHERE id=?", (doc.get("id"),)).fetchone()
+    return row["project_id"] if row else None
+
+
+def load_secrets(project: str | None = ALL_PROJECTS) -> dict[str, str | None]:
+    """Credentials a run may use. A credential with no project is shared by every workflow; one with a project only by workflows of that project.
+    Pass ALL_PROJECTS (the default) for internal uses such as webhook secrets, or a workflow's own project id (None when it has none)."""
     with conn() as db:
-        rows = db.execute("SELECT name, value_enc FROM credentials").fetchall()
+        if project == ALL_PROJECTS: rows = db.execute("SELECT name, value_enc FROM credentials").fetchall()
+        elif project is None: rows = db.execute("SELECT name, value_enc FROM credentials WHERE project_id IS NULL").fetchall()
+        else: rows = db.execute("SELECT name, value_enc FROM credentials WHERE project_id IS NULL OR project_id=?", (project,)).fetchall()
     if not rows: return {}
     f, out = fernet(), {}
     for r in rows:
@@ -972,18 +986,24 @@ def redact(result: dict, secrets_: dict) -> dict:
 
 class CredentialIn(BaseModel):
     value: str = Field(min_length=4, max_length=4000)
+    project_id: str | None = Field(default=None, max_length=100)  # leave out to keep the current scope; null shares it with every workflow
+
+
+class CredentialScopeIn(BaseModel):
+    project_id: str | None = Field(default=None, max_length=100)
 
 
 @app.get("/api/credentials")
 def list_credentials():
     """Names only. Values are never returned by any endpoint."""
     with conn() as db:
-        rows = db.execute("SELECT name, value_enc, created_at, updated_at FROM credentials ORDER BY name").fetchall()
+        rows = db.execute("SELECT name, value_enc, created_at, updated_at, project_id FROM credentials ORDER BY name").fetchall()
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM projects").fetchall()}
     out = []
     for r in rows:
         try: cfg = oauth_config(fernet().decrypt(r["value_enc"].encode()).decode())
         except InvalidToken: cfg = None
-        out.append({"name": r["name"], "created_at": r["created_at"], "updated_at": r["updated_at"], "kind": "oauth2" if cfg else "secret", "provider": cfg.get("provider") if cfg else None})
+        out.append({"name": r["name"], "project_id": r["project_id"], "project_name": names.get(r["project_id"]), "created_at": r["created_at"], "updated_at": r["updated_at"], "kind": "oauth2" if cfg else "secret", "provider": cfg.get("provider") if cfg else None})
     return out
 
 
@@ -996,10 +1016,25 @@ def save_credential(name: str, body: CredentialIn):
         exists = db.execute("SELECT 1 FROM credentials WHERE name=?", (name,)).fetchone()
         if not exists and db.execute("SELECT COUNT(*) AS n FROM credentials").fetchone()["n"] >= MAX_CREDENTIALS:
             raise HTTPException(400, f"At most {MAX_CREDENTIALS} credentials are allowed")
+        scope = body.project_id or None
+        if "project_id" in body.model_fields_set and scope and not db.execute("SELECT 1 FROM projects WHERE id=?", (scope,)).fetchone(): raise HTTPException(404, "Project not found")
         ts = now()
-        if exists: db.execute("UPDATE credentials SET value_enc=?, updated_at=? WHERE name=?", (encrypted, ts, name))
-        else: db.execute("INSERT INTO credentials (name,value_enc,created_at,updated_at) VALUES (?,?,?,?)", (name, encrypted, ts, ts))
+        if exists:
+            db.execute("UPDATE credentials SET value_enc=?, updated_at=? WHERE name=?", (encrypted, ts, name))
+            if "project_id" in body.model_fields_set: db.execute("UPDATE credentials SET project_id=? WHERE name=?", (scope, name))
+        else: db.execute("INSERT INTO credentials (name,value_enc,created_at,updated_at,project_id) VALUES (?,?,?,?,?)", (name, encrypted, ts, ts, scope))
     return {"name": name, "saved": True}
+
+
+@app.put("/api/credentials/{name}/project")
+def set_credential_project(name: str, body: CredentialScopeIn):
+    """Change who may use a credential without retyping its value: one project, or null for every workflow."""
+    scope = body.project_id or None
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM credentials WHERE name=?", (name,)).fetchone(): raise HTTPException(404, "Credential not found")
+        if scope and not db.execute("SELECT 1 FROM projects WHERE id=?", (scope,)).fetchone(): raise HTTPException(404, "Project not found")
+        db.execute("UPDATE credentials SET project_id=? WHERE name=?", (scope, name))
+    return {"name": name, "project_id": scope}
 
 
 @app.delete("/api/credentials/{name}", status_code=204)
@@ -3407,7 +3442,7 @@ def reset_poll_state(workflow_id: str) -> None:
 
 
 def poll_items(doc: dict, node: dict) -> None:
-    secrets_ = load_secrets()
+    secrets_ = load_secrets(workflow_project(doc))
     token = _secrets_var.set(secrets_)
     try: pairs = fetch_poll_items(node.get("data", {}) or {})
     except Exception as exc:
@@ -3446,7 +3481,7 @@ def submit_inbox_poll(doc: dict, node: dict) -> None:
 
 
 def poll_inbox(doc: dict, node: dict) -> None:
-    secrets_ = load_secrets()
+    secrets_ = load_secrets(workflow_project(doc))
     token = _secrets_var.set(secrets_)
     try: messages = fetch_unseen(node.get("data", {}) or {})
     except Exception as exc:
@@ -4179,7 +4214,7 @@ def run_links(exec_id: str | None) -> dict:
 
 def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_id: str | None = None) -> dict:
     """Run a workflow with credentials available, and hide their values from the result."""
-    secrets_ = load_secrets()
+    secrets_ = load_secrets(workflow_project(doc))
     live = _live_var.get()
     if live is not None: live["secrets"] = secrets_
     holder: dict = {}

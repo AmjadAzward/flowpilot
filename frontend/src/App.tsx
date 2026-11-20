@@ -30,7 +30,7 @@ function flowMatches(f: FlowDoc, query: string): boolean {
 }
 
 type Page = 'dashboard' | 'editor' | 'executions' | 'credentials' | 'tables' | 'users' | 'settings';
-type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null };
+type CredentialRow = { name: string; created_at: string; updated_at: string; kind?: 'secret' | 'oauth2'; provider?: string | null; project_id?: string | null; project_name?: string | null };
 type Theme = 'dark' | 'light';
 
 const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
@@ -136,6 +136,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [creds, setCreds] = useState<CredentialRow[]>([]);
   const [credName, setCredName] = useState('');
   const [credValue, setCredValue] = useState('');
+  const [credProject, setCredProject] = useState('keep');
   const toastTimer = useRef<number>();
   const flowRef = useRef<ReactFlowInstance | null>(null);
 
@@ -457,9 +458,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const saveCredential = async (ev: { preventDefault: () => void }) => {
     ev.preventDefault();
     try {
-      await api(`/api/credentials/${encodeURIComponent(credName.trim())}`, { method: 'PUT', body: JSON.stringify({ value: credValue }) });
-      setCredName(''); setCredValue(''); await refresh(); notify('Credential saved');
+      await api(`/api/credentials/${encodeURIComponent(credName.trim())}`, { method: 'PUT', body: JSON.stringify(credProject === 'keep' ? { value: credValue } : { value: credValue, project_id: credProject || null }) });
+      setCredName(''); setCredValue(''); setCredProject('keep'); await refresh(); notify('Credential saved');
     } catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const moveCredential = async (name: string, projectId: string) => {
+    try { await api(`/api/credentials/${encodeURIComponent(name)}/project`, { method: 'PUT', body: JSON.stringify({ project_id: projectId || null }) }); await refresh(); notify(projectId ? 'Credential limited to that project' : 'Credential shared with every workflow'); }
+    catch (e) { notify((e as Error).message, 'error'); }
   };
   const deleteCredential = async (name: string) => {
     if (!window.confirm(`Delete credential ${name}? Workflows that use it will fail until you add it again.`)) return;
@@ -710,7 +715,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   <div className="inspect-body" data-testid="inspector">
                     <div className="inspect-type">{currentNode.type}</div>
                     <label>Display name<input value={String(currentNode.data.label || '')} onChange={e => updateData('label', e.target.value)} /></label>
-                    <NodeSettings node={currentNode} update={updateData} credentials={creds.filter(c => c.kind !== 'oauth2').map(c => c.name)} oauth={creds.filter(c => c.kind === 'oauth2').map(c => c.name)} flows={flows} currentFlowId={selectedId}
+                    <NodeSettings node={currentNode} update={updateData} credentials={creds.filter(c => c.kind !== 'oauth2' && (!c.project_id || c.project_id === (meta?.project_id ?? null))).map(c => c.name)} oauth={creds.filter(c => c.kind === 'oauth2' && (!c.project_id || c.project_id === (meta?.project_id ?? null))).map(c => c.name)} flows={flows} currentFlowId={selectedId}
                       webhookUrl={webhookUrl} isActive={isActive} onCopyWebhook={() => void copyWebhook()} onRotateWebhook={() => void rotateWebhook()} />
                     {lastRun && nodeSteps.length > 0 && shownStep && (
                       <div className="data-panel" data-testid="data-panel">
@@ -794,6 +799,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               <form className="cred-form" onSubmit={e => void saveCredential(e)} aria-disabled={!canCreds} style={canCreds ? undefined : { opacity: 0.5, pointerEvents: "none" }}>
                 <label>Name<input data-testid="cred-name" value={credName} onChange={e => setCredName(e.target.value)} placeholder="SLACK_URL" required pattern="[A-Za-z][A-Za-z0-9_\-]{0,39}" title="Start with a letter. Use letters, numbers, _ and - (max 40)" /></label>
                 <label>Secret value<input data-testid="cred-value" type="password" autoComplete="off" value={credValue} onChange={e => setCredValue(e.target.value)} placeholder="Paste the token or URL" required minLength={4} /></label>
+                {projectList.length > 0 && <label>Available to<select data-testid="cred-project" value={credProject} onChange={e => setCredProject(e.target.value)}><option value="keep">Keep as is (new ones: every workflow)</option><option value="">Every workflow</option>{projectList.map(p => <option key={p.id} value={p.id}>Only workflows in {p.name}</option>)}</select></label>}
                 <button className="primary" type="submit" data-testid="cred-save"><Plus size={16} />Save credential</button>
               </form>
               <p className="hint pad">Saving a name that already exists replaces its value. Values can never be viewed again, only replaced or deleted.</p>
@@ -805,7 +811,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               {creds.length ? creds.map(c => (
                 <div className="cred-row" key={c.name} data-testid="cred-row">
                   <strong>{c.name}{c.kind === 'oauth2' && <em className="iter"> connected account{c.provider ? ` (${c.provider})` : ''}</em>}</strong>
+                  <span className="cred-use" style={{ display: 'grid', gap: 6, justifyItems: 'start' }}>
                   {c.kind === 'oauth2' ? <span className="muted">Choose it in a node</span> : <code>{`{{cred.${c.name}}}`}</code>}
+                  {projectList.length > 0 && <select className="project-select" aria-label={`Who can use ${c.name}`} value={c.project_id ?? ''} disabled={!canCreds} onChange={e => void moveCredential(c.name, e.target.value)}><option value="">Every workflow</option>{projectList.map(p => <option key={p.id} value={p.id}>Only {p.name}</option>)}</select>}
+                  </span>
                   <span className="muted">{formatTime(c.updated_at)}</span>
                   <span className="row-actions"><button className="icon-button danger" aria-label={`Delete credential ${c.name}`} title="Delete" disabled={!canCreds} onClick={() => void deleteCredential(c.name)}><Trash2 size={15} /></button></span>
                 </div>

@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.35
+- Credentials can be limited to one project (shared ones keep working everywhere)
+- 1186 API tests and a 73-check browser suite
+
 ### v0.34
 - Shared error workflow (Settings) for every workflow without its own; connector download and file import
 - 1176 API tests and a 72-check browser suite
