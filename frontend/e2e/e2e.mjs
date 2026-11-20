@@ -895,6 +895,13 @@ await check('the New Items trigger and the added services expose their settings'
   await page.getByLabel(/^Service/).selectOption('airtable');
   if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes('base_id')) throw new Error('airtable example fields missing base_id');
   if (await page.getByLabel(/^Address/).count()) throw new Error('the address field should be hidden for an app source');
+  await page.getByLabel(/^Watch/).selectOption('folder');
+  await page.getByLabel(/^Folder \(inside/).fill('incoming');
+  await page.getByLabel(/^File names to watch/).waitFor();
+  if (await page.getByLabel(/^Address \(HTTPS\)/).count()) throw new Error('address field should be hidden for a folder');
+  await page.getByLabel(/^Watch/).selectOption('app');
+  await page.getByLabel(/^Service/).selectOption('connector');
+  await page.getByLabel(/^Connector(?! action)/).waitFor();
   await page.getByLabel(/^Watch/).selectOption('rss');
   await page.getByLabel(/^Address/).waitFor();
   await openLibrary();

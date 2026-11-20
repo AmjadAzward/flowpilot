@@ -263,17 +263,28 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <label>Watch<select value={source} onChange={e => {
             update('source', e.target.value);
             if (e.target.value === 'app') { update('service', 'stripe'); update('operation', 'list_customers'); update('fields', appServices.stripe.operations.list_customers.example); update('credential', ''); }
-          }}><option value="rss">An RSS or Atom feed</option><option value="github_issues">GitHub issues</option><option value="json_list">Any JSON list from an API</option><option value="app">An app (Stripe, Airtable, Shopify...)</option></select></label>
+          }}><option value="rss">An RSS or Atom feed</option><option value="github_issues">GitHub issues</option><option value="json_list">Any JSON list from an API</option><option value="app">An app (Stripe, Airtable, Shopify...)</option><option value="folder">A folder of files</option></select></label>
           {source === 'app' && (() => {
-            const service = pollApps[v('service', 'stripe')] ? v('service', 'stripe') : 'stripe';
+            const custom = v('service') === 'connector';
+            const service = custom ? 'stripe' : pollApps[v('service', 'stripe')] ? v('service', 'stripe') : 'stripe';
             const def = appServices[service];
             const ops = pollApps[service];
             const opKey = ops.includes(v('operation')) ? v('operation') : ops[0];
-            const pickService = (e: React.ChangeEvent<HTMLSelectElement>) => { const first = pollApps[e.target.value][0]; update('service', e.target.value); update('operation', first); update('fields', appServices[e.target.value].operations[first].example); update('credential', ''); };
+            const pickService = (e: React.ChangeEvent<HTMLSelectElement>) => { if (e.target.value === 'connector') { update('service', 'connector'); update('connector', ''); update('operation', ''); update('fields', '{}'); update('credential', ''); return; } const first = pollApps[e.target.value][0]; update('service', e.target.value); update('operation', first); update('fields', appServices[e.target.value].operations[first].example); update('credential', ''); };
             const pickOp = (e: React.ChangeEvent<HTMLSelectElement>) => { update('operation', e.target.value); update('fields', def.operations[e.target.value].example); };
+            const serviceSelect = <label>Service<select value={custom ? 'connector' : service} onChange={pickService}>{Object.keys(pollApps).map(k => <option key={k} value={k}>{appServices[k].label}</option>)}<option value="connector">Custom connector (your own API)</option></select></label>;
+            if (custom) return (
+              <>
+                {serviceSelect}
+                <ConnectorFields v={v} update={update} credSelect={credSelect} fieldsLabel="Fields (JSON)" getOnly />
+                <label>Where the list is (blank when the reply is the list; the connector's own result path applies first)<input value={v('items_path')} onChange={text('items_path')} placeholder="items" /></label>
+                <label>Field that identifies an item (blank tries id, _id, number)<input value={v('id_path')} onChange={text('id_path')} placeholder="id" /></label>
+                <label>The API lists items<select value={v('order', 'newest_first')} onChange={text('order')}><option value="newest_first">Newest first</option><option value="oldest_first">Oldest first</option></select></label>
+              </>
+            );
             return (
               <>
-                <label>Service<select value={service} onChange={pickService}>{Object.keys(pollApps).map(k => <option key={k} value={k}>{appServices[k].label}</option>)}</select></label>
+                {serviceSelect}
                 <label>List to watch<select value={opKey} onChange={pickOp}>{ops.map(k => <option key={k} value={k}>{def.operations[k].label}</option>)}</select></label>
                 {def.oauth ? connSelect('credential', `${def.label} connection`) : credSelect('credential', `${def.label} credential`)}
                 <label>Fields (JSON)<textarea rows={4} spellCheck={false} value={v('fields')} onChange={text('fields')} /><span className="hint">{def.operations[opKey].hint}</span></label>
@@ -282,18 +293,23 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
               </>
             );
           })()}
+          {source === 'folder' && <>
+            <label>Folder (inside the files folder, blank for the folder itself)<input value={v('folder')} onChange={text('folder')} placeholder="incoming/invoices" spellCheck={false} /></label>
+            <label>File names to watch<input value={v('pattern', '*')} onChange={text('pattern')} placeholder="*.csv" spellCheck={false} /></label>
+            <span className="hint">Each new file, or a file whose size or modified time changed, starts one run with {'{{name}}'}, {'{{path}}'}, {'{{size}}'} and {'{{modified}}'}. The Files node can read the path. Only the files folder is watched.</span>
+          </>}
           {source === 'github_issues'
             ? <>
                 <label>Repository<input value={v('repo')} onChange={text('repo')} placeholder="owner/name" /></label>
                 <label>Which issues<select value={v('state', 'open')} onChange={text('state')}><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select></label>
               </>
-            : source !== 'app' && <label>Address (HTTPS)<input value={v('url')} onChange={text('url')} spellCheck={false} placeholder="https://example.com/feed.xml" /></label>}
+            : source !== 'app' && source !== 'folder' && <label>Address (HTTPS)<input value={v('url')} onChange={text('url')} spellCheck={false} placeholder="https://example.com/feed.xml" /></label>}
           {source === 'json_list' && <>
             <label>Where the list is (blank when the reply is the list)<input value={v('items_path')} onChange={text('items_path')} placeholder="data.items" /></label>
             <label>Field that identifies an item (blank uses the whole item)<input value={v('id_path')} onChange={text('id_path')} placeholder="id" /></label>
             <label>The API lists items<select value={v('order', 'newest_first')} onChange={text('order')}><option value="newest_first">Newest first</option><option value="oldest_first">Oldest first</option></select></label>
           </>}
-          {source !== 'rss' && source !== 'app' && credSelect('credential', 'Access token (optional)')}
+          {source !== 'rss' && source !== 'app' && source !== 'folder' && credSelect('credential', 'Access token (optional)')}
           <label>Check every (minutes, 1 to 1440)<input type="number" min={1} max={1440} value={v('minutes', '15')} onChange={text('minutes')} /></label>
           <span className="hint">When you activate the workflow, what exists now is remembered and does not run. After that, each new item starts one run (up to 10 per check). Later nodes read the item's fields, for example {'{{title}}'} and {'{{link}}'} for a feed, or {'{{number}}'}, {'{{title}}'} and {'{{url}}'} for GitHub issues. Run workflow tests it with a sample item.</span>
         </>

@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.32
+- New Items trigger watches a folder of files and any GET action of a custom connector
+- 1139 API tests and a 72-check browser suite
+
 ### v0.31
 - Custom connectors: a JSON manifest turns any REST API into an App Action service (Settings page to manage them; simulated-server tests only)
 - 1126 API tests and a 72-check browser suite

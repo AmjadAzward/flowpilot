@@ -84,7 +84,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.31.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.32.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -669,7 +669,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.31.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.32.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -3283,7 +3283,7 @@ _inbox_busy: set[str] = set()
 _inbox_lock = threading.Lock()
 
 
-POLL_SOURCES = ("rss", "github_issues", "json_list", "app")
+POLL_SOURCES = ("rss", "github_issues", "json_list", "app", "folder")
 # Read-only list actions of App Action services that can be watched for new items.
 POLL_APP_OPS = {"stripe": ["list_customers", "list_payments", "list_invoices"], "airtable": ["list_records"], "hubspot": ["list_contacts"], "notion": ["query_database"],
                 "shopify": ["list_orders", "list_products"], "supabase": ["select_rows"], "todoist": ["list_tasks"], "dropbox": ["list_folder"], "gcalendar": ["list_events"],
@@ -3294,13 +3294,55 @@ POLL_SEEN_KEEP = 2000
 SAMPLE_POLL_ITEM = {"id": "sample-1", "title": "Sample item", "link": "https://example.com/sample", "published": "Mon, 01 Jan 2026 09:00:00 +0000", "summary": "A test item."}
 
 
+def folder_target(rel: str) -> Path:
+    """The folder to watch, inside the files folder. Blank means the files folder itself."""
+    rel = rel.strip().replace("\\", "/").rstrip("/")
+    root = files_dir()
+    if not rel: return root
+    if not FILE_PATH_RE.fullmatch(rel) or ".." in rel.split("/") or "//" in rel: raise ValueError("Use a simple relative folder such as incoming/invoices")
+    target = (root / rel).resolve()
+    if target != root and root not in target.parents: raise ValueError("The folder must stay inside the files folder")
+    return target
+
+
+def folder_pattern(d: dict) -> str:
+    pattern = str(d.get("pattern") or "*").strip() or "*"
+    if len(pattern) > 60 or not re.fullmatch(r"[A-Za-z0-9_.*?\- ]+", pattern): raise ValueError("The file name pattern can use letters, numbers, . _ - and the wildcards * and ?")
+    return pattern
+
+
+def list_folder_files(d: dict) -> list[tuple[str, Any]]:
+    """Files in the watched folder, oldest first. A file counts as new again when its size or modified time changes."""
+    import fnmatch
+    root, folder, pattern = files_dir(), folder_target(str(d.get("folder") or "")), folder_pattern(d)
+    if not folder.is_dir(): return []
+    found = []
+    for entry in folder.iterdir():
+        if entry.is_symlink() or not entry.is_file() or not fnmatch.fnmatch(entry.name, pattern): continue
+        stat = entry.stat()
+        found.append((stat.st_mtime_ns, entry, stat))
+    found.sort(key=lambda x: (x[0], x[1].name))
+    out = []
+    for mtime, entry, stat in found[:200]:
+        rel = entry.relative_to(root).as_posix()
+        out.append((f"{rel}|{stat.st_size}|{mtime}"[:300], {"name": entry.name, "path": rel, "size": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()}))
+    return out
+
+
 def validate_poll(d: dict) -> None:
     inbox_minutes(d)
     source = str(d.get("source") or "rss")
     if source not in POLL_SOURCES: raise ValueError(f"Source must be one of: {', '.join(POLL_SOURCES)}")
-    if source == "app":
+    if source == "folder":
+        folder_target(str(d.get("folder") or ""))
+        folder_pattern(d)
+    elif source == "app":
         service, op = str(d.get("service") or "").strip(), str(d.get("operation") or "").strip()
-        if service not in POLL_APP_OPS or op not in POLL_APP_OPS[service]: raise ValueError("Choose a service and a list action that can be watched")
+        if service == "connector":
+            with conn() as db: row = db.execute("SELECT manifest FROM connectors WHERE name=?", (str(d.get("connector") or "").strip(),)).fetchone()
+            ops = json.loads(row["manifest"])["operations"] if row else {}
+            if op not in ops or ops[op]["method"] != "GET": raise ValueError("Choose a connector and one of its GET actions to watch")
+        elif service not in POLL_APP_OPS or op not in POLL_APP_OPS[service]: raise ValueError("Choose a service and a list action that can be watched")
         if not isinstance(read_json(str(d.get("fields") or "{}")), dict): raise ValueError("Fields must be a JSON object")
         if str(d.get("order") or "newest_first") not in ("newest_first", "oldest_first"): raise ValueError("Order must be newest_first or oldest_first")
     elif source == "github_issues":
@@ -3315,8 +3357,9 @@ def fetch_poll_items(d: dict) -> list[tuple[str, Any]]:
     """Current items as (id, item) pairs, oldest first."""
     validate_poll(d)
     source = str(d.get("source") or "rss")
+    if source == "folder": return list_folder_files(d)
     if source == "app":
-        res = app_action({"service": d.get("service"), "operation": d.get("operation"), "credential": d.get("credential"), "fields": d.get("fields") or "{}"}, None)
+        res = app_action({"service": d.get("service"), "connector": d.get("connector"), "operation": d.get("operation"), "credential": d.get("credential"), "fields": d.get("fields") or "{}"}, None)
         path = str(d.get("items_path") or "").strip()
         res = get_path(res, path) if path else res
         if not isinstance(res, list): raise ValueError("That action did not return a list" + (f" at {path!r}" if path else ""))

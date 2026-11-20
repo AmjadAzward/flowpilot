@@ -80,14 +80,14 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
 }
 
 /** App Action settings when the service is "Custom connector". */
-export function ConnectorFields({ v, update, credSelect, fieldsLabel }: { v: (key: string, fallback?: string) => string; update: (key: string, value: string) => void; credSelect: (field: string, label: string) => JSX.Element; fieldsLabel: string }) {
+export function ConnectorFields({ v, update, credSelect, fieldsLabel, getOnly }: { v: (key: string, fallback?: string) => string; update: (key: string, value: string) => void; credSelect: (field: string, label: string) => JSX.Element; fieldsLabel: string; getOnly?: boolean }) {
   const rows = useConnectors();
   const current = rows?.find(c => c.name === v('connector'));
-  const ops = current ? Object.entries(current.operations) : [];
-  const opKey = current && current.operations[v('operation')] ? v('operation') : ops[0]?.[0] ?? '';
+  const ops = current ? Object.entries(current.operations).filter(([, o]) => !getOnly || o.method === 'GET') : [];
+  const opKey = ops.some(([k]) => k === v('operation')) ? v('operation') : ops[0]?.[0] ?? '';
   const pickConnector = (name: string) => {
     const c = rows?.find(x => x.name === name);
-    const first = c ? Object.keys(c.operations)[0] : '';
+    const first = c ? Object.entries(c.operations).find(([, o]) => !getOnly || o.method === 'GET')?.[0] : '';
     update('connector', name); update('operation', first ?? ''); update('fields', first ? JSON.stringify(c!.operations[first].example, null, 2) : '{}');
   };
   return (
