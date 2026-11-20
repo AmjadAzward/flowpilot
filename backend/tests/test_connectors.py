@@ -143,3 +143,11 @@ def test_the_library_fills_and_quotes_values():
     req = connectors.build_request(m, "get_contact", {"id": "x y", "expand": True})
     assert req["url"].endswith("/contacts/x%20y") and req["params"] == {"expand": "true", "limit": 5}
     with pytest.raises(ValueError): connectors.build_request(m, "get_contact", {"id": ""})
+
+
+def test_a_key_sent_in_the_address_never_shows_in_a_failed_run(client, fake_http):
+    add(client, manifest={**MANIFEST, "auth": {"type": "query", "name": "key"}})
+    fake_http.reply["response"] = FakeResponse(500, {"error": "boom"})
+    res = call(client, "get_contact", {"id": "1"}, secret="query-key-secret-77")
+    stored = client.get("/api/executions").json()
+    assert res["status"] == "failed" and "query-key-secret-77" not in json.dumps(res) and "query-key-secret-77" not in json.dumps(stored)

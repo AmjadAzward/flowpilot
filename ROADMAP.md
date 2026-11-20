@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.38.1
+- Review of the v0.30 to v0.38 additions: webhook secrets follow project scope, credential names are hidden from outsiders, imports list the credentials they use, failed runs free their idempotency key
+- Verified that a key sent in a connector's address never appears in a stored failed run
+
 ### v0.38
 - Convert Data: YAML to JSON and back, text from a PDF; Ctrl+K command palette (adds PyYAML and pypdf)
 - 1242 API tests and a 76-check browser suite

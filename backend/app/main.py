@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.38.0"
+VERSION = "0.38.1"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -995,13 +995,16 @@ class CredentialScopeIn(BaseModel):
 
 
 @app.get("/api/credentials")
-def list_credentials():
-    """Names only. Values are never returned by any endpoint."""
+def list_credentials(request: Request):
+    """Names only. Values are never returned by any endpoint. People outside a project do not see that project's credentials."""
+    actor = getattr(request.state, "actor", None)
+    mine = None if sees_everything(actor) else my_project_ids(actor)
     with conn() as db:
         rows = db.execute("SELECT name, value_enc, created_at, updated_at, project_id FROM credentials ORDER BY name").fetchall()
         names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM projects").fetchall()}
     out = []
     for r in rows:
+        if mine is not None and r["project_id"] is not None and r["project_id"] not in mine: continue
         try: cfg = oauth_config(fernet().decrypt(r["value_enc"].encode()).decode())
         except InvalidToken: cfg = None
         out.append({"name": r["name"], "project_id": r["project_id"], "project_name": names.get(r["project_id"]), "created_at": r["created_at"], "updated_at": r["updated_at"], "kind": "oauth2" if cfg else "secret", "provider": cfg.get("provider") if cfg else None})
@@ -4842,13 +4845,13 @@ def hook_auth_settings(data: dict) -> tuple[str, str, str]:
     return kind, header, cred
 
 
-def hook_denied(node: dict | None, headers: Any) -> bool:
+def hook_denied(node: dict | None, headers: Any, project: str | None = ALL_PROJECTS) -> bool:
     """True when the webhook asks for authentication and the request does not supply it. Compares in constant time."""
     data = (node or {}).get("data") or {}
     try: kind, header, cred = hook_auth_settings(data)
     except ValueError: return True  # a broken setting must never open the door
     if kind in ("none", "hmac"): return False  # a signed webhook is checked once the body has been read (hmac_denied)
-    secret = load_secrets().get(cred)
+    secret = load_secrets(project).get(cred)
     if not secret: return True
     if kind == "header": supplied = headers.get(header, "")
     else:
@@ -4884,14 +4887,14 @@ def ip_allowed(node: dict | None, client_ip: str) -> bool:
 HMAC_TOLERANCE = 300  # seconds a signed request stays valid
 
 
-def hmac_denied(node: dict | None, headers: Any, raw: bytes) -> bool:
+def hmac_denied(node: dict | None, headers: Any, raw: bytes, project: str | None = ALL_PROJECTS) -> bool:
     """True when a signed webhook has no valid signature. The signature is HMAC-SHA256 (hex, optionally sha256= prefixed) of the raw body,
     or of '<timestamp>.<body>' when a timestamp header is configured; then requests older (or newer) than five minutes are refused."""
     data = (node or {}).get("data") or {}
     try: kind, header, cred = hook_auth_settings(data)
     except ValueError: return True
     if kind != "hmac": return False
-    secret = load_secrets().get(cred)
+    secret = load_secrets(project).get(cred)
     if not secret: return True
     message = raw
     stamp_header = str(data.get("auth_timestamp_header") or "").strip()
@@ -4922,6 +4925,13 @@ def is_duplicate_request(doc: dict, headers: Any) -> bool:
         try: db.execute("INSERT INTO hook_keys VALUES (?,?,?)", (doc["id"], key, now()))
         except Exception: return True
     return False
+
+
+def release_request_key(doc: dict, headers: Any) -> None:
+    """A run that failed frees its Idempotency-Key, so the sender's retry is not mistaken for a repeat of a request that worked."""
+    key = str(headers.get("idempotency-key", "")).strip()[:200]
+    if key:
+        with conn() as db: db.execute("DELETE FROM hook_keys WHERE workflow_id=? AND key=?", (doc["id"], key))
 
 
 def form_fields(node: dict | None) -> list[dict]:
@@ -5028,7 +5038,7 @@ async def receive_webhook(token: str, request: Request):
     if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
     if not ip_allowed(start_node(doc), request.client.host if request.client else ""): raise HTTPException(403, "This address may not call this webhook")
-    if await run_in_threadpool(hook_denied, start_node(doc), request.headers):
+    if await run_in_threadpool(hook_denied, start_node(doc), request.headers, await run_in_threadpool(workflow_project, doc)):
         raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="webhook"'} if str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "basic" else None)
     signed = str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "hmac"
     fields = [] if signed else form_fields(start_node(doc))
@@ -5047,7 +5057,7 @@ async def receive_webhook(token: str, request: Request):
         if size > limit: raise HTTPException(413, "Payload too large")
         chunks.append(chunk)
     raw = b"".join(chunks)
-    if signed and await run_in_threadpool(hmac_denied, start_node(doc), request.headers, raw): raise HTTPException(401, "Unauthorized")
+    if signed and await run_in_threadpool(hmac_denied, start_node(doc), request.headers, raw, await run_in_threadpool(workflow_project, doc)): raise HTTPException(401, "Unauthorized")
     if await run_in_threadpool(is_duplicate_request, doc, request.headers):
         return JSONResponse({"status": "duplicate"}, status_code=200)
     body: Any = None
@@ -5079,6 +5089,7 @@ async def receive_webhook(token: str, request: Request):
         if is_form: return form_done_page(doc, True)
         return JSONResponse({"status": "queued", "job_id": job_id}, status_code=202)
     result = await run_in_threadpool(execute_workflow, doc, "webhook", payload)
+    if result["status"] == "failed": await run_in_threadpool(release_request_key, doc, request.headers)
     if result["status"] == "success" and result.get("response"):
         return JSONResponse(result["response"]["body"], status_code=result["response"]["status"])
     code = 200 if result["status"] in ("success", "waiting") else 500
@@ -5190,6 +5201,21 @@ class RestoreIn(BaseModel):
     connectors: dict[str, Any] = Field(default_factory=dict, max_length=60)
 
 
+CRED_REF_RE = re.compile(r"cred\.([A-Za-z][A-Za-z0-9_-]{0,39})")
+
+
+def credentials_used(doc: dict) -> list[str]:
+    """Names of credentials a workflow refers to, through {{cred.NAME}} or a credential field. Shown after an import so it can be reviewed first."""
+    found: set[str] = set()
+    for n in doc.get("nodes") or []:
+        data = n.get("data") or {}
+        for key, value in data.items():
+            if isinstance(value, str):
+                found.update(CRED_REF_RE.findall(value))
+                if key in ("credential", "auth_credential") and NAME_RE.fullmatch(value.strip()): found.add(value.strip())
+    return sorted(found)[:20]
+
+
 @app.post("/api/backup/restore")
 def restore_workflows(body: RestoreIn):
     """Add the workflows from a backup file as new, inactive workflows. Nothing existing is overwritten."""
@@ -5228,7 +5254,7 @@ def apply_backup(body: RestoreIn) -> dict:
         doc = wf.model_dump()
         doc["id"] = wid
         with conn() as db: insert_workflow(db, wid, wf.name, wf.description, doc, now())
-        created.append({"id": wid, "name": wf.name})
+        created.append({"id": wid, "name": wf.name, "uses_credentials": credentials_used(doc)})
     made, passed = [], []
     for cname, manifest in body.connectors.items():
         try:

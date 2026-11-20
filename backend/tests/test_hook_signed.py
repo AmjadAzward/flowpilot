@@ -113,3 +113,13 @@ def test_no_time_zone_keeps_the_old_behaviour_and_interval_ignores_it():
     assert main.validate_schedule({"mode": "interval", "minutes": 5, "timezone": "UTC"}) == {"mode": "interval", "minutes": 5}
     after = datetime(2030, 1, 1, 0, 0, tzinfo=timezone.utc)
     assert main.next_run_after(main.validate_schedule({"mode": "daily", "time": "09:00", "timezone": "UTC"}), after) == datetime(2030, 1, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def test_a_failed_run_frees_its_idempotency_key(client, anon):
+    client.put("/api/credentials/SIGNKEY", json={"value": SECRET})
+    wid = make_flow(client, [node("w", "webhook", sample="{}", idempotency="on"), node("f", "fail", message="boom")], [edge("w", "f")])
+    assert client.post(f"/api/workflows/{wid}/active", json={"active": True}).status_code == 200
+    url = f"/api/hooks/{client.get(f'/api/workflows/{wid}').json()['webhook_token']}"
+    assert anon.post(url, json={}, headers={"Idempotency-Key": "retry-me"}).status_code == 500
+    assert anon.post(url, json={}, headers={"Idempotency-Key": "retry-me"}).status_code == 500  # runs again instead of answering "duplicate"
+    assert runs(wid) == 2

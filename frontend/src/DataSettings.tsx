@@ -20,7 +20,7 @@ function ErrorWorkflowCard({ canTune, notify }: { canTune: boolean; notify: (msg
   return (
     <div className="panel settings-card wide" data-testid="error-workflow-card">
       <Siren size={22} /><h2>Shared error workflow</h2>
-      <p>When any workflow fails and has no error workflow of its own, this one runs with the failure details ({'{{workflow.name}}'}, {'{{error}}'}, {'{{failed_node}}'}). A workflow's own choice always wins, and an error workflow never triggers another.</p>
+      <p>When any workflow fails and has no error workflow of its own, this one runs with the failure details ({'{{workflow.name}}'}, {'{{error}}'}, {'{{failed_node}}'}). A workflow's own choice always wins, and an error workflow never triggers another. Failure details from every project reach this workflow, so people in its project will see them.</p>
       <label>Run this workflow on failures
         <select aria-label="Shared error workflow" value={current ?? ''} disabled={!canTune || current === null} onChange={e => void choose(e.target.value)}>
           <option value="">None</option>
@@ -58,19 +58,23 @@ export function DataSettings({ role, notify, onChanged }: Props) {
     } catch (err) { notify((err as Error).message, 'error'); }
   };
   const [link, setLink] = useState('');
+  const used = (created: { uses_credentials?: string[] }[]) => {
+    const names = [...new Set(created.flatMap(c => c.uses_credentials ?? []))];
+    return names.length ? `. They refer to your credentials ${names.join(', ')}: read each workflow before running it` : '';
+  };
   const importLink = async () => {
     try {
-      const res = await request<{ created: unknown[]; skipped: { reason: string }[]; connectors_created?: string[] }>('/api/backup/import-url', { method: 'POST', body: JSON.stringify({ url: link.trim() }) });
-      notify(`Added ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${res.connectors_created?.length ? ` and ${res.connectors_created.length} connector${res.connectors_created.length === 1 ? '' : 's'}` : ''} (inactive)${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}`, res.skipped.length ? 'error' : 'ok');
+      const res = await request<{ created: { uses_credentials?: string[] }[]; skipped: { reason: string }[]; connectors_created?: string[] }>('/api/backup/import-url', { method: 'POST', body: JSON.stringify({ url: link.trim() }) });
+      notify(`Added ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${res.connectors_created?.length ? ` and ${res.connectors_created.length} connector${res.connectors_created.length === 1 ? '' : 's'}` : ''} (inactive)${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}${used(res.created)}`, res.skipped.length ? 'error' : 'ok');
       setLink(''); onChanged();
     } catch (err) { notify((err as Error).message, 'error'); }
   };
   const restore = async (file: File) => {
     try {
       const data = JSON.parse(await file.text());
-      const res = await request<{ created: unknown[]; skipped: { name: string; reason: string }[]; connectors_created?: string[]; connectors_skipped?: { name: string; reason: string }[] }>('/api/backup/restore', { method: 'POST', body: JSON.stringify(data) });
+      const res = await request<{ created: { uses_credentials?: string[] }[]; skipped: { name: string; reason: string }[]; connectors_created?: string[]; connectors_skipped?: { name: string; reason: string }[] }>('/api/backup/restore', { method: 'POST', body: JSON.stringify(data) });
       const extra = [res.connectors_created?.length ? ` and ${res.connectors_created.length} connector${res.connectors_created.length === 1 ? '' : 's'}` : '', res.connectors_skipped?.length ? `, skipped ${res.connectors_skipped.length} connector${res.connectors_skipped.length === 1 ? '' : 's'} (${res.connectors_skipped[0].reason})` : ''].join('');
-      notify(`Restored ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${extra}${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}`, res.skipped.length || res.connectors_skipped?.length ? 'error' : 'ok');
+      notify(`Restored ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${extra}${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}${used(res.created)}`, res.skipped.length || res.connectors_skipped?.length ? 'error' : 'ok');
       onChanged();
     } catch (err) { notify(err instanceof SyntaxError ? 'That file is not valid JSON' : (err as Error).message, 'error'); }
   };
