@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.37
+- Run summary on the Executions page and a Prometheus-style metrics endpoint; webhook IP allow-list; AI translate and rewrite plus one corrective retry for invalid JSON; backups include connectors and can be imported from a link
+- 1235 API tests and a 75-check browser suite
+
 ### v0.36
 - AI node tasks: extract fields, classify, sentiment, summarize (simulated-model tests only)
 - 1204 API tests and a 73-check browser suite

@@ -388,12 +388,16 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
               <option value="classify">Sort text into categories</option>
               <option value="sentiment">Judge sentiment (positive, neutral, negative)</option>
               <option value="summarize">Summarize text</option>
+              <option value="translate">Translate text</option>
+              <option value="rewrite">Rewrite text in a style</option>
             </select>
           </label>
           {task === 'prompt' && <label>System instruction (optional)<textarea rows={2} spellCheck={false} value={v('system')} onChange={text('system')} placeholder="You are a helpful assistant. Answer briefly." /></label>}
           <label>{task === 'prompt' ? 'Prompt' : 'Text to work on'}<textarea rows={task === 'prompt' ? 5 : 3} spellCheck={false} value={v('prompt')} onChange={text('prompt')} placeholder={task === 'prompt' ? '' : '{{body.message}}'} /></label>
           {task === 'extract' && <label>Fields to extract (JSON)<textarea rows={5} spellCheck={false} value={v('schema')} onChange={text('schema')} placeholder={'{"name": "the sender full name", "amount": {"type": "number", "description": "total in dollars"}}'} /><span className="hint">Types: text, number, integer, true_false, list. Anything the text does not say comes back as null. The result has exactly these fields.</span></label>}
           {task === 'classify' && <label>Categories (comma separated)<input value={v('categories')} onChange={text('categories')} placeholder="Billing, Support, Sales" /><span className="hint">The result is {'{category, confidence}'}. Follow it with a Switch or Condition on category.</span></label>}
+          {task === 'translate' && <label>Translate into<input value={v('language')} onChange={text('language')} placeholder="French" /></label>}
+          {task === 'rewrite' && <label>Style<select value={v('style', 'professional')} onChange={text('style')}><option value="professional">Professional</option><option value="friendly">Friendly</option><option value="concise">Concise</option><option value="simple">Simple language</option><option value="formal">Formal</option></select></label>}
           {task === 'summarize' && <label>Length<select value={v('length', 'short')} onChange={text('length')}><option value="short">One or two sentences</option><option value="medium">A short paragraph</option><option value="long">Several paragraphs</option></select></label>}
           <label>Creativity (0 to 2)<input type="number" min={0} max={2} step={0.1} value={v('temperature', '0.2')} onChange={text('temperature')} /></label>
           {task === 'prompt' && <label>Reply as<select value={v('json_output', 'false')} onChange={text('json_output')}><option value="false">Text: {'{"text": ...}'}</option><option value="true">JSON: the reply becomes data</option></select></label>}
@@ -542,6 +546,8 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           {v('auth_type', 'none') === 'header' && <label>Header name<input value={v('auth_header', 'X-Webhook-Token')} onChange={text('auth_header')} placeholder="X-Webhook-Token" /></label>}
           {v('auth_type', 'none') !== 'none' && credSelect('auth_credential', v('auth_type') === 'basic' ? 'Credential holding user:password' : 'Credential holding the secret')}
           {v('auth_type', 'none') !== 'none' && <span className="hint">Calls without the right secret get a 401 and do not run the workflow. Browsers cannot send a header, so a public form does not work together with this. The Run button is not affected.</span>}
+          <label>Only these addresses may call (optional)<input value={v('allowed_ips')} onChange={text('allowed_ips')} placeholder="203.0.113.7, 10.0.0.0/8" spellCheck={false} /></label>
+          {v('allowed_ips') && <span className="hint">Callers from any other address get a 403. This checks the address that connects to FlowPilot, so behind a proxy or tunnel it sees the proxy. The Run button is not affected.</span>}
           <label>Repeated requests<select value={v('idempotency', 'off')} onChange={text('idempotency')}><option value="off">Run every request</option><option value="on">Ignore a request whose Idempotency-Key header was already seen in the last day</option></select></label>
           <label>Accept file uploads<select value={v('accept_files', 'false')} onChange={text('accept_files')}><option value="false">No (a form with a file field still accepts files)</option><option value="true">Yes: multipart uploads from any sender</option></select></label>
           <span className="hint">Uploads are limited to 5 files, 5 MB each and 10 MB in total, and are stored in the files folder under uploads/. They arrive as {'{{body.files.0.filename}}'}, {'{{body.files.0.size}}'} and {'{{body.files.0.path}}'}; the Files node can read the path. Old uploads are deleted with the run-history cleanup. Anyone with the URL can upload, so keep the address private.</span>

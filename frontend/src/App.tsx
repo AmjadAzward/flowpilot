@@ -18,6 +18,7 @@ import { AuditPanel } from './AuditPanel';
 import { Tour } from './Tour';
 import { VariablesPanel } from './VariablesPanel';
 import { ConnectorsPanel } from './ConnectorsPanel';
+import { RunStats } from './RunStats';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -777,6 +778,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 <button className="ghost danger" onClick={() => void clearRuns()} disabled={!runs.length}><Trash2 size={15} />Clear</button>
               </div>
             </div>
+            <RunStats refreshKey={runs.length} />
             <div className="panel history">
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">

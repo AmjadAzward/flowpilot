@@ -105,3 +105,44 @@ def test_the_credential_never_appears_in_results(client, fake_http):
     wid = make_flow(client, nodes, [edge("t", "a")])
     res = client.post(f"/api/workflows/{wid}/run").json()
     assert res["status"] == "failed" and "sk-secret-key-123" not in json.dumps(res)
+
+
+def test_translate_and_rewrite(client, fake_http):
+    res = ai(client, fake_http, " Bonjour Dana ", task="translate", prompt="Hello Dana", language="French")
+    assert res["output"] == {"text": "Bonjour Dana", "model": "llama3.2"} and "into French" in system_prompt(fake_http)
+    for bad in ("", "French; drop", "x"):
+        assert ai(client, fake_http, "x", task="translate", prompt="Hi", language=bad)["status"] == "failed"
+    res = ai(client, fake_http, "Dear Dana, thank you.", task="rewrite", prompt="thx dana", style="formal")
+    assert res["output"]["text"] == "Dear Dana, thank you." and "formal tone" in system_prompt(fake_http)
+    assert ai(client, fake_http, "x", task="rewrite", prompt="hi", style="pirate")["status"] == "failed"
+
+
+def test_invalid_json_gets_one_corrective_retry(client, monkeypatch):
+    from app import main
+    answers = iter(["Sure! Here you go: name is Dana", '{"name": "Dana"}'])
+    seen = []
+
+    def fake_request(method, url, headers, **kwargs):
+        seen.append(kwargs["json"]["messages"])
+        return {"choices": [{"message": {"content": next(answers)}}]}
+    monkeypatch.setattr(main, "do_request", fake_request)
+    client.put("/api/credentials/LLM", json={"value": AI})
+    nodes = [node("t", "trigger"), node("a", "ai", credential="LLM", task="extract", prompt="Dana wrote this", schema='{"name": "who"}')]
+    wid = make_flow(client, nodes, [edge("t", "a")])
+    res = client.post(f"/api/workflows/{wid}/run").json()
+    assert res["status"] == "success" and res["output"] == {"name": "Dana"}
+    assert len(seen) == 2 and seen[1][-1]["content"].startswith("That was not valid JSON") and seen[1][-2]["role"] == "assistant"
+
+
+def test_a_second_invalid_reply_fails_after_exactly_one_retry(client, monkeypatch):
+    from app import main
+    count = []
+
+    def fake_request(method, url, headers, **kwargs):
+        count.append(1)
+        return {"choices": [{"message": {"content": "still not json"}}]}
+    monkeypatch.setattr(main, "do_request", fake_request)
+    client.put("/api/credentials/LLM", json={"value": AI})
+    wid = make_flow(client, [node("t", "trigger"), node("a", "ai", credential="LLM", task="classify", prompt="x", categories="A, B")], [edge("t", "a")])
+    res = client.post(f"/api/workflows/{wid}/run").json()
+    assert res["status"] == "failed" and "not valid JSON" in res["error"] and len(count) == 2

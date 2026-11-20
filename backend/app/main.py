@@ -85,7 +85,8 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.36.0", description="Local visual automation engine", lifespan=lifespan)
+VERSION = "0.37.0"
+app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -346,7 +347,7 @@ SELF_SERVICE = {"/api/auth/password"}
 def allowed(role: str, method: str, path: str) -> bool:
     """Roles: viewer reads, editor also builds and runs workflows, admin also manages credentials, owner also manages users."""
     if path in SELF_SERVICE: return True
-    if path.startswith(("/api/users", "/api/backup", "/api/audit", "/api/sso")): return role == "owner"
+    if path.startswith(("/api/users", "/api/backup", "/api/audit", "/api/sso", "/api/metrics")): return role == "owner"
     if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
     if path.startswith(("/api/credentials", "/api/oauth", "/api/settings", "/api/variables", "/api/connectors")): return role in ("owner", "admin")
@@ -672,7 +673,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.36.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": VERSION, "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -3091,7 +3092,8 @@ def _json_reply(text: str) -> Any:
     except ValueError: raise ValueError("The AI reply was not valid JSON. Ask for JSON only in the prompt.")
 
 
-AI_TASKS = ("prompt", "extract", "classify", "sentiment", "summarize")
+AI_TASKS = ("prompt", "extract", "classify", "sentiment", "summarize", "translate", "rewrite")
+REWRITE_STYLES = {"professional": "a professional, polite tone", "friendly": "a warm, friendly tone", "concise": "as few words as possible", "simple": "plain, simple language", "formal": "a formal tone"}
 EXTRACT_TYPES = ("text", "number", "integer", "true_false", "list")
 
 
@@ -3149,8 +3151,20 @@ def run_ai(d: dict, previous: Any) -> Any:
         length = {"short": "one or two sentences", "medium": "a short paragraph", "long": "several paragraphs"}.get(str(d.get("length") or "short"))
         if not length: raise ValueError("Length must be short, medium or long")
         system = f"Summarize the user's text in {length}. Reply with the summary only."
+    elif task == "translate":
+        language = str(d.get("language") or "").strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z \-()]{1,40}", language): raise ValueError("Language is the name of the target language, such as French or Brazilian Portuguese")
+        system = f"Translate the user's text into {language}. Keep names, numbers and formatting. Reply with the translation only."
+    elif task == "rewrite":
+        style = REWRITE_STYLES.get(str(d.get("style") or "professional"))
+        if not style: raise ValueError(f"Style must be one of: {', '.join(REWRITE_STYLES)}")
+        system = f"Rewrite the user's text in {style}. Keep the meaning and every fact. Reply with the rewritten text only."
     messages = ([{"role": "system", "content": system}] if system.strip() else []) + [{"role": "user", "content": prompt}]
     text = _chat(base, model, key, messages, temperature)
+    if task in ("extract", "classify", "sentiment"):
+        try: _json_reply(text)
+        except ValueError:  # one corrective retry: small models often wrap JSON in chatter
+            text = _chat(base, model, key, messages + [{"role": "assistant", "content": text[:4000]}, {"role": "user", "content": "That was not valid JSON. Reply again with the JSON object only, no other text."}], 0.0)
     if task == "extract":
         got = _json_reply(text)
         if not isinstance(got, dict): raise ValueError("The AI reply was not a JSON object")
@@ -3163,7 +3177,7 @@ def run_ai(d: dict, previous: Any) -> Any:
         try: confidence = max(0.0, min(float(got.get("confidence")), 1.0)) if isinstance(got, dict) and got.get("confidence") is not None else None
         except (TypeError, ValueError): confidence = None
         return {"category": match, "confidence": confidence, "model": model}
-    if task == "summarize": return {"text": text.strip(), "model": model}
+    if task in ("summarize", "translate", "rewrite"): return {"text": text.strip(), "model": model}
     if str(d.get("json_output") or "false").lower() == "true": return _json_reply(text)
     return {"text": text, "model": model}
 
@@ -4685,6 +4699,7 @@ def activation_next_run(doc: dict, after: datetime | None = None) -> str | None:
     if node["type"] == "trigger": raise ValueError("Add a Schedule or Webhook trigger to activate this workflow")
     if node["type"] == "webhook":
         hook_auth_settings(node.get("data", {}) or {})
+        parse_ip_rules((node.get("data") or {}).get("allowed_ips") or "")
         return None
     if node["type"] == "email_in":
         inbox_credential(node.get("data", {}))
@@ -4813,6 +4828,28 @@ def hook_denied(node: dict | None, headers: Any) -> bool:
         try: supplied = base64.b64decode(auth[6:].strip(), validate=True).decode("utf-8")
         except Exception: return True
     return not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
+
+
+def parse_ip_rules(text: str) -> list:
+    """Addresses or ranges (10.0.0.0/8, 203.0.113.7, 2001:db8::/32) separated by commas or spaces. Raises ValueError for anything else."""
+    import ipaddress
+    rules = [x for x in re.split(r"[,\s]+", str(text or "").strip()) if x]
+    if len(rules) > 50: raise ValueError("At most 50 allowed addresses")
+    try: return [ipaddress.ip_network(r, strict=False) for r in rules]
+    except ValueError: raise ValueError("Allowed addresses are IPs or ranges such as 203.0.113.7 or 10.0.0.0/8, separated by commas")
+
+
+def ip_allowed(node: dict | None, client_ip: str) -> bool:
+    """True when the webhook has no allow-list or the caller's address is on it. A broken list refuses everyone rather than opening the door."""
+    import ipaddress
+    text = str(((node or {}).get("data") or {}).get("allowed_ips") or "").strip()
+    if not text: return True
+    try:
+        rules = parse_ip_rules(text)
+        ip = ipaddress.ip_address(client_ip)
+        if getattr(ip, "ipv4_mapped", None): ip = ip.ipv4_mapped
+    except ValueError: return False
+    return any(ip.version == r.version and ip in r for r in rules)
 
 
 HMAC_TOLERANCE = 300  # seconds a signed request stays valid
@@ -4961,6 +4998,7 @@ async def receive_webhook(token: str, request: Request):
     doc = await run_in_threadpool(lookup_hook, token)
     if not doc or trigger_kind(doc) != "webhook": raise HTTPException(404, "Not found")
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
+    if not ip_allowed(start_node(doc), request.client.host if request.client else ""): raise HTTPException(403, "This address may not call this webhook")
     if await run_in_threadpool(hook_denied, start_node(doc), request.headers):
         raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="webhook"'} if str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "basic" else None)
     signed = str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "hmac"
@@ -5112,18 +5150,42 @@ def backup_workflows():
     for r in rows:
         d = json.loads(r["definition"])
         items.append({k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges", "settings")})
-    body = {"format": "flowpilot-backup", "version": 1, "exported_at": now(), "workflows": items}
+    with conn() as db: conns = {r["name"]: json.loads(r["manifest"]) for r in db.execute("SELECT name, manifest FROM connectors ORDER BY name").fetchall()}
+    body = {"format": "flowpilot-backup", "version": 1, "exported_at": now(), "workflows": items, "connectors": conns}  # connectors hold addresses and field templates, never secrets
     return JSONResponse(body, headers={"Content-Disposition": 'attachment; filename="flowpilot-workflows.json"'})
 
 
 class RestoreIn(BaseModel):
     format: str
     workflows: list[dict[str, Any]] = Field(max_length=200)
+    connectors: dict[str, Any] = Field(default_factory=dict, max_length=60)
 
 
 @app.post("/api/backup/restore")
 def restore_workflows(body: RestoreIn):
     """Add the workflows from a backup file as new, inactive workflows. Nothing existing is overwritten."""
+    return apply_backup(body)
+
+
+class ImportUrlIn(BaseModel):
+    url: str = Field(min_length=8, max_length=500)
+
+
+@app.post("/api/backup/import-url")
+def import_from_link(body: ImportUrlIn):
+    """Fetch a template pack (the same file as a workflow backup) from a public HTTPS link and add it. Nothing runs and nothing is overwritten."""
+    try:
+        safe_url(body.url.strip())
+        data = do_request("GET", body.url.strip(), {"Accept": "application/json"}, timeout=10.0)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    except httpx.HTTPError as exc: raise HTTPException(400, f"Could not download that file ({type(exc).__name__})")
+    if not isinstance(data, dict): raise HTTPException(400, "That link did not return a FlowPilot file")
+    try: pack = RestoreIn(**data)
+    except Exception: raise HTTPException(400, "That file is not a FlowPilot backup or template pack")
+    return apply_backup(pack)
+
+
+def apply_backup(body: RestoreIn) -> dict:
     if body.format != "flowpilot-backup": raise HTTPException(400, "This is not a FlowPilot backup file")
     created, skipped = [], []
     for item in body.workflows:
@@ -5138,7 +5200,18 @@ def restore_workflows(body: RestoreIn):
         doc["id"] = wid
         with conn() as db: insert_workflow(db, wid, wf.name, wf.description, doc, now())
         created.append({"id": wid, "name": wf.name})
-    return {"created": created, "skipped": skipped}
+    made, passed = [], []
+    for cname, manifest in body.connectors.items():
+        try:
+            if not connector_lib.NAME_RE.fullmatch(str(cname)): raise ValueError("invalid name")
+            clean = connector_lib.validate_manifest(manifest)
+            with conn() as db:
+                if db.execute("SELECT 1 FROM connectors WHERE name=?", (cname,)).fetchone(): raise ValueError("already exists")
+                if db.execute("SELECT COUNT(*) c FROM connectors").fetchone()["c"] >= MAX_CONNECTORS: raise ValueError("too many connectors")
+                db.execute("INSERT INTO connectors (name,manifest,updated_at) VALUES (?,?,?)", (cname, json.dumps(clean), now()))
+            made.append(cname)
+        except ValueError as exc: passed.append({"name": str(cname)[:60], "reason": str(exc)[:150]})
+    return {"created": created, "skipped": skipped, "connectors_created": made, "connectors_skipped": passed}
 
 
 @app.get("/api/backup/database")
@@ -5199,6 +5272,51 @@ def executions(request: Request, workflow_id: str | None = None):
         waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
              "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None} for r in rows]
+
+
+STATS_WINDOWS = {"24h": 1, "7d": 7, "30d": 30}
+
+
+def duration_seconds(started: str | None, finished: str | None) -> float | None:
+    try: return max(0.0, (datetime.fromisoformat(finished) - datetime.fromisoformat(started)).total_seconds())
+    except (TypeError, ValueError): return None
+
+
+@app.get("/api/stats")
+def run_stats(request: Request, window: str = "7d"):
+    """Success and failure counts, average run time and the workflows that fail most, for the runs this person may see."""
+    if window not in STATS_WINDOWS: raise HTTPException(400, "window must be 24h, 7d or 30d")
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=STATS_WINDOWS[window])).isoformat()
+    with conn() as db:
+        rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE started_at >= ?", (cutoff,)).fetchall()
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM workflows").fetchall()}
+    rows = [r for r in rows if visible is None or r["workflow_id"] in visible]
+    done = [r for r in rows if r["status"] in ("success", "failed")]
+    failed = [r for r in done if r["status"] == "failed"]
+    times = [d for d in (duration_seconds(r["started_at"], r["finished_at"]) for r in done) if d is not None]
+    per: dict[str, int] = {}
+    for r in failed: per[r["workflow_id"]] = per.get(r["workflow_id"], 0) + 1
+    top = sorted(per.items(), key=lambda kv: (-kv[1], names.get(kv[0], "")))[:5]
+    return {"window": window, "total": len(rows), "success": len(done) - len(failed), "failed": len(failed), "waiting": sum(1 for r in rows if r["status"] == "waiting"),
+            "failure_rate": round(len(failed) / len(done), 4) if done else None, "average_seconds": round(sum(times) / len(times), 3) if times else None,
+            "top_failing": [{"workflow_id": w, "name": names.get(w, "(deleted)"), "failed": n} for w, n in top]}
+
+
+@app.get("/api/metrics")
+def metrics():
+    """Prometheus text format for owners: run counts by status, active workflows and queue depth."""
+    with conn() as db:
+        by = {r["status"]: r["n"] for r in db.execute("SELECT status, COUNT(*) n FROM executions GROUP BY status").fetchall()}
+        active = db.execute("SELECT COUNT(*) n FROM workflows WHERE active=1").fetchone()["n"]
+        total = db.execute("SELECT COUNT(*) n FROM workflows").fetchone()["n"]
+        queued = db.execute("SELECT COUNT(*) n FROM jobs WHERE status='queued'").fetchone()["n"]
+    lines = ["# HELP flowpilot_runs Stored runs by status.", "# TYPE flowpilot_runs gauge"]
+    lines += [f'flowpilot_runs{{status="{re.sub(r"[^a-z_]", "", s)}"}} {n}' for s, n in sorted(by.items())]
+    lines += ["# HELP flowpilot_workflows Workflows by state.", "# TYPE flowpilot_workflows gauge", f'flowpilot_workflows{{state="active"}} {active}', f'flowpilot_workflows{{state="total"}} {total}',
+              "# HELP flowpilot_queue_jobs Jobs waiting for a worker.", "# TYPE flowpilot_queue_jobs gauge", f"flowpilot_queue_jobs {queued}",
+              "# HELP flowpilot_info Version of this FlowPilot.", "# TYPE flowpilot_info gauge", f'flowpilot_info{{version="{VERSION}"}} 1']
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 # ---------------------------------------------------------------------------

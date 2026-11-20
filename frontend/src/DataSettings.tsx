@@ -57,11 +57,20 @@ export function DataSettings({ role, notify, onChanged }: Props) {
       notify(res.removed ? `Saved. ${res.removed} old runs removed.` : 'Saved'); await load(); onChanged();
     } catch (err) { notify((err as Error).message, 'error'); }
   };
+  const [link, setLink] = useState('');
+  const importLink = async () => {
+    try {
+      const res = await request<{ created: unknown[]; skipped: { reason: string }[]; connectors_created?: string[] }>('/api/backup/import-url', { method: 'POST', body: JSON.stringify({ url: link.trim() }) });
+      notify(`Added ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${res.connectors_created?.length ? ` and ${res.connectors_created.length} connector${res.connectors_created.length === 1 ? '' : 's'}` : ''} (inactive)${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}`, res.skipped.length ? 'error' : 'ok');
+      setLink(''); onChanged();
+    } catch (err) { notify((err as Error).message, 'error'); }
+  };
   const restore = async (file: File) => {
     try {
       const data = JSON.parse(await file.text());
-      const res = await request<{ created: unknown[]; skipped: { name: string; reason: string }[] }>('/api/backup/restore', { method: 'POST', body: JSON.stringify(data) });
-      notify(`Restored ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}`, res.skipped.length ? 'error' : 'ok');
+      const res = await request<{ created: unknown[]; skipped: { name: string; reason: string }[]; connectors_created?: string[]; connectors_skipped?: { name: string; reason: string }[] }>('/api/backup/restore', { method: 'POST', body: JSON.stringify(data) });
+      const extra = [res.connectors_created?.length ? ` and ${res.connectors_created.length} connector${res.connectors_created.length === 1 ? '' : 's'}` : '', res.connectors_skipped?.length ? `, skipped ${res.connectors_skipped.length} connector${res.connectors_skipped.length === 1 ? '' : 's'} (${res.connectors_skipped[0].reason})` : ''].join('');
+      notify(`Restored ${res.created.length} workflow${res.created.length === 1 ? '' : 's'}${extra}${res.skipped.length ? `, skipped ${res.skipped.length} (${res.skipped[0].reason})` : ''}`, res.skipped.length || res.connectors_skipped?.length ? 'error' : 'ok');
       onChanged();
     } catch (err) { notify(err instanceof SyntaxError ? 'That file is not valid JSON' : (err as Error).message, 'error'); }
   };
@@ -89,6 +98,13 @@ export function DataSettings({ role, notify, onChanged }: Props) {
             <label className="ghost file-label"><Upload size={15} />Restore workflows<input type="file" accept=".json,application/json" data-testid="restore-file" onChange={e => { const f = e.target.files?.[0]; if (f) void restore(f); e.target.value = ''; }} /></label>
           </div>
         ) : <span>Only the owner can back up and restore.</span>}
+        {isOwner && (
+          <div className="backup-actions" style={{ marginTop: 10 }}>
+            <input aria-label="Template pack link" data-testid="pack-link" placeholder="https://raw.githubusercontent.com/you/pack/main/pack.json" value={link} onChange={e => setLink(e.target.value)} spellCheck={false} style={{ flex: 1, minWidth: 240 }} />
+            <button className="ghost" type="button" data-testid="pack-import" disabled={!link.trim()} onClick={() => void importLink()}><Download size={15} />Import from link</button>
+          </div>
+        )}
+        {isOwner && <span>A template pack is the same file as the Workflows (JSON) download, so you can share workflows and connectors by hosting that file anywhere with an HTTPS link. Imported workflows are inactive and nothing is overwritten. Only import files from people you trust, and look over a workflow before activating it.</span>}
         <span>The workflow file holds no credentials. Restoring adds new inactive workflows and never overwrites. The database copy includes password hashes and encrypted credentials, so keep it private, and also keep <code>backend/flowpilot.key</code>, without which credentials cannot be decrypted.</span>
       </div>
     </>

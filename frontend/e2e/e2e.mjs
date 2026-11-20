@@ -659,6 +659,10 @@ await check('tags filter the dashboard, and sticky notes and the AI node work in
   await page.getByLabel(/^Categories/).fill('Billing, Support');
   await page.getByLabel(/^What should the AI do/).selectOption('summarize');
   await page.getByLabel(/^Length/).selectOption('medium');
+  await page.getByLabel(/^What should the AI do/).selectOption('translate');
+  await page.getByLabel(/^Translate into/).fill('French');
+  await page.getByLabel(/^What should the AI do/).selectOption('rewrite');
+  await page.getByLabel(/^Style/).selectOption('friendly');
   await page.getByLabel(/^What should the AI do/).selectOption('prompt');
   await page.getByLabel(/^Prompt/).waitFor();
   await page.getByRole('button', { name: /^Save/ }).click();
@@ -972,6 +976,27 @@ await check('bulk actions: select workflows, activate, deactivate, run and delet
   await shot('33-bulk');
 });
 
+await check('a template pack link must be a public https address', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('pack-link').fill('http://example.com/pack.json');
+  await page.getByTestId('pack-import').click();
+  await expectText(toast(), /HTTPS/i);
+  await page.getByTestId('pack-link').fill('https://127.0.0.1/pack.json');
+  await page.getByTestId('pack-import').click();
+  await expectText(toast(), /public|not allowed|blocked|private|HTTPS/i);
+});
+
+await check('the Executions page summarises recent runs', async () => {
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.getByTestId('run-stats').waitFor();
+  const total = Number(await page.getByTestId('stat-total').innerText());
+  if (!(total > 0)) throw new Error('the summary should count the runs made so far, got ' + total);
+  await page.getByLabel('Stats period').selectOption('24h');
+  await page.waitForFunction(() => document.querySelector('[data-testid=stat-total]') !== null);
+  const failed = Number(await page.getByTestId('stat-failed').innerText());
+  if (!(failed >= 1)) throw new Error('earlier checks made failing runs, but the summary shows ' + failed);
+});
+
 await check('a custom connector is described in Settings and chosen in an App Action node', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('connectors-panel').waitFor();
@@ -1179,6 +1204,9 @@ await check('HTTP paging, webhook protection, Wait for Response and the new serv
   await page.getByLabel(/^Timestamp header/).fill('X-Timestamp');
   await page.getByLabel('Credential holding the secret').waitFor();
   await page.getByLabel('Repeated requests').selectOption('on');
+  await page.getByLabel(/^Only these addresses may call/).fill('203.0.113.7');
+  await expectText(page.locator('.inspector'), /403/);
+  await page.getByLabel(/^Only these addresses may call/).fill('');
   await page.getByLabel('Who may call this webhook').selectOption('none');
   await openLibrary();
   await page.getByTestId('add-callback').click();
