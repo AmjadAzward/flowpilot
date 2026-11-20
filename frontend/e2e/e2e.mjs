@@ -889,7 +889,12 @@ await check('the New Items trigger and the added services expose their settings'
   await page.getByLabel('Repository').waitFor();
   await page.getByLabel('Watch').selectOption('json_list');
   await page.getByLabel(/^Field that identifies/).waitFor();
-  await page.getByLabel('Watch').selectOption('rss');
+  await page.getByLabel('Watch').selectOption('app');
+  await page.getByLabel('List to watch').waitFor();
+  await page.getByLabel(/^Service/).selectOption('airtable');
+  if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes('base_id')) throw new Error('airtable example fields missing base_id');
+  if (await page.getByLabel(/^Address/).count()) throw new Error('the address field should be hidden for an app source');
+  await page.getByLabel(/^Watch/).selectOption('rss');
   await page.getByLabel(/^Address/).waitFor();
   await openLibrary();
   await page.getByTestId('add-app').click();

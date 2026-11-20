@@ -85,7 +85,7 @@ function nodeSummary(type: string, d: Record<string, unknown>): string {
     case 'app': return s('service') ? clip(`${s('service')}: ${s('operation').replace(/_/g, ' ')}`) : 'choose a service';
     case 'github': return s('repo') ? clip(`${s('operation') === 'list_issues' ? 'list' : 'new issue'} in ${s('repo')}`) : '';
     case 'respond': return `reply ${s('status') || '200'}`;
-    case 'poll_in': return `${({ rss: 'feed', github_issues: 'issues', json_list: 'API list' } as Record<string, string>)[s('source') || 'rss'] ?? 'items'}, every ${s('minutes') || '15'} min`;
+    case 'poll_in': return `${({ rss: 'feed', github_issues: 'issues', json_list: 'API list', app: `${s('service') || 'app'} list` } as Record<string, string>)[s('source') || 'rss'] ?? 'items'}, every ${s('minutes') || '15'} min`;
     case 'agent': return s('prompt') ? clip(s('prompt')) : 'write a task';
     case 'email_in': return s('credential') ? `every ${s('minutes') || '5'} min` : 'choose an inbox';
     case 'repeat': return `until ${s('path') || 'value'} ${s('op') || 'equals'} ${s('equals')}`.trim().slice(0, 34);

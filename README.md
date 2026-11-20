@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1091%20API%20%2B%2071%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1097%20API%20%2B%2071%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -63,7 +63,7 @@
 | **Parallel branches** | Branches that become ready together run at the same time (up to 4 at once) when they are network, database, AI, code or file nodes. Results are recorded for every branch, and a failure still finishes its siblings |
 | **Repeat until** | Repeat steps until a condition is met, for example polling an API until a job is done, with a limit of 20 attempts |
 | **Files** | Read, write, list and delete files (text or binary as base64) in one safe folder, and download an HTTP response straight into a file (up to 5 MB) |
-| **New Items trigger** | Watch an RSS or Atom feed, the issues of a GitHub repository, or any JSON list from an API, and run the workflow once for each new item (up to 10 per check, every 1 to 1440 minutes). Activating remembers what exists now so old items do not run. Failed checks are recorded as failed runs |
+| **New Items trigger** | Watch an RSS or Atom feed, the issues of a GitHub repository, any JSON list from an API, or a list from one of 11 App Action services (new Stripe customers, payments or invoices, Airtable records, HubSpot contacts, Notion database pages, Shopify orders or products, Supabase rows, Todoist tasks, Dropbox files, Google Calendar events, Google Drive files, Slack channels), and run the workflow once for each new item (up to 10 per check, every 1 to 1440 minutes). Activating remembers what exists now so old items do not run. Failed checks are recorded as failed runs |
 | **Bulk actions** | Tick workflows on the Overview page to activate, deactivate, run or delete several at once |
 | **Email trigger** | Poll an IMAP inbox and run the workflow once per new message, with optional sender and subject filters. Failed checks are recorded as failed runs |
 | **Projects** | The owner groups workflows into projects and chooses who is a member. Members see their projects plus unassigned workflows. Enforced on every route, including history and cancelling runs |
@@ -284,7 +284,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1091 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1097 tests, use a temporary database and key):
 
 ```powershell
 cd backend

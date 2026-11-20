@@ -60,6 +60,8 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'output', label: 'Result Output', desc: 'Finish and inspect data', category: 'Finish', color: '#34d399', icon: 'Flag' },
 ];
 
+/** Read-only list actions of App Action services that the New Items Trigger can watch. */
+export const pollApps: Record<string, string[]> = { stripe: ['list_customers', 'list_payments', 'list_invoices'], airtable: ['list_records'], hubspot: ['list_contacts'], notion: ['query_database'], shopify: ['list_orders', 'list_products'], supabase: ['select_rows'], todoist: ['list_tasks'], dropbox: ['list_folder'], gcalendar: ['list_events'], gdrive: ['list_files'], slack: ['list_channels'] };
 export const startTypes: string[] = ['trigger', 'schedule', 'webhook', 'email_in', 'poll_in'];
 /** Nodes whose output can be pinned so the node is skipped while you build the rest. */
 export const pinnableTypes: string[] = ['agent', 'sort', 'limit', 'dedupe', 'split', 'aggregate', 'rename', 'datetime', 'crypto', 'convert', 'table', 'app', 'input', 'transform', 'template', 'http', 'delay', 'set', 'filter', 'csv', 'notify', 'email', 'subflow', 'code', 'sql', 'rss', 'file'];

@@ -82,7 +82,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.28.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.29.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -665,7 +665,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.28.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.29.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -3255,7 +3255,12 @@ _inbox_busy: set[str] = set()
 _inbox_lock = threading.Lock()
 
 
-POLL_SOURCES = ("rss", "github_issues", "json_list")
+POLL_SOURCES = ("rss", "github_issues", "json_list", "app")
+# Read-only list actions of App Action services that can be watched for new items.
+POLL_APP_OPS = {"stripe": ["list_customers", "list_payments", "list_invoices"], "airtable": ["list_records"], "hubspot": ["list_contacts"], "notion": ["query_database"],
+                "shopify": ["list_orders", "list_products"], "supabase": ["select_rows"], "todoist": ["list_tasks"], "dropbox": ["list_folder"], "gcalendar": ["list_events"],
+                "gdrive": ["list_files"], "slack": ["list_channels"]}
+POLL_ID_KEYS = ("id", "_id", "number", "iid", "gid", "sid")
 MAX_POLL_ITEMS = 10
 POLL_SEEN_KEEP = 2000
 SAMPLE_POLL_ITEM = {"id": "sample-1", "title": "Sample item", "link": "https://example.com/sample", "published": "Mon, 01 Jan 2026 09:00:00 +0000", "summary": "A test item."}
@@ -3265,7 +3270,12 @@ def validate_poll(d: dict) -> None:
     inbox_minutes(d)
     source = str(d.get("source") or "rss")
     if source not in POLL_SOURCES: raise ValueError(f"Source must be one of: {', '.join(POLL_SOURCES)}")
-    if source == "github_issues":
+    if source == "app":
+        service, op = str(d.get("service") or "").strip(), str(d.get("operation") or "").strip()
+        if service not in POLL_APP_OPS or op not in POLL_APP_OPS[service]: raise ValueError("Choose a service and a list action that can be watched")
+        if not isinstance(read_json(str(d.get("fields") or "{}")), dict): raise ValueError("Fields must be a JSON object")
+        if str(d.get("order") or "newest_first") not in ("newest_first", "oldest_first"): raise ValueError("Order must be newest_first or oldest_first")
+    elif source == "github_issues":
         if not GITHUB_REPO_RE.fullmatch(str(d.get("repo") or "").strip()): raise ValueError("Repository must look like owner/name")
     else:
         url = str(d.get("url") or "").strip()
@@ -3277,6 +3287,18 @@ def fetch_poll_items(d: dict) -> list[tuple[str, Any]]:
     """Current items as (id, item) pairs, oldest first."""
     validate_poll(d)
     source = str(d.get("source") or "rss")
+    if source == "app":
+        res = app_action({"service": d.get("service"), "operation": d.get("operation"), "credential": d.get("credential"), "fields": d.get("fields") or "{}"}, None)
+        path = str(d.get("items_path") or "").strip()
+        res = get_path(res, path) if path else res
+        if not isinstance(res, list): raise ValueError("That action did not return a list" + (f" at {path!r}" if path else ""))
+        id_path, pairs = str(d.get("id_path") or "").strip(), []
+        for it in res[:200]:
+            key = get_path(it, id_path) if id_path else next((it[k] for k in POLL_ID_KEYS if isinstance(it, dict) and it.get(k) not in (None, "")), None)
+            if key is None and not id_path: key = hashlib.sha256(json.dumps(it, sort_keys=True, default=str).encode()).hexdigest()
+            if key is None or key == "": continue
+            pairs.append((str(key)[:300], it))
+        return pairs if str(d.get("order") or "newest_first") == "oldest_first" else list(reversed(pairs))
     cred = str(d.get("credential") or "").strip()
     headers = {"Authorization": f"Bearer {lookup_secret(cred)}"} if cred else {}
     if source == "rss":
