@@ -1,9 +1,35 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { DatabaseBackup, Download, Eraser, Upload } from 'lucide-react';
+import { DatabaseBackup, Download, Eraser, Siren, Upload } from 'lucide-react';
 import { request } from './api';
 
 type Cfg = { retention_days: number; max_executions: number; executions_stored: number };
 type Props = { role: string; notify: (msg: string, kind?: 'ok' | 'error') => void; onChanged: () => void };
+
+/** One workflow that runs whenever another workflow fails and has no error workflow of its own. */
+function ErrorWorkflowCard({ canTune, notify }: { canTune: boolean; notify: (msg: string, kind?: 'ok' | 'error') => void }) {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [flows, setFlows] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    request<{ workflow_id: string }>('/api/settings/error-workflow').then(r => setCurrent(r.workflow_id)).catch(() => setCurrent(''));
+    request<{ id: string; name: string }[]>('/api/workflows').then(setFlows).catch(() => setFlows([]));
+  }, []);
+  const choose = async (id: string) => {
+    try { await request('/api/settings/error-workflow', { method: 'PUT', body: JSON.stringify({ workflow_id: id }) }); setCurrent(id); notify(id ? 'Shared error workflow saved' : 'Shared error workflow cleared'); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+  return (
+    <div className="panel settings-card wide" data-testid="error-workflow-card">
+      <Siren size={22} /><h2>Shared error workflow</h2>
+      <p>When any workflow fails and has no error workflow of its own, this one runs with the failure details ({'{{workflow.name}}'}, {'{{error}}'}, {'{{failed_node}}'}). A workflow's own choice always wins, and an error workflow never triggers another.</p>
+      <label>Run this workflow on failures
+        <select aria-label="Shared error workflow" value={current ?? ''} disabled={!canTune || current === null} onChange={e => void choose(e.target.value)}>
+          <option value="">None</option>
+          {flows.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+      </label>
+    </div>
+  );
+}
 
 /** Settings cards for run-history retention and for backing up and restoring workflows. */
 export function DataSettings({ role, notify, onChanged }: Props) {
@@ -52,6 +78,7 @@ export function DataSettings({ role, notify, onChanged }: Props) {
         </form>
         {!canTune && <span>Only an owner or admin can change this.</span>}
       </div>
+      <ErrorWorkflowCard canTune={canTune} notify={notify} />
       <div className="panel settings-card wide" data-testid="backup-card">
         <DatabaseBackup size={22} /><h2>Backup and restore</h2>
         <p>Download your workflows, or a full copy of the database.</p>

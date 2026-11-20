@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.33.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.34.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -670,7 +670,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.33.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.34.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -4380,6 +4380,7 @@ def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict) -> None:
     """If the trigger names an error workflow, run it with details of the failure. Handlers never trigger handlers."""
     node = start_node(doc)
     handler_id = str(((node or {}).get("data") or {}).get("error_workflow") or "").strip()
+    if not handler_id and kind != "error": handler_id = default_error_workflow()  # the workflow's own choice wins; otherwise the shared one from Settings
     if not handler_id or handler_id == doc["id"]: return
     try:
         handler = get_workflow(handler_id)
@@ -4964,6 +4965,32 @@ def write_settings(body: SettingsIn):
         for k, v in body.model_dump().items():
             db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
     return {**get_settings(), "removed": prune_executions()}
+
+
+def default_error_workflow() -> str:
+    with conn() as db: row = db.execute("SELECT value FROM settings WHERE key='default_error_workflow'").fetchone()
+    return row["value"] if row else ""
+
+
+class ErrorWorkflowIn(BaseModel):
+    workflow_id: str = Field(default="", max_length=100)
+
+
+@app.get("/api/settings/error-workflow")
+def read_error_workflow():
+    return {"workflow_id": default_error_workflow()}
+
+
+@app.put("/api/settings/error-workflow")
+def write_error_workflow(body: ErrorWorkflowIn):
+    wid = body.workflow_id.strip()
+    if wid:
+        with conn() as db:
+            if not db.execute("SELECT 1 FROM workflows WHERE id=?", (wid,)).fetchone(): raise HTTPException(404, "Workflow not found")
+    with conn() as db:
+        if wid: db.execute("INSERT INTO settings (key,value) VALUES ('default_error_workflow',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (wid,))
+        else: db.execute("DELETE FROM settings WHERE key='default_error_workflow'")
+    return {"workflow_id": wid}
 
 
 @app.post("/api/settings/prune")

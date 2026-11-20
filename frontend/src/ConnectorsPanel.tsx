@@ -44,6 +44,23 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
     try { const m = await request<unknown>(`/api/connectors/${encodeURIComponent(n)}`); setName(n); setText(JSON.stringify(m, null, 2)); }
     catch (e) { notify((e as Error).message, 'error'); }
   };
+  const download = async (n: string) => {
+    try {
+      const m = await request<unknown>(`/api/connectors/${encodeURIComponent(n)}`);
+      const url = URL.createObjectURL(new Blob([JSON.stringify(m, null, 2)], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = `${n}.connector.json`; a.click(); URL.revokeObjectURL(url);
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const importFile = async (file: File) => {
+    try {
+      const body = await file.text();
+      JSON.parse(body);
+      setText(body);
+      if (!name.trim()) setName(file.name.replace(/\.connector\.json$|\.json$/i, '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').slice(0, 40));
+      setAbout('');
+      notify('File loaded. Check the name and manifest, then save.');
+    } catch { notify('That file is not valid JSON', 'error'); }
+  };
   const remove = async (n: string) => {
     if (!window.confirm(`Delete the connector ${n}? Workflows that use it will fail until it is added again.`)) return;
     try { await request(`/api/connectors/${encodeURIComponent(n)}`, { method: 'DELETE' }); notify('Connector deleted'); load(); }
@@ -68,6 +85,7 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
           <textarea aria-label="Connector manifest" rows={10} spellCheck={false} placeholder="Manifest (JSON)" value={text} onChange={e => setText(e.target.value)} />
           <span className="chip-row">
             <button type="button" className="chip" onClick={() => setText(EXAMPLE)}>Insert an example</button>
+            <label className="chip file-label">Import a file<input type="file" accept=".json,application/json" data-testid="connector-file" onChange={e => { const f = e.target.files?.[0]; if (f) void importFile(f); e.target.value = ''; }} /></label>
             <button className="primary" type="button" disabled={!name.trim() || !text.trim()} onClick={() => void save()}>Save connector</button>
           </span>
           <span className="hint">Paths can use {'{id}'} placeholders. In a body or query, a value written exactly as {'{name}'} keeps the field's type, and a field you leave out is dropped. auth.type is none, bearer, basic, header or query. Only https addresses on public hosts work.</span>
@@ -80,6 +98,7 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
           <div className="var-row" key={c.name} data-testid="connector-row">
             <code>{c.name}</code>
             <span>{c.label}: {Object.keys(c.operations).length} actions, {c.auth.type} sign-in</span>
+            <button className="ghost" type="button" aria-label={`Download ${c.name}`} onClick={() => void download(c.name)}>Download</button>
             {canEdit && <button className="ghost" type="button" aria-label={`Edit ${c.name}`} onClick={() => void edit(c.name)}>Edit</button>}
             {canEdit && <button className="icon-button danger" aria-label={`Delete ${c.name}`} onClick={() => void remove(c.name)}><Trash2 size={15} /></button>}
           </div>

@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.34
+- Shared error workflow (Settings) for every workflow without its own; connector download and file import
+- 1176 API tests and a 72-check browser suite
+
 ### v0.33
 - Connector library: 22 ready-made manifests (not run against the live services)
 - Fixed a settings race (a late reply could overwrite what you were typing, which made one browser check flaky), and the footer shows the real version
