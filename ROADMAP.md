@@ -29,7 +29,7 @@ This file describes planned functionality, **not current features**.
 
 ### v0.37
 - Run summary on the Executions page and a Prometheus-style metrics endpoint; webhook IP allow-list; AI translate and rewrite plus one corrective retry for invalid JSON; backups include connectors and can be imported from a link
-- 1235 API tests and a 75-check browser suite
+- 1235 API tests and a 75-check browser suite; the backend suite also passed on a throwaway Postgres (full run at v0.36, then the newer test files separately; the browser suite was not repeated on Postgres)
 
 ### v0.36
 - AI node tasks: extract fields, classify, sentiment, summarize (simulated-model tests only)
