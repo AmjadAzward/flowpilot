@@ -26,6 +26,9 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
   const [rows, setRows] = useState<Connector[] | null>(null);
   const [name, setName] = useState('');
   const [text, setText] = useState('');
+  const [lib, setLib] = useState<{ id: string; label: string; about: string; manifest: unknown }[]>([]);
+  const [about, setAbout] = useState('');
+  useEffect(() => { request<typeof lib>('/api/connector-library').then(setLib).catch(() => setLib([])); }, []);
   const load = useCallback(() => {
     request<Connector[]>('/api/connectors').then(setRows).catch(e => { setRows([]); notify((e as Error).message, 'error'); });
   }, [notify]);
@@ -54,6 +57,13 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
       <p>Describe any REST API once in a small JSON manifest (address, how it signs in, and its actions), then use it from an App Action node by choosing "Custom connector". Secrets stay on the Credentials page.</p>
       {canEdit && (
         <div className="var-form" style={{ display: 'grid', gap: 8 }}>
+          <label>Start from a ready-made connector
+            <select aria-label="Connector library" value="" onChange={e => { const hit = lib.find(x => x.id === e.target.value); if (hit) { setName(hit.id); setText(JSON.stringify(hit.manifest, null, 2)); setAbout(hit.about); } }}>
+              <option value="">Choose one ({lib.length} available)</option>
+              {lib.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
+            </select>
+          </label>
+          {about && <span className="hint">{about} This manifest was written from the service's public documentation and has not been run against the live service, so try it with a test account and adjust it here if the API differs.</span>}
           <input aria-label="Connector name" placeholder="name, for example acme" value={name} onChange={e => setName(e.target.value)} maxLength={40} />
           <textarea aria-label="Connector manifest" rows={10} spellCheck={false} placeholder="Manifest (JSON)" value={text} onChange={e => setText(e.target.value)} />
           <span className="chip-row">

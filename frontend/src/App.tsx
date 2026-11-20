@@ -127,6 +127,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
   const [showCatalog, setShowCatalog] = useState(() => window.innerWidth >= 1500);
   const [apiOnline, setApiOnline] = useState(true);
+  const [version, setVersion] = useState('');
+  useEffect(() => { fetch('/api/health').then(r => r.json()).then(h => setVersion(String(h.version || ''))).catch(() => undefined); }, []);
   const [webhookToken, setWebhookToken] = useState('');
   const [savedSnap, setSavedSnap] = useState('');
   const hist = useRef<{ stack: string[]; idx: number }>({ stack: [], idx: -1 });
@@ -522,7 +524,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className={'nav ' + (page === 'settings' ? 'active' : '')} onClick={() => setPage('settings')}><Settings2 size={17} />Settings</button>
         </nav>
         <div className="sidebar-bottom">
-          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">v0.19</span>
+          <span className={'dot ' + (apiOnline ? 'on' : 'off')} />{apiOnline ? 'Local API connected' : 'API offline'}<button className="link-button" onClick={() => setTourOpen(true)}>Tour</button><span className="ver">{version ? `v${version}` : ""}</span>
         </div>
       </aside>
 

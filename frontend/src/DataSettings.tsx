@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { DatabaseBackup, Download, Eraser, Upload } from 'lucide-react';
 import { request } from './api';
 
@@ -10,13 +10,15 @@ export function DataSettings({ role, notify, onChanged }: Props) {
   const [cfg, setCfg] = useState<Cfg | null>(null);
   const [days, setDays] = useState('90');
   const [max, setMax] = useState('5000');
+  const edited = useRef(false);
   const canTune = role === 'owner' || role === 'admin';
   const isOwner = role === 'owner';
 
   const load = useCallback(async () => {
     try {
       const c = await request<Cfg>('/api/settings');
-      setCfg(c); setDays(String(c.retention_days)); setMax(String(c.max_executions));
+      setCfg(c);
+      if (!edited.current) { setDays(String(c.retention_days)); setMax(String(c.max_executions)); }  // a late reply must never overwrite what the user has typed
     } catch (e) { notify((e as Error).message, 'error'); }
   }, [notify]);
   useEffect(() => { void load(); }, [load]);
@@ -25,6 +27,7 @@ export function DataSettings({ role, notify, onChanged }: Props) {
     e.preventDefault();
     try {
       const res = await request<{ removed: number }>('/api/settings', { method: 'PUT', body: JSON.stringify({ retention_days: Number(days), max_executions: Number(max) }) });
+      edited.current = false;
       notify(res.removed ? `Saved. ${res.removed} old runs removed.` : 'Saved'); await load(); onChanged();
     } catch (err) { notify((err as Error).message, 'error'); }
   };
@@ -43,9 +46,9 @@ export function DataSettings({ role, notify, onChanged }: Props) {
         <Eraser size={22} /><h2>Run history</h2>
         <p>{cfg ? `${cfg.executions_stored} runs stored.` : 'Loading…'} Old runs are removed automatically, and runs that are still waiting are never removed.</p>
         <form className="retention-form" onSubmit={e => void save(e)}>
-          <label>Keep runs for (days, 0 = forever)<input data-testid="retention-days" type="number" min={0} max={3650} value={days} onChange={e => setDays(e.target.value)} disabled={!canTune} /></label>
-          <label>Keep at most (runs, 0 = no limit)<input data-testid="retention-max" type="number" min={0} max={100000} value={max} onChange={e => setMax(e.target.value)} disabled={!canTune} /></label>
-          <button className="ghost" type="submit" data-testid="retention-save" disabled={!canTune}>Save and clean up now</button>
+          <label>Keep runs for (days, 0 = forever)<input data-testid="retention-days" type="number" min={0} max={3650} value={days} onChange={e => { edited.current = true; setDays(e.target.value); }} disabled={!canTune || !cfg} /></label>
+          <label>Keep at most (runs, 0 = no limit)<input data-testid="retention-max" type="number" min={0} max={100000} value={max} onChange={e => { edited.current = true; setMax(e.target.value); }} disabled={!canTune || !cfg} /></label>
+          <button className="ghost" type="submit" data-testid="retention-save" disabled={!canTune || !cfg}>Save and clean up now</button>
         </form>
         {!canTune && <span>Only an owner or admin can change this.</span>}
       </div>

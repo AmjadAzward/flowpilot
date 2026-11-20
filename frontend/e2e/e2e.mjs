@@ -667,11 +667,16 @@ await check('settings: run-history retention and workflow backup and restore', a
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('retention-card').waitFor();
   await page.getByTestId('retention-days').fill('45');
+  // Wait for the save request itself: a leftover "Saved" toast from an earlier step used to let the reload race the request.
+  const saved = page.waitForResponse(r => r.url().includes('/api/settings') && r.request().method() !== 'GET');
   await page.getByTestId('retention-save').click();
+  const savedRes = await saved;
+  const sent = savedRes.request().method() + ' ' + savedRes.url() + ' ' + savedRes.request().postData();
+  if (!savedRes.ok()) throw new Error('saving retention failed: ' + savedRes.status());
   await expectText(toast(), /Saved/);
   await page.reload();
   await page.getByRole('button', { name: /^Settings/ }).click();
-  await page.waitForFunction(() => document.querySelector('[data-testid=retention-days]')?.value === '45', null, { timeout: 8000 }).catch(() => { throw new Error('retention was not kept'); });
+  await page.waitForFunction(() => document.querySelector('[data-testid=retention-days]')?.value === '45', null, { timeout: 8000 }).catch(async () => { const shown = await page.getByTestId('retention-days').inputValue().catch(() => '?'); const api = await page.evaluate(async () => JSON.stringify(await (await fetch('/api/settings')).json())); throw new Error(`retention was not kept (sent ${sent}): field shows ${shown}, API says ${api}`); });
   const href = await page.getByTestId('backup-workflows').getAttribute('href');
   if (href !== '/api/backup/workflows') throw new Error('backup link: ' + href);
   const dl = await page.evaluate(async () => { const r = await fetch('/api/backup/workflows'); const j = await r.json(); return { ok: r.ok, n: j.workflows.length, fmt: j.format }; });
@@ -965,6 +970,10 @@ await check('a custom connector is described in Settings and chosen in an App Ac
   await page.getByLabel('Connector manifest').fill('{ not json');
   await page.getByRole('button', { name: 'Save connector' }).click();
   await expectText(toast(), /not valid JSON/);
+  await page.getByLabel('Connector library').selectOption('frankfurter');
+  if ((await page.getByLabel('Connector name').inputValue()) !== 'frankfurter') throw new Error('library entry did not fill the name');
+  await expectText(page.getByTestId('connectors-panel'), /has not been run against the live service/);
+  await page.getByLabel('Connector name').fill('exampleapi');
   await page.getByRole('button', { name: 'Insert an example' }).click();
   await page.getByRole('button', { name: 'Save connector' }).click();
   await expectText(toast(), /Connector saved/);

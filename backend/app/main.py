@@ -46,6 +46,7 @@ import httpx
 from .n8n_import import convert as convert_n8n
 from .make_import import convert as convert_make
 from . import connectors as connector_lib
+from .connector_library import LIBRARY as CONNECTOR_LIBRARY
 from .oidc import verify_id_token
 from .pgcompat import PgConnection
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
@@ -84,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.32.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.33.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -669,7 +670,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.32.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.33.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -4104,6 +4105,12 @@ def connector_summary(name: str, manifest: dict) -> dict:
 def list_connectors():
     with conn() as db: rows = db.execute("SELECT name, manifest FROM connectors ORDER BY name").fetchall()
     return [connector_summary(r["name"], json.loads(r["manifest"])) for r in rows]
+
+
+@app.get("/api/connector-library")
+def connector_library_list():
+    """Ready-made manifests, never run against the live services. Adding one is just saving it as a connector."""
+    return [{"id": e["id"], "label": e["manifest"]["label"], "about": e["about"], "manifest": e["manifest"]} for e in CONNECTOR_LIBRARY]
 
 
 @app.get("/api/connectors/{name}")
