@@ -1,5 +1,6 @@
 import type { Node } from '@xyflow/react';
 import { Copy, RefreshCcw } from 'lucide-react';
+import { ConnectorFields } from './ConnectorsPanel';
 import { appServices, pollApps, eachItemTypes, toolForms, errorTypes, operators, startTypes, type FlowDoc } from './catalog';
 
 type Props = {
@@ -202,6 +203,11 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
       const def = appServices[service] ?? appServices.slack;
       const opKey = v('operation', Object.keys(def.operations)[0]);
       const opDef = def.operations[opKey] ?? Object.values(def.operations)[0];
+      const serviceOptions = <>{Object.entries(appServices).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}<option value="connector">Custom connector (your own API)</option></>;
+      const pickAnyService = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        if (e.target.value === 'connector') { update('service', 'connector'); update('connector', ''); update('operation', ''); update('credential', ''); update('fields', '{}'); return; }
+        pickService(e);
+      };
       const pickService = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const next = appServices[e.target.value];
         const firstOp = Object.keys(next.operations)[0];
@@ -210,9 +216,18 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
         update('fields', next.operations[firstOp].example);
       };
       const pickOp = (e: React.ChangeEvent<HTMLSelectElement>) => { update('operation', e.target.value); update('fields', def.operations[e.target.value].example); };
+      if (service === 'connector') {
+        return (
+          <>
+            <label>Service<select value="connector" onChange={pickAnyService}>{serviceOptions}</select></label>
+            <ConnectorFields v={v} update={update} credSelect={credSelect} fieldsLabel="Fields (JSON)" />
+            <span className="hint">A custom connector is only as tested as you make it: try it with a test account first.</span>
+          </>
+        );
+      }
       return (
         <>
-          <label>Service<select value={service} onChange={pickService}>{Object.entries(appServices).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}</select></label>
+          <label>Service<select value={service} onChange={pickAnyService}>{serviceOptions}</select></label>
           <label>Action<select value={opKey} onChange={pickOp}>{Object.entries(def.operations).map(([k, o]) => <option key={k} value={k}>{o.label}</option>)}</select></label>
           {def.oauth ? connSelect('credential', `${def.label} connection`) : credSelect('credential', `${def.label} credential`)}
           <label>Fields (JSON)<textarea rows={6} spellCheck={false} value={v('fields')} onChange={text('fields')} /><span className="hint">{opDef.hint} {'{{field}}'} values from the previous node are escaped for you.</span></label>

@@ -951,6 +951,31 @@ await check('bulk actions: select workflows, activate, deactivate, run and delet
   await shot('33-bulk');
 });
 
+await check('a custom connector is described in Settings and chosen in an App Action node', async () => {
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('connectors-panel').waitFor();
+  await page.getByLabel('Connector name').fill('exampleapi');
+  await page.getByLabel('Connector manifest').fill('{ not json');
+  await page.getByRole('button', { name: 'Save connector' }).click();
+  await expectText(toast(), /not valid JSON/);
+  await page.getByRole('button', { name: 'Insert an example' }).click();
+  await page.getByRole('button', { name: 'Save connector' }).click();
+  await expectText(toast(), /Connector saved/);
+  await page.getByTestId('connector-row').filter({ hasText: 'exampleapi' }).waitFor();
+  await goOverview();
+  await page.getByTestId('template-webhook-receiver').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Webhook receiver');
+  await openLibrary();
+  await page.getByTestId('add-app').click();
+  await page.getByLabel(/^Service/).selectOption('connector');
+  await page.getByLabel(/^Connector(?! action)/).selectOption('exampleapi');
+  await page.getByLabel(/^Connector action/).selectOption('create_item');
+  if (!(await page.getByLabel(/^Fields \(JSON\)/).inputValue()).includes('"name"')) throw new Error('example fields missing');
+  await page.getByLabel('Example API credential').waitFor();
+  const gone = await page.evaluate(async () => (await fetch('/api/connectors/exampleapi', { method: 'DELETE' })).status);
+  if (gone !== 204) throw new Error('connector not deleted: ' + gone);
+});
+
 await check('Variables can be added, edited and deleted on the Settings page', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('variables-panel').waitFor();

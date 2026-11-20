@@ -1,165 +1,145 @@
+import copy
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
-from app import main
-from conftest import edge, make_flow, node
+from app import connectors, main
+from conftest import FakeResponse, edge, make_flow, node
+
+MANIFEST = {
+    "label": "Acme CRM", "base_url": "https://api.acme.example/v1", "auth": {"type": "bearer"},
+    "operations": {
+        "get_contact": {"label": "Get contact", "method": "GET", "path": "/contacts/{id}", "query": {"expand": "{expand}", "limit": 5}, "required": ["id"], "result": "data"},
+        "create_contact": {"label": "Create contact", "method": "POST", "path": "/contacts", "body": {"name": "{name}", "age": "{age}", "tags": ["{tag}", "fixed"], "meta": {"note": "Hi {name}", "other": "{missing}"}}, "required": ["name"]},
+    },
+}
 
 
 @pytest.fixture(autouse=True)
 def _clean(clean_state):
     yield
+    with main.conn() as db: db.execute("DELETE FROM connectors")
 
 
-def run(client, nodes, edges):
-    wid = make_flow(client, nodes, edges)
+def add(client, name="acme", manifest=None):
+    return client.put(f"/api/connectors/{name}", json={"manifest": manifest or MANIFEST})
+
+
+def call(client, op, fields, connector="acme", secret="acme-secret-value-1", cred="ACMEKEY"):
+    client.put(f"/api/credentials/{cred}", json={"value": secret})
+    n = node("a", "app", service="connector", connector=connector, operation=op, credential=cred, fields=json.dumps(fields))
+    wid = make_flow(client, [node("t", "trigger"), n, node("o", "output")], [edge("t", "a"), edge("a", "o")])
     return client.post(f"/api/workflows/{wid}/run").json()
 
 
-def cred(client, name, value):
-    assert client.put(f"/api/credentials/{name}", json={"value": value}).status_code == 200
+def test_a_connector_can_be_saved_listed_read_and_deleted(client):
+    res = add(client)
+    assert res.status_code == 200 and res.json()["label"] == "Acme CRM" and set(res.json()["operations"]) == {"get_contact", "create_contact"}
+    assert [c["name"] for c in client.get("/api/connectors").json()] == ["acme"]
+    assert client.get("/api/connectors/acme").json()["base_url"] == "https://api.acme.example/v1"
+    assert client.delete("/api/connectors/acme").status_code == 204
+    assert client.get("/api/connectors").json() == [] and client.get("/api/connectors/acme").status_code == 404
 
 
-def notify_flow(client, **cfg):
-    nodes = [node("t", "trigger"), node("i", "input", json='{"name":"Ada","n":3}'), node("s", "notify", **cfg), node("o", "output")]
-    return run(client, nodes, [edge("t", "i"), edge("i", "s"), edge("s", "o")])
+def test_get_with_path_query_and_result_path(client, fake_http):
+    add(client)
+    fake_http.reply["response"] = FakeResponse(200, {"data": {"id": "a/b", "name": "Ann"}, "meta": 1})
+    res = call(client, "get_contact", {"id": "a/b?x", "expand": "company"})
+    assert res["status"] == "success" and res["output"] == {"id": "a/b", "name": "Ann"}
+    c = fake_http.calls[-1]
+    assert c["method"] == "GET" and c["url"] == "https://api.acme.example/v1/contacts/a%2Fb%3Fx" and c["params"] == {"expand": "company", "limit": 5}
+    assert c["headers"]["Authorization"] == "Bearer acme-secret-value-1" and "acme-secret-value-1" not in json.dumps(res)
+    call(client, "get_contact", {"id": "7"})
+    assert fake_http.calls[-1]["params"] == {"limit": 5}  # the optional expand is dropped
 
 
-# ---------------------------------------------------------------- chat notifications
-@pytest.mark.parametrize("service,key", [("slack", "text"), ("discord", "content"), ("generic", "text")])
-def test_notify_payload_per_service(client, fake_http, service, key):
-    res = notify_flow(client, service=service, url="https://hooks.example.com/abc", message="Hello {{name}}")
-    assert res["status"] == "success"
-    call = fake_http.calls[0]
-    assert call["method"] == "POST" and call["url"] == "https://hooks.example.com/abc" and call["json"] == {key: "Hello Ada"}
+def test_body_keeps_types_and_drops_missing_values(client, fake_http):
+    add(client)
+    fake_http.reply["response"] = FakeResponse(200, {"ok": True})
+    assert call(client, "create_contact", {"name": "Ann", "age": 30, "tag": "vip"})["status"] == "success"
+    assert fake_http.calls[-1]["json"] == {"name": "Ann", "age": 30, "tags": ["vip", "fixed"], "meta": {"note": "Hi Ann"}}
+    call(client, "create_contact", {"name": "Bob"})
+    assert fake_http.calls[-1]["json"] == {"name": "Bob", "tags": ["fixed"], "meta": {"note": "Hi Bob"}}
 
 
-def test_notify_passes_the_original_data_along(client, fake_http):
-    res = notify_flow(client, service="slack", url="https://hooks.example.com/abc", message="hi")
-    assert res["output"] == {"name": "Ada", "n": 3}
-    assert next(s for s in res["steps"] if s["node_id"] == "s")["output"] == {"sent": True, "service": "slack"}
-
-
-def test_notify_webhook_url_can_come_from_a_credential_and_stays_hidden(client, fake_http):
-    cred(client, "SLACK_URL", "https://hooks.example.com/services/T000/B000/secrettoken")
-    res = notify_flow(client, service="slack", url="{{cred.SLACK_URL}}", message="x")
-    assert fake_http.calls[0]["url"].endswith("secrettoken")
-    assert "secrettoken" not in json.dumps(res)
-
-
-@pytest.mark.parametrize("cfg", [
-    {"service": "slack", "url": "https://hooks.example.com/a", "message": "  "},
-    {"service": "carrier-pigeon", "url": "https://hooks.example.com/a", "message": "x"},
-    {"service": "slack", "url": "https://hooks.example.com/a", "message": "x" * 4001},
+@pytest.mark.parametrize("auth,check", [
+    ({"type": "basic"}, lambda c: c["headers"]["Authorization"].startswith("Basic ")),
+    ({"type": "header", "name": "X-Api-Key"}, lambda c: c["headers"]["X-Api-Key"] == "acme-secret-value-1"),
+    ({"type": "query", "name": "key"}, lambda c: c["params"]["key"] == "acme-secret-value-1"),
 ])
-def test_notify_validation(client, fake_http, cfg):
-    assert notify_flow(client, **cfg)["status"] == "failed" and fake_http.calls == []
+def test_other_authentication_styles(client, fake_http, auth, check):
+    add(client, manifest={**MANIFEST, "auth": auth})
+    fake_http.reply["response"] = FakeResponse(200, {"data": 1})
+    assert call(client, "get_contact", {"id": "1"})["status"] == "success" and check(fake_http.calls[-1])
 
 
-def test_notify_enforces_the_public_https_rule(client):
-    for url in ("http://hooks.example.com/a", "https://127.0.0.1/a", "https://localhost/a"):
-        res = notify_flow(client, service="slack", url=url, message="x")
-        assert res["status"] == "failed", url
+def test_no_authentication_needs_no_credential(client, fake_http):
+    add(client, manifest={**MANIFEST, "auth": {"type": "none"}})
+    fake_http.reply["response"] = FakeResponse(200, {"data": 1})
+    n = node("a", "app", service="connector", connector="acme", operation="get_contact", fields='{"id": "1"}')
+    wid = make_flow(client, [node("t", "trigger"), n, node("o", "output")], [edge("t", "a"), edge("a", "o")])
+    assert client.post(f"/api/workflows/{wid}/run").json()["status"] == "success" and "Authorization" not in fake_http.calls[-1]["headers"]
 
 
-# ---------------------------------------------------------------- email
-class FakeSMTP:
-    instances: list = []
-
-    def __init__(self, host, port, timeout=None, **kw):
-        self.host, self.port, self.timeout = host, port, timeout
-        self.started_tls, self.login_args, self.sent = False, None, []
-        self.kind = type(self).__name__
-        FakeSMTP.instances.append(self)
-
-    def __enter__(self): return self
-    def __exit__(self, *exc): return False
-    def starttls(self, context=None): self.started_tls = True
-    def login(self, user, password): self.login_args = (user, password)
-    def send_message(self, msg): self.sent.append(msg)
+def test_errors_are_failed_runs(client, fake_http):
+    add(client)
+    for op, fields, conn_name in (("get_contact", {}, "acme"), ("nope", {"id": "1"}, "acme"), ("get_contact", {"id": "1"}, "missing"), ("get_contact", {"id": "1"}, "")):
+        res = call(client, op, fields, connector=conn_name)
+        assert res["status"] == "failed" and res["error"], (op, conn_name)
+    fake_http.reply["response"] = FakeResponse(500, {"error": "boom"})
+    res = call(client, "get_contact", {"id": "1"}, secret="leaky-secret-value-9")
+    assert res["status"] == "failed" and "leaky-secret-value-9" not in json.dumps(res)
 
 
-class FakeSMTP_SSL(FakeSMTP):
-    pass
+def test_private_addresses_are_refused_at_call_time(client):
+    manifest = copy.deepcopy(MANIFEST)
+    manifest["base_url"] = "https://localhost/v1"
+    add(client, manifest=manifest)
+    res = call(client, "get_contact", {"id": "1"})  # no fake_http: the real address check runs
+    assert res["status"] == "failed"
 
 
-@pytest.fixture()
-def smtp(monkeypatch):
-    FakeSMTP.instances = []
-    monkeypatch.setattr(main.smtplib, "SMTP", FakeSMTP)
-    monkeypatch.setattr(main.smtplib, "SMTP_SSL", FakeSMTP_SSL)
-    monkeypatch.setattr(main, "assert_public_host", lambda host, relaxed=False: None)
-    return FakeSMTP
-
-
-def email_flow(client, **cfg):
-    nodes = [node("t", "trigger"), node("i", "input", json='{"name":"Ada","order":"A-1"}'), node("e", "email", **cfg), node("o", "output")]
-    return run(client, nodes, [edge("t", "i"), edge("i", "e"), edge("e", "o")])
-
-
-GOOD = {"credential": "SMTP", "to": "ada@example.com", "subject": "Order {{order}}", "body": "Hi {{name}}"}
-
-
-def test_email_starttls_default(client, smtp):
-    cred(client, "SMTP", "smtp://bot%40example.com:p%40ss%3Aword@smtp.example.com?from=bot@example.com")
-    res = email_flow(client, **GOOD)
-    assert res["status"] == "success" and res["output"] == {"name": "Ada", "order": "A-1"}
-    s = smtp.instances[0]
-    assert (s.kind, s.host, s.port, s.timeout) == ("FakeSMTP", "smtp.example.com", 587, 10)
-    assert s.started_tls and s.login_args == ("bot@example.com", "p@ss:word")
-    msg = s.sent[0]
-    assert msg["From"] == "bot@example.com" and msg["To"] == "ada@example.com" and msg["Subject"] == "Order A-1"
-    assert msg.get_content().strip() == "Hi Ada"
-
-
-def test_email_ssl_and_plain_modes(client, smtp):
-    cred(client, "SMTP", "smtps://u:p@mail.example.com?from=bot@example.com")
-    email_flow(client, **GOOD)
-    s = smtp.instances[0]
-    assert s.kind == "FakeSMTP_SSL" and s.port == 465 and not s.started_tls
-    cred(client, "SMTP", "smtp://mail.example.com?from=bot@example.com&security=none")
-    email_flow(client, **GOOD)
-    plain = smtp.instances[1]
-    assert plain.kind == "FakeSMTP" and plain.port == 25 and not plain.started_tls and plain.login_args is None
-
-
-def test_email_multiple_recipients_and_templates(client, smtp):
-    cred(client, "SMTP", "smtp://u:p@mail.example.com?from=bot@example.com")
-    email_flow(client, **{**GOOD, "to": "a@example.com, b@example.com"})
-    assert smtp.instances[0].sent[0]["To"] == "a@example.com, b@example.com"
-
-
-@pytest.mark.parametrize("override", [
-    {"to": ""}, {"to": "not-an-email"}, {"to": ", ".join(f"u{i}@example.com" for i in range(11))},
-    {"subject": "line1\nBcc: evil@example.com"}, {"subject": "x" * 201}, {"body": "x" * 100_001}, {"credential": "MISSING"},
+@pytest.mark.parametrize("change", [
+    {"label": ""}, {"base_url": "http://api.example.com"}, {"base_url": "https://user:pw@api.example.com"}, {"base_url": "https://api.example.com:8443"},
+    {"base_url": "https://api.example.com/a/../b"}, {"base_url": "https://api.example.com?x=1"}, {"auth": {"type": "magic"}}, {"auth": {"type": "header", "name": "Host"}},
+    {"auth": {"type": "header"}}, {"auth": {"type": "query", "name": "a b"}}, {"operations": {}}, {"operations": []},
+    {"operations": {"Bad Name": {"path": "/x"}}}, {"operations": {"x": {"path": "x"}}}, {"operations": {"x": {"path": "/a/../b"}}}, {"operations": {"x": {"path": "/a?b=1"}}},
+    {"operations": {"x": {"path": "/a/{id"}}}, {"operations": {"x": {"path": "/a", "method": "TRACE"}}}, {"operations": {"x": {"path": "/a", "body": {"a": 1}}}},
+    {"operations": {"x": {"path": "/a", "query": {"a": {"b": 1}}}}}, {"operations": {"x": {"path": "/a", "required": "id"}}}, {"operations": {"x": {"path": "/a", "result": "a b"}}},
 ])
-def test_email_validation(client, smtp, override):
-    cred(client, "SMTP", "smtp://u:p@mail.example.com?from=bot@example.com")
-    assert email_flow(client, **{**GOOD, **override})["status"] == "failed" and smtp.instances == []
+def test_bad_manifests_are_rejected(client, change):
+    bad = {**copy.deepcopy(MANIFEST), **change}
+    body = json.dumps({"manifest": bad})
+    assert client.put("/api/connectors/acme", content=body, headers={"Content-Type": "application/json"}).status_code == 400
+    assert client.get("/api/connectors").json() == []
 
 
-@pytest.mark.parametrize("value", ["https://u:p@mail.example.com", "smtp://u:p@mail.example.com", "smtp://u:p@mail.example.com?from=bad&security=ssl",
-                                   "smtp://u:p@mail.example.com?from=bot@example.com&security=weird"])
-def test_email_rejects_malformed_credentials(client, smtp, value):
-    cred(client, "SMTP", value)
-    assert email_flow(client, **GOOD)["status"] == "failed" and smtp.instances == []
+def test_bad_names_and_the_limit(client):
+    for name in ("Acme", "1acme", "a" * 41, "a b"):
+        assert client.put(f"/api/connectors/{name}", json={"manifest": MANIFEST}).status_code in (400, 404, 405, 422)
+    for i in range(main.MAX_CONNECTORS): assert add(client, f"c{i}").status_code == 200
+    assert add(client, "one-more").status_code == 400
+    assert add(client, "c0").status_code == 200  # replacing is allowed
 
 
-def test_email_password_never_appears_in_results(client, smtp):
-    cred(client, "SMTP", "smtp://bot:supersecretpw@mail.example.com?from=bot@example.com")
-    assert "supersecretpw" not in json.dumps(email_flow(client, **GOOD))
+def test_only_owners_and_admins_change_connectors(client):
+    add(client)
+    made = {}
+    for role in ("editor", "admin"):
+        client.post("/api/users", json={"username": f"con-{role}", "password": "long-enough-pw", "role": role})
+        c = TestClient(main.app)
+        assert c.post("/api/auth/login", json={"username": f"con-{role}", "password": "long-enough-pw"}).status_code == 200
+        made[role] = c
+    assert made["editor"].get("/api/connectors").status_code == 200
+    assert made["editor"].put("/api/connectors/acme", json={"manifest": MANIFEST}).status_code == 403 and made["editor"].delete("/api/connectors/acme").status_code == 403
+    assert made["admin"].put("/api/connectors/acme", json={"manifest": MANIFEST}).status_code == 200
+    users = client.get("/api/users").json()
+    for role in made: client.delete(f"/api/users/{next(u['id'] for u in users if u['username'] == 'con-' + role)}")
 
 
-def test_email_blocks_private_hosts_unless_explicitly_allowed(client, monkeypatch):
-    FakeSMTP.instances = []
-    monkeypatch.setattr(main.smtplib, "SMTP", FakeSMTP)
-    cred(client, "SMTP", "smtp://u:p@127.0.0.1:1025?from=bot@example.com&security=none")
-    assert email_flow(client, **GOOD)["status"] == "failed" and FakeSMTP.instances == []
-    monkeypatch.setenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS", "1")
-    assert email_flow(client, **GOOD)["status"] == "success" and len(FakeSMTP.instances) == 1
-
-
-def test_private_host_override_does_not_weaken_http(client, monkeypatch):
-    monkeypatch.setenv("FLOWPILOT_ALLOW_PRIVATE_HOSTS", "1")
-    nodes = [node("t", "trigger"), node("h", "http", url="https://127.0.0.1/x")]
-    assert run(client, nodes, [edge("t", "h")])["status"] == "failed"
+def test_the_library_fills_and_quotes_values():
+    m = connectors.validate_manifest(MANIFEST)
+    req = connectors.build_request(m, "get_contact", {"id": "x y", "expand": True})
+    assert req["url"].endswith("/contacts/x%20y") and req["params"] == {"expand": "true", "limit": 5}
+    with pytest.raises(ValueError): connectors.build_request(m, "get_contact", {"id": ""})

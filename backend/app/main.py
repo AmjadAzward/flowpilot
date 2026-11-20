@@ -45,6 +45,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 import httpx
 from .n8n_import import convert as convert_n8n
 from .make_import import convert as convert_make
+from . import connectors as connector_lib
 from .oidc import verify_id_token
 from .pgcompat import PgConnection
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
@@ -83,7 +84,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.30.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.31.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -158,6 +159,7 @@ def initialize():
         db.execute("CREATE TABLE IF NOT EXISTS data_rows (id INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL)")
         if "project_id" not in {r["name"] for r in db.execute("PRAGMA table_info(data_rows)")}: db.execute("ALTER TABLE data_rows ADD COLUMN project_id TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_data_rows_tbl ON data_rows (tbl, id)")
+        db.execute("CREATE TABLE IF NOT EXISTS connectors (name TEXT PRIMARY KEY, manifest TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
         db.execute("CREATE TABLE IF NOT EXISTS hook_keys (workflow_id TEXT NOT NULL, key TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, key))")
@@ -345,7 +347,7 @@ def allowed(role: str, method: str, path: str) -> bool:
     if path.startswith(("/api/users", "/api/backup", "/api/audit", "/api/sso")): return role == "owner"
     if path.startswith("/api/projects") and method not in ("GET", "HEAD"): return role == "owner"
     if method in ("GET", "HEAD"): return True
-    if path.startswith(("/api/credentials", "/api/oauth", "/api/settings", "/api/variables")): return role in ("owner", "admin")
+    if path.startswith(("/api/credentials", "/api/oauth", "/api/settings", "/api/variables", "/api/connectors")): return role in ("owner", "admin")
     return role in ("owner", "admin", "editor")
 
 
@@ -667,7 +669,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.30.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.31.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -2456,7 +2458,31 @@ def app_uptimekuma(op: str, secret: str, f: dict) -> Any:
 APP_HANDLERS = {"msteams": app_msteams, "googlechat": app_googlechat, "datadog": app_datadog, "segment": app_segment, "webex": app_webex, "rocketchat": app_rocketchat, "pushbullet": app_pushbullet, "messagebird": app_messagebird, "mailjet": app_mailjet, "loops": app_loops, "buttondown": app_buttondown, "baserow": app_baserow, "healthchecks": app_healthchecks, "mastodon": app_mastodon, "matrix": app_matrix, "telnyx": app_telnyx, "zulip": app_zulip, "ifttt": app_ifttt, "uptimekuma": app_uptimekuma, "mattermost": app_mattermost, "gotify": app_gotify, "cloudflare": app_cloudflare, "posthog": app_posthog, "mixpanel": app_mixpanel, "vonage": app_vonage, "pagerduty": app_pagerduty, "opsgenie": app_opsgenie, "intercom": app_intercom, "freshdesk": app_freshdesk, "supabase": app_supabase, "bitly": app_bitly, "convertkit": app_convertkit, "brevo": app_brevo, "mailgun": app_mailgun, "telegram": app_telegram, "github": app_github, "shopify": app_shopify, "zendesk": app_zendesk, "pipedrive": app_pipedrive, "clickup": app_clickup, "monday": app_monday, "dropbox": app_dropbox, "resend": app_resend, "postmark": app_postmark, "whatsapp": app_whatsapp, "pushover": app_pushover, "gcalendar": app_gcalendar, "gdrive": app_gdrive, "sendgrid": app_sendgrid, "mailchimp": app_mailchimp, "trello": app_trello, "asana": app_asana, "jira": app_jira, "todoist": app_todoist, "gitlab": app_gitlab, "discord": app_discord, "ntfy": app_ntfy, "slack": app_slack, "notion": app_notion, "airtable": app_airtable, "stripe": app_stripe, "twilio": app_twilio, "linear": app_linear, "hubspot": app_hubspot}
 
 
+def connector_call(d: dict, previous: Any) -> Any:
+    """Call an operation of a connector the owner described in a manifest (Settings, Custom connectors)."""
+    name, op = str(d.get("connector") or "").strip(), str(d.get("operation") or "").strip()
+    with conn() as db: row = db.execute("SELECT manifest FROM connectors WHERE name=?", (name,)).fetchone()
+    if not row: raise ValueError(f"Unknown connector: {name or '(none chosen)'}. Add it in Settings, under Custom connectors.")
+    manifest = json.loads(row["manifest"])
+    fields = read_json(render_template(str(d.get("fields") or "{}"), previous, json_escape=True))
+    if not isinstance(fields, dict): raise ValueError("Fields must be a JSON object")
+    req = connector_lib.build_request(manifest, op, fields)
+    safe_url(req["url"])
+    headers, params, auth = {}, dict(req["params"]), manifest["auth"]
+    if auth["type"] != "none":
+        secret = lookup_secret(str(d.get("credential") or "").strip())
+        if auth["type"] == "bearer": headers["Authorization"] = f"Bearer {secret}"
+        elif auth["type"] == "basic": headers["Authorization"] = "Basic " + base64.b64encode(secret.encode()).decode()
+        elif auth["type"] == "header": headers[auth["name"]] = secret
+        else: params[auth["name"]] = secret
+    kwargs: dict = {"params": params or None}
+    if "json" in req: kwargs["json"] = req["json"]
+    res = do_request(req["method"], req["url"], headers, **kwargs)
+    return get_path(res, req["result"]) if req["result"] else res
+
+
 def app_action(d: dict, previous: Any) -> Any:
+    if str(d.get("service") or "").strip() == "connector": return connector_call(d, previous)
     service, op = str(d.get("service") or "").strip(), str(d.get("operation") or "").strip()
     if service not in APP_OPS: raise ValueError(f"Choose a service ({', '.join(APP_OPS)})")
     if op not in APP_OPS[service]: raise ValueError(f"Unknown {service} action: {op or '(none)'}")
@@ -4017,6 +4043,48 @@ class VariableIn(BaseModel):
 def list_variables():
     with conn() as db: rows = db.execute("SELECT name, value, updated_at FROM variables ORDER BY name").fetchall()
     return [dict(r) for r in rows]
+
+
+MAX_CONNECTORS = 30
+
+
+class ConnectorIn(BaseModel):
+    manifest: dict
+
+
+def connector_summary(name: str, manifest: dict) -> dict:
+    return {"name": name, "label": manifest["label"], "base_url": manifest["base_url"], "auth": manifest["auth"],
+            "operations": {k: {"label": o["label"], "method": o["method"], "example": o.get("example", {}), "required": o["required"]} for k, o in manifest["operations"].items()}}
+
+
+@app.get("/api/connectors")
+def list_connectors():
+    with conn() as db: rows = db.execute("SELECT name, manifest FROM connectors ORDER BY name").fetchall()
+    return [connector_summary(r["name"], json.loads(r["manifest"])) for r in rows]
+
+
+@app.get("/api/connectors/{name}")
+def get_connector(name: str):
+    with conn() as db: row = db.execute("SELECT manifest FROM connectors WHERE name=?", (name,)).fetchone()
+    if not row: raise HTTPException(404, "Connector not found")
+    return json.loads(row["manifest"])
+
+
+@app.put("/api/connectors/{name}")
+def put_connector(name: str, body: ConnectorIn):
+    if not connector_lib.NAME_RE.fullmatch(name): raise HTTPException(400, "Name uses lowercase letters, numbers, _ and - (max 40) and starts with a letter")
+    try: manifest = connector_lib.validate_manifest(body.manifest)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM connectors WHERE name=?", (name,)).fetchone() and db.execute("SELECT COUNT(*) c FROM connectors").fetchone()["c"] >= MAX_CONNECTORS:
+            raise HTTPException(400, f"At most {MAX_CONNECTORS} connectors")
+        db.execute("INSERT INTO connectors (name,manifest,updated_at) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET manifest=excluded.manifest, updated_at=excluded.updated_at", (name, json.dumps(manifest), now()))
+    return connector_summary(name, manifest)
+
+
+@app.delete("/api/connectors/{name}", status_code=204)
+def delete_connector(name: str):
+    with conn() as db: db.execute("DELETE FROM connectors WHERE name=?", (name,))
 
 
 @app.put("/api/variables/{name}")

@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.31
+- Custom connectors: a JSON manifest turns any REST API into an App Action service (Settings page to manage them; simulated-server tests only)
+- 1126 API tests and a 72-check browser suite
+
 ### v0.30
 - Signed webhooks (HMAC-SHA256 with optional timestamp and replay window), idempotency keys, a time zone per Daily or Cron schedule
 - 1110 API tests and a 71-check browser suite

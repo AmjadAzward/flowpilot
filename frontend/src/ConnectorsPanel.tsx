@@ -1,0 +1,108 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Plug, Trash2 } from 'lucide-react';
+import { request } from './api';
+
+export type Connector = { name: string; label: string; base_url: string; auth: { type: string; name?: string }; operations: Record<string, { label: string; method: string; example: Record<string, unknown>; required: string[] }> };
+
+const EXAMPLE = JSON.stringify({
+  label: 'Example API',
+  base_url: 'https://api.example.com/v1',
+  auth: { type: 'bearer' },
+  operations: {
+    get_item: { label: 'Get an item', method: 'GET', path: '/items/{id}', query: { expand: '{expand}' }, required: ['id'], example: { id: '42' } },
+    create_item: { label: 'Create an item', method: 'POST', path: '/items', body: { name: '{name}', price: '{price}' }, required: ['name'], example: { name: 'Pen', price: 2.5 } },
+  },
+}, null, 2);
+
+/** The connector list for node settings; refetches when mounted. */
+export function useConnectors() {
+  const [rows, setRows] = useState<Connector[] | null>(null);
+  useEffect(() => { request<Connector[]>('/api/connectors').then(setRows).catch(() => setRows([])); }, []);
+  return rows;
+}
+
+/** Owners and admins describe a REST API in a small JSON manifest; it then appears as the "Custom connector" service in App Action. */
+export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify: (msg: string, kind?: 'ok' | 'error') => void }) {
+  const [rows, setRows] = useState<Connector[] | null>(null);
+  const [name, setName] = useState('');
+  const [text, setText] = useState('');
+  const load = useCallback(() => {
+    request<Connector[]>('/api/connectors').then(setRows).catch(e => { setRows([]); notify((e as Error).message, 'error'); });
+  }, [notify]);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    let manifest: unknown;
+    try { manifest = JSON.parse(text); } catch { notify('The manifest is not valid JSON', 'error'); return; }
+    try { await request(`/api/connectors/${encodeURIComponent(name.trim())}`, { method: 'PUT', body: JSON.stringify({ manifest }) }); notify('Connector saved'); setName(''); setText(''); load(); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const edit = async (n: string) => {
+    try { const m = await request<unknown>(`/api/connectors/${encodeURIComponent(n)}`); setName(n); setText(JSON.stringify(m, null, 2)); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+  const remove = async (n: string) => {
+    if (!window.confirm(`Delete the connector ${n}? Workflows that use it will fail until it is added again.`)) return;
+    try { await request(`/api/connectors/${encodeURIComponent(n)}`, { method: 'DELETE' }); notify('Connector deleted'); load(); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+
+  return (
+    <div className="panel settings-card var-card" data-testid="connectors-panel">
+      <Plug size={22} />
+      <h2>Custom connectors</h2>
+      <p>Describe any REST API once in a small JSON manifest (address, how it signs in, and its actions), then use it from an App Action node by choosing "Custom connector". Secrets stay on the Credentials page.</p>
+      {canEdit && (
+        <div className="var-form" style={{ display: 'grid', gap: 8 }}>
+          <input aria-label="Connector name" placeholder="name, for example acme" value={name} onChange={e => setName(e.target.value)} maxLength={40} />
+          <textarea aria-label="Connector manifest" rows={10} spellCheck={false} placeholder="Manifest (JSON)" value={text} onChange={e => setText(e.target.value)} />
+          <span className="chip-row">
+            <button type="button" className="chip" onClick={() => setText(EXAMPLE)}>Insert an example</button>
+            <button className="primary" type="button" disabled={!name.trim() || !text.trim()} onClick={() => void save()}>Save connector</button>
+          </span>
+          <span className="hint">Paths can use {'{id}'} placeholders. In a body or query, a value written exactly as {'{name}'} keeps the field's type, and a field you leave out is dropped. auth.type is none, bearer, basic, header or query. Only https addresses on public hosts work.</span>
+        </div>
+      )}
+      <div className="var-list">
+        {rows === null && <span className="muted">Loading…</span>}
+        {rows?.length === 0 && <span className="muted">No connectors yet.</span>}
+        {rows?.map(c => (
+          <div className="var-row" key={c.name} data-testid="connector-row">
+            <code>{c.name}</code>
+            <span>{c.label}: {Object.keys(c.operations).length} actions, {c.auth.type} sign-in</span>
+            {canEdit && <button className="ghost" type="button" aria-label={`Edit ${c.name}`} onClick={() => void edit(c.name)}>Edit</button>}
+            {canEdit && <button className="icon-button danger" aria-label={`Delete ${c.name}`} onClick={() => void remove(c.name)}><Trash2 size={15} /></button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** App Action settings when the service is "Custom connector". */
+export function ConnectorFields({ v, update, credSelect, fieldsLabel }: { v: (key: string, fallback?: string) => string; update: (key: string, value: string) => void; credSelect: (field: string, label: string) => JSX.Element; fieldsLabel: string }) {
+  const rows = useConnectors();
+  const current = rows?.find(c => c.name === v('connector'));
+  const ops = current ? Object.entries(current.operations) : [];
+  const opKey = current && current.operations[v('operation')] ? v('operation') : ops[0]?.[0] ?? '';
+  const pickConnector = (name: string) => {
+    const c = rows?.find(x => x.name === name);
+    const first = c ? Object.keys(c.operations)[0] : '';
+    update('connector', name); update('operation', first ?? ''); update('fields', first ? JSON.stringify(c!.operations[first].example, null, 2) : '{}');
+  };
+  return (
+    <>
+      <label>Connector
+        <select value={current ? current.name : ''} onChange={e => pickConnector(e.target.value)}>
+          <option value="">{rows === null ? 'Loading…' : rows.length ? 'Choose a connector' : 'No connectors yet (add one in Settings)'}</option>
+          {rows?.map(c => <option key={c.name} value={c.name}>{c.label}</option>)}
+        </select>
+      </label>
+      {current && <label>Connector action<select value={opKey} onChange={e => { update('operation', e.target.value); update('fields', JSON.stringify(current.operations[e.target.value].example, null, 2)); }}>{ops.map(([k, o]) => <option key={k} value={k}>{o.label} ({o.method})</option>)}</select></label>}
+      {current && current.auth.type !== 'none' && credSelect('credential', `${current.label} credential`)}
+      <label>{fieldsLabel}<textarea rows={6} spellCheck={false} value={v('fields')} onChange={e => update('fields', e.target.value)} />
+        {current && opKey && <span className="hint">Needs: {current.operations[opKey].required.join(', ') || 'nothing in particular'}. {'{{field}}'} values from the previous node are escaped for you.</span>}
+      </label>
+    </>
+  );
+}

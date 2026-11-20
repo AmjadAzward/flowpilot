@@ -17,6 +17,7 @@ import { DataSettings } from './DataSettings';
 import { AuditPanel } from './AuditPanel';
 import { Tour } from './Tour';
 import { VariablesPanel } from './VariablesPanel';
+import { ConnectorsPanel } from './ConnectorsPanel';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -830,6 +831,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             <div className="settings-grid">
               <DataSettings role={role} notify={notify} onChanged={() => void refresh()} />
               <VariablesPanel canEdit={role === 'owner' || role === 'admin'} notify={notify} />
+              <ConnectorsPanel canEdit={role === 'owner' || role === 'admin'} notify={notify} />
               {isOwner && <SsoPanel notify={notify} />}
               {isOwner && <AuditPanel notify={notify} />}
               <div className="panel settings-card"><ShieldCheck size={22} /><h2>Account</h2><p>Signed in as <strong>{username}</strong></p><span>Role: {role}. Sessions last 7 days. Passwords are stored as salted PBKDF2 hashes.</span><ChangePassword notify={notify} /></div>
