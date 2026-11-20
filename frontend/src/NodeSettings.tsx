@@ -465,15 +465,17 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
               <option value="cron">Cron expression</option>
             </select>
           </label>
-          {mode === 'daily' && <label>Time (24-hour, this computer's time zone)<input type="time" value={v('time', '09:00')} onChange={text('time')} /></label>}
+          {mode === 'daily' && <label>Time (24-hour, in the time zone below)<input type="time" value={v('time', '09:00')} onChange={text('time')} /></label>}
           {mode === 'interval' && <label>Minutes between runs (1 to 10080)<input type="number" min={1} max={10080} value={v('minutes', '15')} onChange={text('minutes')} /></label>}
           {mode === 'cron' && (
             <>
               <label>Cron expression<input value={v('cron', '0 9 * * 1-5')} onChange={text('cron')} spellCheck={false} placeholder="0 9 * * 1-5" /></label>
               <span className="chip-row">{cronPresets.map(p => <button key={p.value} type="button" className="chip" onClick={() => update('cron', p.value)}>{p.label}</button>)}</span>
-              <span className="hint">Five fields: minute, hour, day of month, month, day of week (0 or 7 is Sunday). Supports * , - and /. Uses this computer's time zone.</span>
+              <span className="hint">Five fields: minute, hour, day of month, month, day of week (0 or 7 is Sunday). Supports * , - and /. Uses the time zone below.</span>
             </>
           )}
+          {mode !== 'interval' && <label>Time zone (blank is this computer's)<input value={v('timezone')} onChange={text('timezone')} spellCheck={false} placeholder="Europe/Paris" list="tz-list" /></label>}
+          <datalist id="tz-list">{['UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Sao_Paulo', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Africa/Cairo', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney', 'Pacific/Auckland'].map(z => <option key={z} value={z} />)}</datalist>
           <span className="hint">Runs only while the FlowPilot API is running and this workflow is Active. Use Run workflow to test it with a sample event.</span>
         </>
       );
@@ -488,10 +490,14 @@ function TypeSettings({ node, update, credentials, oauth, flows, currentFlowId, 
           <button type="button" className="ghost" onClick={onRotateWebhook}><RefreshCcw size={14} />Generate new URL</button>
           <label>Public form fields (optional JSON)<textarea rows={4} spellCheck={false} value={v('form_fields')} onChange={text('form_fields')} placeholder={'[{"name":"email","label":"Your email","type":"email"}]'} /></label>
           <span className="hint">Fill this in and opening the webhook URL in a browser shows a small form (types: text, email, number, textarea, file). Anyone with the URL can submit it. Values arrive as {'{{body.email}}'}.</span>
-          <label>Who may call this webhook<select value={v('auth_type', 'none')} onChange={text('auth_type')}><option value="none">Anyone who knows the address</option><option value="header">Callers must send a secret in a header</option><option value="basic">Callers must use Basic authentication (user:password)</option></select></label>
+          <label>Who may call this webhook<select value={v('auth_type', 'none')} onChange={text('auth_type')}><option value="none">Anyone who knows the address</option><option value="header">Callers must send a secret in a header</option><option value="basic">Callers must use Basic authentication (user:password)</option><option value="hmac">Callers must sign the request (HMAC-SHA256)</option></select></label>
+          {v('auth_type', 'none') === 'hmac' && <label>Signature header<input value={v('auth_header', 'X-Signature-256')} onChange={text('auth_header')} placeholder="X-Signature-256" /></label>}
+          {v('auth_type', 'none') === 'hmac' && <label>Timestamp header (optional, blocks replays)<input value={v('auth_timestamp_header')} onChange={text('auth_timestamp_header')} placeholder="X-Timestamp" /></label>}
+          {v('auth_type', 'none') === 'hmac' && <span className="hint">The caller sends the hex HMAC-SHA256 of the request body (or of timestamp.body when a timestamp header is set; the timestamp is in seconds and must be within five minutes), keyed with the credential's value. Signed calls do not show a public form.</span>}
           {v('auth_type', 'none') === 'header' && <label>Header name<input value={v('auth_header', 'X-Webhook-Token')} onChange={text('auth_header')} placeholder="X-Webhook-Token" /></label>}
           {v('auth_type', 'none') !== 'none' && credSelect('auth_credential', v('auth_type') === 'basic' ? 'Credential holding user:password' : 'Credential holding the secret')}
           {v('auth_type', 'none') !== 'none' && <span className="hint">Calls without the right secret get a 401 and do not run the workflow. Browsers cannot send a header, so a public form does not work together with this. The Run button is not affected.</span>}
+          <label>Repeated requests<select value={v('idempotency', 'off')} onChange={text('idempotency')}><option value="off">Run every request</option><option value="on">Ignore a request whose Idempotency-Key header was already seen in the last day</option></select></label>
           <label>Accept file uploads<select value={v('accept_files', 'false')} onChange={text('accept_files')}><option value="false">No (a form with a file field still accepts files)</option><option value="true">Yes: multipart uploads from any sender</option></select></label>
           <span className="hint">Uploads are limited to 5 files, 5 MB each and 10 MB in total, and are stored in the files folder under uploads/. They arrive as {'{{body.files.0.filename}}'}, {'{{body.files.0.size}}'} and {'{{body.files.0.path}}'}; the Files node can read the path. Old uploads are deleted with the run-history cleanup. Anyone with the URL can upload, so keep the address private.</span>
           <label>Test payload (used by Run workflow)<textarea rows={5} spellCheck={false} value={v('sample')} onChange={text('sample')} /></label>

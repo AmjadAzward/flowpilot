@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.30
+- Signed webhooks (HMAC-SHA256 with optional timestamp and replay window), idempotency keys, a time zone per Daily or Cron schedule
+- 1110 API tests and a 71-check browser suite
+
 ### v0.29
 - App triggers: the New Items trigger can watch a list action of 11 App Action services (Stripe, Airtable, HubSpot, Notion, Shopify, Supabase, Todoist, Dropbox, Google Calendar, Google Drive, Slack); simulated-server tests only
 - 1097 API tests and a 71-check browser suite

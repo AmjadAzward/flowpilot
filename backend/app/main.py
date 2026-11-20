@@ -34,6 +34,7 @@ from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 from email import message_from_bytes, policy as email_policy
@@ -82,7 +83,7 @@ async def lifespan(_app):
     stop.set()
 
 
-app = FastAPI(title="FlowPilot API", version="0.29.0", description="Local visual automation engine", lifespan=lifespan)
+app = FastAPI(title="FlowPilot API", version="0.30.0", description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
 
@@ -159,6 +160,7 @@ def initialize():
         db.execute("CREATE INDEX IF NOT EXISTS idx_data_rows_tbl ON data_rows (tbl, id)")
         db.execute("CREATE TABLE IF NOT EXISTS variables (name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS poll_seen (workflow_id TEXT NOT NULL, item_id TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, item_id))")
+        db.execute("CREATE TABLE IF NOT EXISTS hook_keys (workflow_id TEXT NOT NULL, key TEXT NOT NULL, seen_at TEXT NOT NULL, PRIMARY KEY (workflow_id, key))")
         db.execute("CREATE TABLE IF NOT EXISTS poll_state (workflow_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)")
         db.execute("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, username TEXT, role TEXT, method TEXT NOT NULL, path TEXT NOT NULL, status INTEGER NOT NULL)")
         db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at TEXT NOT NULL, claimed_by TEXT, claimed_at TEXT, finished_at TEXT, execution_id TEXT, response TEXT, error TEXT)")
@@ -665,7 +667,7 @@ def health():
         db_ok = True
     except Exception: db_ok = False
     scheduler = "off" if not SCHEDULER_ENABLED else "running" if _scheduler_thread is not None and _scheduler_thread.is_alive() else "stopped"
-    return {"status": "ok" if db_ok else "degraded", "version": "0.29.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
+    return {"status": "ok" if db_ok else "degraded", "version": "0.30.0", "mode": "local", "database": "postgres" if DATABASE_URL else "sqlite", "queue": queue_mode(), "scheduler": scheduler}
 
 def search_text(doc: dict) -> str:
     """Lower-case words from node types and the text typed into node settings, so the Overview search can find a workflow by what it does."""
@@ -4393,19 +4395,37 @@ def cron_day_matches(c: dict, day) -> bool:
     return in_dom or in_dow  # standard cron: when both are restricted, either may match
 
 
-def cron_next(c: dict, after: datetime) -> datetime:
-    local = (after.astimezone() + timedelta(minutes=1)).replace(second=0, microsecond=0)
+def get_tz(name: str):
+    """An IANA time zone such as Europe/Paris; an empty name means this computer's own zone (None)."""
+    name = str(name or "").strip()
+    if not name: return None
+    if not re.fullmatch(r"[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+){0,2}", name): raise ValueError(f"Unknown time zone: {name[:40]!r}")
+    try: return ZoneInfo(name)
+    except Exception: raise ValueError(f"Unknown time zone: {name!r}")
+
+
+def cron_next(c: dict, after: datetime, tz=None) -> datetime:
+    local = (after.astimezone(tz) + timedelta(minutes=1)).replace(second=0, microsecond=0)
     for offset in range(0, 1830):  # look up to five years ahead
         day = (local + timedelta(days=offset)).date()
         if not cron_day_matches(c, day): continue
         for hour in c["hours"]:
             for minute in c["minutes"]:
                 if offset == 0 and (hour, minute) < (local.hour, local.minute): continue
-                return datetime(day.year, day.month, day.day, hour, minute).astimezone().astimezone(timezone.utc)
+                return datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).astimezone(timezone.utc)
     raise ValueError("This cron expression never matches a real date")
 
 
 def validate_schedule(data: dict) -> dict:
+    cfg = _validate_schedule(data)
+    tz_name = str(data.get("timezone") or "").strip()
+    get_tz(tz_name)
+    if tz_name and cfg["mode"] != "interval": cfg["tz"] = tz_name
+    if cfg["mode"] == "cron": cron_next(cfg["cron"], datetime.now(timezone.utc), get_tz(tz_name))  # proves it can fire in that zone
+    return cfg
+
+
+def _validate_schedule(data: dict) -> dict:
     mode = str(data.get("mode", "interval"))
     if mode == "interval":
         try: minutes = int(float(data.get("minutes", 15)))
@@ -4418,17 +4438,17 @@ def validate_schedule(data: dict) -> dict:
         return {"mode": "daily", "hour": int(m.group(1)), "minute": int(m.group(2))}
     if mode == "cron":
         cron = parse_cron(str(data.get("cron", "")).strip())
-        cron_next(cron, datetime.now(timezone.utc))  # proves it can fire
         return {"mode": "cron", "cron": cron}
     raise ValueError(f"Unknown schedule mode: {mode}")
 
 
 def next_run_after(cfg: dict, after: datetime) -> datetime:
     if cfg["mode"] == "interval": return after + timedelta(minutes=cfg["minutes"])
-    if cfg["mode"] == "cron": return cron_next(cfg["cron"], after)
-    local = after.astimezone()  # daily times are in the computer's local time zone
-    candidate = local.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0)
-    if candidate <= local: candidate += timedelta(days=1)
+    tz = get_tz(cfg.get("tz", ""))
+    if cfg["mode"] == "cron": return cron_next(cfg["cron"], after, tz)
+    local = after.astimezone(tz)  # daily times are in the chosen time zone (default: this computer's)
+    candidate = local.replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0, tzinfo=tz if tz else local.tzinfo)
+    if candidate <= local: candidate = (local + timedelta(days=1)).replace(hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0, tzinfo=tz if tz else local.tzinfo)
     return candidate.astimezone(timezone.utc)
 
 
@@ -4541,10 +4561,13 @@ FORM_STYLE = ("body{font:16px system-ui,sans-serif;background:#f6f7f9;margin:0;p
 
 def hook_auth_settings(data: dict) -> tuple[str, str, str]:
     kind = str(data.get("auth_type") or "none")
-    if kind not in ("none", "header", "basic"): raise ValueError("Webhook authentication must be none, header or basic")
+    if kind not in ("none", "header", "basic", "hmac"): raise ValueError("Webhook authentication must be none, header, basic or hmac")
     if kind == "none": return kind, "", ""
-    header = str(data.get("auth_header") or "X-Webhook-Token").strip()
-    if kind == "header" and (not HEADER_NAME_RE.fullmatch(header) or header.lower() in BLOCKED_HEADERS): raise ValueError(f"Invalid header name: {header!r}")
+    header = str(data.get("auth_header") or ("X-Signature-256" if kind == "hmac" else "X-Webhook-Token")).strip()
+    if kind == "hmac":
+        stamp = str(data.get("auth_timestamp_header") or "").strip()
+        if stamp and (not HEADER_NAME_RE.fullmatch(stamp) or stamp.lower() in BLOCKED_HEADERS): raise ValueError(f"Invalid header name: {stamp!r}")
+    if kind in ("header", "hmac") and (not HEADER_NAME_RE.fullmatch(header) or header.lower() in BLOCKED_HEADERS): raise ValueError(f"Invalid header name: {header!r}")
     cred = str(data.get("auth_credential") or "").strip()
     if not cred: raise ValueError("Choose a credential that holds the secret for webhook authentication")
     return kind, header, cred
@@ -4555,7 +4578,7 @@ def hook_denied(node: dict | None, headers: Any) -> bool:
     data = (node or {}).get("data") or {}
     try: kind, header, cred = hook_auth_settings(data)
     except ValueError: return True  # a broken setting must never open the door
-    if kind == "none": return False
+    if kind in ("none", "hmac"): return False  # a signed webhook is checked once the body has been read (hmac_denied)
     secret = load_secrets().get(cred)
     if not secret: return True
     if kind == "header": supplied = headers.get(header, "")
@@ -4565,6 +4588,49 @@ def hook_denied(node: dict | None, headers: Any) -> bool:
         try: supplied = base64.b64decode(auth[6:].strip(), validate=True).decode("utf-8")
         except Exception: return True
     return not hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
+
+
+HMAC_TOLERANCE = 300  # seconds a signed request stays valid
+
+
+def hmac_denied(node: dict | None, headers: Any, raw: bytes) -> bool:
+    """True when a signed webhook has no valid signature. The signature is HMAC-SHA256 (hex, optionally sha256= prefixed) of the raw body,
+    or of '<timestamp>.<body>' when a timestamp header is configured; then requests older (or newer) than five minutes are refused."""
+    data = (node or {}).get("data") or {}
+    try: kind, header, cred = hook_auth_settings(data)
+    except ValueError: return True
+    if kind != "hmac": return False
+    secret = load_secrets().get(cred)
+    if not secret: return True
+    message = raw
+    stamp_header = str(data.get("auth_timestamp_header") or "").strip()
+    if stamp_header:
+        stamp = str(headers.get(stamp_header, "")).strip()
+        try: sent_at = float(stamp)
+        except ValueError: return True
+        if abs(time.time() - sent_at) > HMAC_TOLERANCE: return True
+        message = stamp.encode() + b"." + raw
+    supplied = str(headers.get(header, "")).strip().lower()
+    if supplied.startswith("sha256="): supplied = supplied[7:]
+    expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
+IDEMPOTENCY_HOURS = 24
+
+
+def is_duplicate_request(doc: dict, headers: Any) -> bool:
+    """With 'Ignore repeated requests' on, a request whose Idempotency-Key was already seen in the last day is answered but not run again."""
+    node = start_node(doc) or {}
+    if str((node.get("data") or {}).get("idempotency") or "off") != "on": return False
+    key = str(headers.get("idempotency-key", "")).strip()[:200]
+    if not key: return False
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=IDEMPOTENCY_HOURS)).isoformat()
+    with conn() as db:
+        db.execute("DELETE FROM hook_keys WHERE seen_at < ?", (cutoff,))
+        try: db.execute("INSERT INTO hook_keys VALUES (?,?,?)", (doc["id"], key, now()))
+        except Exception: return True
+    return False
 
 
 def form_fields(node: dict | None) -> list[dict]:
@@ -4672,7 +4738,8 @@ async def receive_webhook(token: str, request: Request):
     if not hook_allowed(token): raise HTTPException(429, "Too many requests")
     if await run_in_threadpool(hook_denied, start_node(doc), request.headers):
         raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": 'Basic realm="webhook"'} if str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "basic" else None)
-    fields = form_fields(start_node(doc))
+    signed = str(((start_node(doc) or {}).get("data") or {}).get("auth_type")) == "hmac"
+    fields = [] if signed else form_fields(start_node(doc))
     if request.method == "GET" and fields: return render_form(doc, fields)
     ctype = request.headers.get("content-type", "")
     kind = ctype.split(";")[0].strip().lower()
@@ -4688,6 +4755,9 @@ async def receive_webhook(token: str, request: Request):
         if size > limit: raise HTTPException(413, "Payload too large")
         chunks.append(chunk)
     raw = b"".join(chunks)
+    if signed and await run_in_threadpool(hmac_denied, start_node(doc), request.headers, raw): raise HTTPException(401, "Unauthorized")
+    if await run_in_threadpool(is_duplicate_request, doc, request.headers):
+        return JSONResponse({"status": "duplicate"}, status_code=200)
     body: Any = None
     if upload and raw:
         try: sent, found = await run_in_threadpool(parse_multipart, raw, ctype)

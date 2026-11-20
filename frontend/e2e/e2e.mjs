@@ -278,7 +278,8 @@ await check('schedule: validation, activation and next run time', async () => {
   await page.locator('.react-flow__node').first().waitFor();
   await page.locator('.react-flow__node', { hasText: 'Schedule Trigger' }).click();
   await page.getByLabel('Repeat').selectOption('daily');
-  await page.getByLabel(/^Time/).waitFor();
+  await page.getByLabel(/^Time \(24-hour/).waitFor();
+  await page.getByLabel(/^Time zone/).fill('Asia/Tokyo');
   await page.getByLabel('Repeat').selectOption('interval');
   await page.getByLabel(/Minutes between runs/).fill('0');
   await activeSwitch().click();
@@ -1087,6 +1088,12 @@ await check('HTTP paging, webhook protection, Wait for Response and the new serv
   await page.getByLabel('Credential holding the secret').waitFor();
   await page.getByLabel('Who may call this webhook').selectOption('basic');
   await page.getByLabel('Credential holding user:password').waitFor();
+  await page.getByLabel('Who may call this webhook').selectOption('hmac');
+  await page.getByLabel('Signature header').waitFor();
+  await page.getByLabel(/^Timestamp header/).fill('X-Timestamp');
+  await page.getByLabel('Credential holding the secret').waitFor();
+  await page.getByLabel('Repeated requests').selectOption('on');
+  await page.getByLabel('Who may call this webhook').selectOption('none');
   await openLibrary();
   await page.getByTestId('add-callback').click();
   await page.getByLabel('If nobody answers').waitFor();
