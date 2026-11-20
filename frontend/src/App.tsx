@@ -19,6 +19,7 @@ import { Tour } from './Tour';
 import { VariablesPanel } from './VariablesPanel';
 import { ConnectorsPanel } from './ConnectorsPanel';
 import { RunStats } from './RunStats';
+import { CommandPalette, type PaletteItem } from './CommandPalette';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -129,6 +130,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [showCatalog, setShowCatalog] = useState(() => window.innerWidth >= 1500);
   const [apiOnline, setApiOnline] = useState(true);
   const [version, setVersion] = useState('');
+  const [paletteOpen, setPaletteOpen] = useState(false);
   useEffect(() => { fetch('/api/health').then(r => r.json()).then(h => setVersion(String(h.version || ''))).catch(() => undefined); }, []);
   const [webhookToken, setWebhookToken] = useState('');
   const [savedSnap, setSavedSnap] = useState('');
@@ -400,6 +402,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); setPaletteOpen(o => !o); return; }
       if (page !== 'editor') return;
       const mod = ev.ctrlKey || ev.metaKey;
       const key = ev.key.toLowerCase();
@@ -513,6 +516,16 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   return (
     <div className="app">
       {tourOpen && <Tour onClose={closeTour} />}
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} items={[
+        { id: 'p-new', label: 'Create a new workflow', hint: 'action', run: () => void createFlow() },
+        { id: 'p-overview', label: 'Overview', hint: 'page', run: () => setPage('dashboard') },
+        { id: 'p-exec', label: 'Executions', hint: 'page', run: () => { void refresh(); setPage('executions'); } },
+        { id: 'p-creds', label: 'Credentials', hint: 'page', run: () => { void refresh(); setPage('credentials'); } },
+        { id: 'p-tables', label: 'Data tables', hint: 'page', run: () => setPage('tables') },
+        ...(isOwner ? [{ id: 'p-users', label: 'Users', hint: 'page', run: () => setPage('users') }] : []),
+        { id: 'p-settings', label: 'Settings', hint: 'page', run: () => setPage('settings') },
+        ...flows.map((f): PaletteItem => ({ id: 'w-' + f.id, label: f.name, hint: 'workflow', run: () => void openFlow(f.id) })),
+      ]} />}
       {importInfo && <ImportReport info={importInfo} onClose={() => setImportInfo(null)} />}
       <aside className={'sidebar ' + (navOpen ? 'open' : '')} onClick={() => setNavOpen(false)}>
         <div className="brand">

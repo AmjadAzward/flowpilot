@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.37.0"
+VERSION = "0.38.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -2716,6 +2716,35 @@ def tool_convert(d: dict, previous: Any) -> Any:
             if text: node["#text"] = text
             return node
         return {re.sub(r"^\{.*\}", "", root.tag): conv(root)}
+    if op == "yaml_to_json":
+        import yaml
+        try:
+            if any(isinstance(ev, yaml.events.AliasEvent) for ev in yaml.parse(data, Loader=yaml.SafeLoader)): raise ValueError("YAML aliases (*name) are not accepted")  # blocks expansion bombs
+        except yaml.YAMLError as e: raise ValueError(f"That text is not valid YAML ({str(e).splitlines()[0][:100]})")
+        try: out = yaml.safe_load(data)
+        except yaml.YAMLError as e: raise ValueError(f"That text is not valid YAML ({str(e).splitlines()[0][:100]})")
+        try: json.dumps(out)
+        except (TypeError, ValueError): raise ValueError("That YAML uses a type that cannot be turned into data (dates and sets are not supported)")
+        return out
+    if op == "json_to_yaml":
+        import yaml
+        try: value = json.loads(data)
+        except ValueError: raise ValueError("That text is not valid JSON")
+        return yaml.safe_dump(value, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    if op == "pdf_text":
+        from pypdf import PdfReader
+        path = file_target(data.strip())
+        if not path.is_file(): raise ValueError("That file does not exist in the files folder")
+        if path.stat().st_size > FILE_MAX: raise ValueError("The PDF is larger than 5 MB")
+        try:
+            reader = PdfReader(str(path))
+            if reader.is_encrypted: raise ValueError("That PDF is password protected")
+            pages = [(p.extract_text() or "").strip() for p in reader.pages[:50]]
+            count = len(reader.pages)
+        except ValueError: raise
+        except Exception: raise ValueError("Could not read that PDF")
+        joined = "\n\n".join(pages)
+        return {"text": joined[:200_000], "pages": count, "read_pages": len(pages), "truncated": count > 50 or len(joined) > 200_000}
     if op == "html_extract":
         sel = str(d.get("selector") or "").strip()
         m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)?(?:\.([A-Za-z0-9_\-]+))?(?:#([A-Za-z0-9_\-]+))?", sel)

@@ -44,7 +44,7 @@ export const catalog: { type: NodeKind; label: string; desc: string; category: C
   { type: 'aggregate', label: 'Summarize', desc: 'Count, sum, average, min, max or collect', category: 'Data', color: '#0d9488', icon: 'Sigma' },
   { type: 'rename', label: 'Rename Keys', desc: 'Change field names', category: 'Data', color: '#0d9488', icon: 'TextCursorInput' },
   { type: 'datetime', label: 'Date and Time', desc: 'Add, subtract, compare and format dates', category: 'Data', color: '#0d9488', icon: 'CalendarDays' },
-  { type: 'convert', label: 'Convert Data', desc: 'JSON, XML, web page text, URL encoding', category: 'Data', color: '#0d9488', icon: 'Braces' },
+  { type: 'convert', label: 'Convert Data', desc: 'JSON, XML, YAML, PDF text, web page text, URL encoding', category: 'Data', color: '#0d9488', icon: 'Braces' },
   { type: 'table', label: 'Data Table', desc: 'Remember rows between runs', category: 'Data', color: '#0d9488', icon: 'ListTree' },
   { type: 'crypto', label: 'Crypto and Encoding', desc: 'Hash, sign, base64 and random values', category: 'Data', color: '#0d9488', icon: 'KeyRound' },
   { type: 'app', label: 'App Action', desc: '28 services: Slack, Shopify, Jira, Stripe, WhatsApp and more', category: 'Network', color: '#6366f1', icon: 'Plug' },
@@ -129,8 +129,8 @@ export const toolForms: Record<string, { fields: ToolField[]; hint: string }> = 
     { key: 'limit', label: 'Most rows to return', kind: 'text', placeholder: '100', when: { operation: ['find'] } },
     { key: 'order', label: 'Order', kind: 'select', options: [['oldest', 'Oldest first'], ['newest', 'Newest first']], when: { operation: ['find'] } }] },
   convert: { hint: 'Turn text into data and back. Web page text reads simple selectors (a tag, .class or #id) from HTML you fetched with the HTTP Request node.', fields: [
-    { key: 'operation', label: 'Action', kind: 'select', options: [['json_parse', 'Text to JSON'], ['json_stringify', 'JSON to text'], ['xml_to_json', 'XML to JSON'], ['html_extract', 'Pick text from a web page'], ['url_encode', 'URL encode'], ['url_decode', 'URL decode']] },
-    { key: 'value', label: 'Input', kind: 'text', placeholder: '{{body}}' },
+    { key: 'operation', label: 'Action', kind: 'select', options: [['json_parse', 'Text to JSON'], ['json_stringify', 'JSON to text'], ['xml_to_json', 'XML to JSON'], ['yaml_to_json', 'YAML to JSON'], ['json_to_yaml', 'JSON to YAML'], ['pdf_text', 'Read text from a PDF (a file in the files folder)'], ['html_extract', 'Pick text from a web page'], ['url_encode', 'URL encode'], ['url_decode', 'URL decode']] },
+    { key: 'value', label: 'Input (for a PDF: its path in the files folder, like docs/invoice.pdf)', kind: 'text', placeholder: '{{body}}' },
     { key: 'selector', label: 'Selector', kind: 'text', placeholder: 'h1.title', when: { operation: ['html_extract'] } },
     { key: 'attribute', label: 'Attribute (blank for the text)', kind: 'text', placeholder: 'href', when: { operation: ['html_extract'] } }] },
   crypto: { hint: 'Hashes are one-way. For a signature, save the key on the Credentials page and write {{cred.NAME}} as the key.', fields: [

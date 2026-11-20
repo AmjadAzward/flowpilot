@@ -665,6 +665,10 @@ await check('tags filter the dashboard, and sticky notes and the AI node work in
   await page.getByLabel(/^Style/).selectOption('friendly');
   await page.getByLabel(/^What should the AI do/).selectOption('prompt');
   await page.getByLabel(/^Prompt/).waitFor();
+  await page.getByTestId('add-convert').click();
+  await page.getByLabel(/^Action/).selectOption('pdf_text');
+  await page.getByLabel(/^Input \(for a PDF/).waitFor();
+  await page.getByLabel(/^Action/).selectOption('yaml_to_json');
   await page.getByRole('button', { name: /^Save/ }).click();
   await goOverview();
   await page.getByTestId('tag-bar').waitFor();
@@ -984,6 +988,26 @@ await check('a template pack link must be a public https address', async () => {
   await page.getByTestId('pack-link').fill('https://127.0.0.1/pack.json');
   await page.getByTestId('pack-import').click();
   await expectText(toast(), /public|not allowed|blocked|private|HTTPS/i);
+});
+
+await check('Ctrl+K opens a palette that jumps to pages and workflows', async () => {
+  await goOverview();
+  await page.keyboard.press('Control+k');
+  await page.getByTestId('palette').waitFor();
+  await page.getByLabel('Search pages and workflows').fill('settings');
+  await page.keyboard.press('Enter');
+  await page.getByTestId('retention-card').waitFor();
+  await page.keyboard.press('Control+k');
+  await page.getByLabel('Search pages and workflows').fill('zzzz-nothing-matches');
+  await expectText(page.getByTestId('palette'), /Nothing matches/);
+  await page.keyboard.press('Escape');
+  await page.getByTestId('palette').waitFor({ state: 'hidden' });
+  await page.keyboard.press('Control+k');
+  await page.getByLabel('Search pages and workflows').fill('webhook');
+  const hit = page.getByTestId('palette-item').filter({ hasText: 'workflow' }).first();
+  await hit.waitFor();
+  await hit.click();
+  await page.locator('.react-flow__node').first().waitFor();
 });
 
 await check('the Executions page summarises recent runs', async () => {
