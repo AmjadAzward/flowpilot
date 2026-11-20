@@ -30,12 +30,12 @@ const browser = await chromium.launch({ executablePath, headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
 const pageErrors = [];
 page.on('pageerror', e => pageErrors.push(e.message));
-page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_|status of (400|401)/.test(m.text())) pageErrors.push(m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/fonts\.googleapis|ERR_|status of (400|401|502)/.test(m.text())) pageErrors.push(m.text()); });
 
 let passed = 0, failed = 0;
 const check = async (name, fn) => {
   try { await fn(); passed++; console.log('  PASS', name); }
-  catch (e) { failed++; console.log('  FAIL', name, '\n       ', String(e.message).split('\n')[0]); if (SHOTS) await page.screenshot({ path: `${SHOTS}/fail-${name.replace(/\W+/g, '-')}.png` }); }
+  catch (e) { failed++; console.log('  FAIL', name, '\n       ', String(e.message).split('\n').slice(0, 22).join(' / ')); if (SHOTS) await page.screenshot({ path: `${SHOTS}/fail-${name.replace(/\W+/g, '-')}.png` }); }
 };
 const shot = async n => { if (SHOTS) await page.waitForTimeout(450); if (SHOTS) await page.screenshot({ path: `${SHOTS}/${n}.png` }); };
 const expectText = async (loc, re, timeout = 8000) => {
@@ -548,7 +548,7 @@ await check('owner adds a viewer, the viewer is read-only, and the owner removes
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const v = await ctx.newPage();
   try {
-    await v.goto(BASE);
+    await v.goto(BASE, { waitUntil: 'domcontentloaded' });
     await v.getByLabel('Username').fill('vera-view');
     await v.getByLabel('Password', { exact: true }).fill('viewer-password-1');
     await v.getByRole('button', { name: /^Sign in/ }).click();
@@ -990,6 +990,32 @@ await check('a template pack link must be a public https address', async () => {
   await expectText(toast(), /public|not allowed|blocked|private|HTTPS/i);
 });
 
+await check('the workflow builder asks for a description and a credential before drafting', async () => {
+  await goOverview();
+  await page.getByTestId('ai-builder').waitFor();
+  const button = page.getByTestId('ai-build');
+  if (!(await button.isDisabled())) throw new Error('drafting should need a description');
+  await page.getByLabel('Describe the workflow').fill('When someone signs up, email them a welcome message');
+  if (!(await button.isDisabled())) throw new Error('drafting should need an AI credential');
+  await page.evaluate(async () => { await fetch('/api/credentials/BUILDER_LLM', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'http://127.0.0.1:9/v1?model=none' }) }); });
+  await page.reload();
+  await page.getByLabel('Describe the workflow').fill('When someone signs up, email them a welcome message');
+  await page.getByTestId('ai-build').click();
+  await expectText(toast(), /./);  // nothing listens on that port, so the draft fails with a clear message instead of creating anything
+  await page.evaluate(async () => { await fetch('/api/credentials/BUILDER_LLM', { method: 'DELETE' }); });
+});
+
+await check('a dry run describes what would be sent without sending it', async () => {
+  await goOverview();
+  await page.getByTestId('template-webhook-receiver').click();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Webhook receiver');
+  await page.getByTestId('dry-run').click();
+  await page.getByTestId('dry-banner').waitFor();
+  await expectText(page.getByTestId('dry-banner'), /Dry run: nothing was sent/);
+  const kind = await page.evaluate(async () => (await (await fetch('/api/executions')).json())[0].trigger);
+  if (kind !== 'dry') throw new Error('the run should be stored as a dry run, got ' + kind);
+});
+
 await check('Ctrl+K opens a palette that jumps to pages and workflows', async () => {
   await goOverview();
   await page.keyboard.press('Control+k');
@@ -1325,7 +1351,7 @@ await check('single sign-on: a stand-in provider signs people in, wrong domains 
     if (put.status === 400 && /FLOWPILOT_ALLOW_PRIVATE_HOSTS/.test(put.text)) { console.log('  SKIP single sign-on (start the backend with FLOWPILOT_ALLOW_PRIVATE_HOSTS=1 to test it against a local stand-in provider)'); return; }
     if (put.status !== 200) throw new Error('could not configure SSO: ' + put.text);
     const v = await ctx.newPage();
-    await v.goto(BASE);
+    await v.goto(BASE, { waitUntil: 'domcontentloaded' });
     await v.getByTestId('sso-button').waitFor();
     await v.getByTestId('sso-button').click();
     await v.getByRole('button', { name: /^Overview/ }).waitFor();  // signed in, no password
@@ -1335,7 +1361,7 @@ await check('single sign-on: a stand-in provider signs people in, wrong domains 
     await v.evaluate(async () => { await fetch('/api/auth/logout', { method: 'POST' }); });
     // a person from another domain is refused and told why
     nextEmail = 'mallory@evil.org';
-    await v.goto(BASE);
+    await v.goto(BASE, { waitUntil: 'domcontentloaded' });
     await v.getByTestId('sso-button').click();
     await v.getByRole('alert').waitFor();
     await expectText(v.getByRole('alert'), /domain is not allowed/i);

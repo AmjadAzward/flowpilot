@@ -20,6 +20,7 @@ import { VariablesPanel } from './VariablesPanel';
 import { ConnectorsPanel } from './ConnectorsPanel';
 import { RunStats } from './RunStats';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
+import { AiBuilder } from './AiBuilder';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -47,7 +48,7 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
-const triggerLabel: Record<TriggerKind | 'error' | 'replay', string> = { replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', poll_in: 'New items', error: 'On error' };
+const triggerLabel: Record<TriggerKind | 'error' | 'replay' | 'dry', string> = { dry: 'Dry run', replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', poll_in: 'New items', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
 const edgeStyle = { stroke: 'var(--edge)', strokeWidth: 1.75 };
@@ -211,6 +212,16 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       }
       setLastRun(result); await refresh();
       notify(result.status === 'success' ? 'Workflow completed' : result.status === 'waiting' ? `Workflow is waiting until ${formatTime(result.wait?.resume_at)}` : 'Workflow failed: see the run panel', result.status === 'failed' ? 'error' : 'ok');
+    } catch (e) { notify((e as Error).message, 'error'); } finally { setBusy(false); }
+  };
+  const executeDry = async () => {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      if (!(await saveFlow(true))) return;
+      const result = await api<Run>(`/api/workflows/${selectedId}/run?dry=true`, { method: 'POST' });
+      setLastRun(result); await refresh();
+      notify(result.status === 'failed' ? 'Dry run failed: see the run panel' : `Dry run finished: ${result.not_done?.length ?? 0} action${result.not_done?.length === 1 ? '' : 's'} were not carried out`, result.status === 'failed' ? 'error' : 'ok');
     } catch (e) { notify((e as Error).message, 'error'); } finally { setBusy(false); }
   };
   const setActive = async (id: string, on: boolean) => {
@@ -630,6 +641,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               </div>
             </section>
 
+            <AiBuilder credentials={creds.filter(c => c.kind !== 'oauth2').map(c => c.name)} canEdit={canEdit} notify={notify} onCreated={id => void (async () => { await refresh(); await openFlow(id); })()} />
+
             <section>
               <div className="section-label"><h2>Start from a template</h2><p>Ready-made workflows you can run immediately and adapt</p></div>
               <div className="chip-row" role="tablist" aria-label="Template groups">
@@ -684,6 +697,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 <button className="ghost" aria-label="Version history" title="Version history" onClick={() => setShowHistory(h => !h)}><HistoryIcon size={15} />History</button>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy || !canEdit} title="Ctrl+S"><Save size={15} />Save</button>
                 <button className="primary" onClick={() => void execute()} disabled={busy || !canEdit}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
+                <button className="ghost" data-testid="dry-run" title="Runs everything that only reads. Messages, writes and waits are described, not carried out." onClick={() => void executeDry()} disabled={busy || !canEdit}>Dry run</button>
               </div>
             </div>
 
@@ -771,6 +785,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                       </div>
                     ))}
                   </div>
+                  {lastRun.dry_run && <p className="hint" data-testid="dry-banner" style={{ gridColumn: '1 / -1', margin: 0 }}>Dry run: nothing was sent, written or waited for. {lastRun.not_done?.length ? `Not carried out: ${lastRun.not_done.map(n => `${n.type} (${n.not_done})`).join(', ')}.` : 'Every step only reads, so all of it really ran.'} Steps that read from services still contacted them.</p>}
                   <pre>{pretty(lastRun.status === 'running' ? { running: 'The workflow is still working. Steps appear as they finish.' } : lastRun.status === 'success' ? lastRun.output : lastRun.status === 'waiting' ? { waiting_until: lastRun.wait?.resume_at, note: 'The run continues by itself. Follow it on the Executions page.' } : { error: lastRun.error, steps: lastRun.steps })}</pre>
                 </div>
               </div>

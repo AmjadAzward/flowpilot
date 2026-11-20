@@ -209,9 +209,9 @@ pre { margin: 0; font-family: var(--mono); font-size: 12px; }
 
 /* ---------- Editor ---------- */
 .editor-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.editor-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 20px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+.editor-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 10px 20px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
 .editor-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.workflow-title { display: block; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; margin-left: -8px; font-size: 16px; font-weight: 600; letter-spacing: -.2px; width: 340px; }
+.workflow-title { display: block; background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 1px 8px; margin-left: -8px; font-size: 16px; font-weight: 600; letter-spacing: -.2px; width: clamp(160px, 22vw, 340px); }
 .workflow-title:hover { border-color: var(--border-strong); }
 .workflow-title:focus { outline: 0; border-color: var(--accent); background: var(--surface); }
 .sub { display: flex; align-items: center; color: var(--muted); font-size: 12px; }

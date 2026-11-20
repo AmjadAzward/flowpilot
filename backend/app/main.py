@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.38.1"
+VERSION = "0.40.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -3215,6 +3215,124 @@ def run_ai(d: dict, previous: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Workflow builder: describe what you want, a model drafts the workflow, and FlowPilot checks it before saving it as an inactive draft
+# ---------------------------------------------------------------------------
+BUILDER_CATALOG: dict[str, tuple[str, dict[str, str]]] = {
+    "trigger": ("Start by clicking Run", {}),
+    "schedule": ("Start on a timer", {"mode": "interval, daily or cron", "minutes": "for interval", "time": "HH:MM for daily", "cron": "5-field cron for cron", "timezone": "IANA name, optional"}),
+    "webhook": ("Start when a URL is called; later nodes read {{body.field}}", {"sample": "test JSON payload"}),
+    "input": ("Fixed JSON data", {"json": "a JSON object or list"}),
+    "transform": ("Pick a value by path", {"path": "dotted path such as body.email"}),
+    "template": ("Build text from {{fields}}", {"template": "text with {{placeholders}}"}),
+    "set": ("Build an object from {{fields}}", {"json": "JSON object whose values may use {{placeholders}}"}),
+    "filter": ("Keep list items that match", {"path": "field", "op": "equals, not_equals, contains, gt, lt, exists", "equals": "value"}),
+    "condition": ("Branch true/false (edges use sourceHandle true or false)", {"path": "field", "op": "equals, not_equals, contains, gt, lt, exists", "equals": "value"}),
+    "switch": ("Branch by value (edges use sourceHandle 1 to 4 or default)", {"path": "field", "case1": "value", "case2": "value"}),
+    "http": ("Call a web API", {"method": "GET, POST, PUT, PATCH or DELETE", "url": "https address, may use {{placeholders}}", "body": "JSON text for POST/PUT/PATCH"}),
+    "notify": ("Send a chat message (Slack, Discord or Teams webhook)", {"message": "text with {{placeholders}}"}),
+    "email": ("Send an email by SMTP", {"to": "address", "subject": "text", "body": "text"}),
+    "ai": ("Ask an AI model", {"task": "prompt, extract, classify, sentiment, summarize, translate or rewrite", "prompt": "text or {{field}}"}),
+    "convert": ("Convert data", {"operation": "json_parse, json_stringify, xml_to_json, yaml_to_json, json_to_yaml, html_extract", "value": "{{field}}"}),
+    "datetime": ("Date and time helper", {"operation": "now, add, format"}),
+    "sort": ("Sort a list", {"path": "field"}),
+    "limit": ("Keep the first N items", {"count": "number"}),
+    "dedupe": ("Remove duplicates", {"path": "field"}),
+    "loop": ("Run following steps once per list item", {}),
+    "merge": ("Join branches", {"mode": "append, first or combine"}),
+    "delay": ("Pause", {"seconds": "number"}),
+    "output": ("Finish and show the result", {}),
+}
+BUILDER_TRIGGERS = ("trigger", "schedule", "webhook")
+BUILDER_MAX_NODES = 25
+BUILDER_DROP_KEYS = {"credential", "auth_credential", "pin", "error_workflow", "workflow_id", "workflows", "auth_type"}
+
+
+def builder_prompt() -> str:
+    lines = [f'- {typ}: {desc}' + (f' Fields: {", ".join(f"{k} ({v})" for k, v in fields.items())}.' if fields else "") for typ, (desc, fields) in BUILDER_CATALOG.items()]
+    return ("You design automation workflows. Reply with one JSON object only, no commentary:\n"
+            '{"name": "short title", "description": "one sentence", "nodes": [{"id": "n1", "type": "...", "label": "short name", "data": {...}}], "edges": [{"source": "n1", "target": "n2", "sourceHandle": "optional"}]}\n'
+            f"Rules: exactly one starting node (trigger, schedule or webhook) and every other node reachable from it; at most {BUILDER_MAX_NODES} nodes; data values are strings or numbers; "
+            "never put secrets, passwords or API keys in data; use {{field}} placeholders to pass values between steps; end with an output node. Available node types:\n" + "\n".join(lines))
+
+
+def builder_clean(draft: Any) -> WorkflowIn:
+    """Turn a model's draft into a checked workflow, or raise ValueError with a reason the model can be shown."""
+    if not isinstance(draft, dict): raise ValueError("The reply must be one JSON object")
+    raw_nodes, raw_edges = draft.get("nodes"), draft.get("edges")
+    if not isinstance(raw_nodes, list) or not 1 <= len(raw_nodes) <= BUILDER_MAX_NODES: raise ValueError(f"nodes must be a list of 1 to {BUILDER_MAX_NODES} items")
+    if not isinstance(raw_edges, list) or len(raw_edges) > BUILDER_MAX_NODES * 2: raise ValueError("edges must be a list")
+    nodes, ids = [], set()
+    for i, n in enumerate(raw_nodes):
+        if not isinstance(n, dict): raise ValueError("Each node must be an object")
+        nid, typ = str(n.get("id") or f"n{i + 1}")[:40], str(n.get("type") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", nid) or nid in ids: raise ValueError(f"Node id {nid[:20]!r} is invalid or repeated")
+        if typ not in BUILDER_CATALOG: raise ValueError(f"Node type {typ[:30]!r} is not available. Use one of: {', '.join(BUILDER_CATALOG)}")
+        ids.add(nid)
+        data = {}
+        for k, v in (n.get("data") if isinstance(n.get("data"), dict) else {}).items():
+            if str(k) in BUILDER_DROP_KEYS or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,39}", str(k)): continue
+            if isinstance(v, (dict, list)): v = json.dumps(v)
+            if isinstance(v, bool): v = "true" if v else "false"
+            if isinstance(v, (str, int, float)): data[str(k)] = str(v)[:5000]
+        data["label"] = str(n.get("label") or BUILDER_CATALOG[typ][0])[:60]
+        nodes.append({"id": nid, "type": typ, "position": {"x": 0, "y": 0}, "data": data})
+    starts = [n for n in nodes if n["type"] in BUILDER_TRIGGERS]
+    if len(starts) != 1: raise ValueError("There must be exactly one starting node (trigger, schedule or webhook)")
+    edges = []
+    for e in raw_edges:
+        if not isinstance(e, dict) or str(e.get("source")) not in ids or str(e.get("target")) not in ids: raise ValueError("Every edge needs a source and target that are node ids")
+        edge: dict[str, Any] = {"id": f"e{len(edges) + 1}", "source": str(e["source"]), "target": str(e["target"])}
+        if e.get("sourceHandle"): edge["sourceHandle"] = str(e["sourceHandle"])[:20]
+        edges.append(edge)
+    # lay the nodes out left to right by distance from the start
+    depth, queue = {starts[0]["id"]: 0}, [starts[0]["id"]]
+    while queue:
+        cur = queue.pop(0)
+        for e in edges:
+            if e["source"] == cur and e["target"] not in depth: depth[e["target"]] = depth[cur] + 1; queue.append(e["target"])
+    if len(depth) != len(nodes): raise ValueError("Every node must be reachable from the starting node: " + ", ".join(n["id"] for n in nodes if n["id"] not in depth))
+    rows: dict[int, int] = {}
+    for n in nodes:
+        d = depth[n["id"]]
+        n["position"] = {"x": 60 + d * 260, "y": 80 + rows.get(d, 0) * 150}
+        rows[d] = rows.get(d, 0) + 1
+    wf = WorkflowIn(name=str(draft.get("name") or "AI draft")[:120], description=str(draft.get("description") or "")[:500], nodes=nodes, edges=edges, tags=["ai-draft"], settings={})
+    try: validate_flow(wf)
+    except HTTPException as exc: raise ValueError(str(exc.detail))
+    return wf
+
+
+class BuildIn(BaseModel):
+    description: str = Field(min_length=10, max_length=2000)
+    credential: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/ai/build-workflow")
+def build_workflow_with_ai(body: BuildIn, request: Request):
+    """Draft a workflow from a plain description using the caller's AI credential. The result is saved inactive and never runs by itself."""
+    secrets_ = load_secrets(ALL_PROJECTS)
+    token = _secrets_var.set(secrets_)
+    try:
+        base, model, key = ai_connection({"credential": body.credential})
+        messages = [{"role": "system", "content": builder_prompt()}, {"role": "user", "content": body.description.strip()}]
+        text, last = _chat(base, model, key, messages, 0.2), ""
+        for attempt in range(2):
+            try: wf = builder_clean(_json_reply(text)); break
+            except ValueError as exc:
+                last = str(exc)
+                if attempt == 1: raise HTTPException(422, f"The model's draft could not be used: {last}")
+                text = _chat(base, model, key, messages + [{"role": "assistant", "content": text[:6000]}, {"role": "user", "content": f"That draft was rejected: {last}. Reply again with the corrected JSON object only."}], 0.0)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    except httpx.HTTPError as exc: raise HTTPException(502, f"The AI service could not be used ({type(exc).__name__}). Check the credential and that the model is running.")
+    finally: _secrets_var.reset(token)
+    wid = str(uuid.uuid4())
+    doc = wf.model_dump()
+    doc["id"] = wid
+    with conn() as db: insert_workflow(db, wid, wf.name, wf.description, doc, now())
+    return {"id": wid, "name": wf.name, "nodes": len(wf.nodes), "note": "Saved as an inactive draft. Check it, try a Dry run, then activate it."}
+
+
+# ---------------------------------------------------------------------------
 # AI Agent: a model that can call a short list of safe tools (and chosen workflows) before it answers
 # ---------------------------------------------------------------------------
 AGENT_TOOL_NAMES = ("calculator", "current_datetime", "fetch_url")
@@ -3694,11 +3812,60 @@ def queue_stats():
     return {"mode": "queue" if queue_mode() else "inline", "queued": counts.get("queued", 0), "running": counts.get("running", 0), "failed": counts.get("failed", 0), "done": counts.get("done", 0)}
 
 
+# ---------------------------------------------------------------------------
+# Dry run: run the whole workflow, but anything that would send a message, change data or wait is only described.
+# ---------------------------------------------------------------------------
+_dry_var: contextvars.ContextVar[list | None] = contextvars.ContextVar("fp_dry", default=None)
+DRY_READ_PREFIXES = ("list_", "get_", "find_", "select_", "query_", "search_", "read_", "lookup_")
+DRY_HIDE_KEYS = {"credential", "auth_credential", "pin", "label", "each_item", "on_error", "retries", "retry_wait", "auth_type", "auth_header", "sample"}
+
+
+def dry_fields(d: dict, previous: Any) -> dict:
+    """The node's own text settings with {{placeholders}} filled in, so a dry run shows what would have gone out."""
+    out = {}
+    for k, v in d.items():
+        if k in DRY_HIDE_KEYS or not isinstance(v, (str, int, float)) or isinstance(v, bool) or str(v) == "": continue
+        try: out[k] = render_template(str(v), previous)[:500]
+        except Exception: out[k] = str(v)[:500]
+    return out
+
+
+def dry_preview(typ: str, d: dict, previous: Any) -> dict | None:
+    """None when the node is safe to really run (it only reads or computes); otherwise a description of what it would have done."""
+    def would(what: str, **extra) -> dict: return {"dry_run": True, "not_done": what, **extra, "settings": dry_fields(d, previous)}
+    op = str(d.get("operation") or "")
+    if typ in ("delay", "wait"): return {"dry_run": True, "not_done": "wait", "skipped": "the pause was skipped"}
+    if typ == "callback": return {"dry_run": True, "not_done": "wait for a response", "skipped": "continued without waiting"}
+    if typ in ("email", "notify", "telegram", "gmail"): return would("send a message")
+    if typ == "http":
+        method = str(d.get("method", "GET")).upper()
+        return None if method == "GET" else would(f"{method} request")
+    if typ == "file": return None if op in ("", "read", "list") else would(f"file {op}")
+    if typ == "table": return None if op in ("find", "get", "count", "") else would(f"table {op}")
+    if typ == "sql":
+        first = re.sub(r"^[\s(]+", "", str(d.get("query") or ""))[:8].lower()
+        return None if first.startswith(("select", "with", "explain")) else would("SQL change")
+    if typ == "sheets": return None if op in ("", "read") else would(f"Google Sheets {op}")
+    if typ == "github": return None if op == "list_issues" else would("GitHub change")
+    if typ == "app":
+        if str(d.get("service") or "") == "connector":
+            with conn() as db: row = db.execute("SELECT manifest FROM connectors WHERE name=?", (str(d.get("connector") or ""),)).fetchone()
+            method = (json.loads(row["manifest"])["operations"].get(op, {}).get("method", "POST") if row else "POST")
+            return None if method == "GET" else would(f"connector call ({method})")
+        return None if op.startswith(DRY_READ_PREFIXES) else would(f"{d.get('service') or 'app'} {op}")
+    return None
+
+
 def step_action(node: dict, previous: Any):
     """Run one node. Returns (displayed_output, value_passed_downstream, branch)."""
     typ = node["type"]
     d = node.get("data", {}) or {}
     if typ in START_TYPES or typ in ("note", "output"): return previous, previous, None
+    if _dry_var.get() is not None:
+        preview = dry_preview(typ, d, previous)
+        if preview is not None:
+            _dry_var.get().append({"node": node.get("id"), "type": typ, "not_done": preview["not_done"]})
+            return preview, previous, None
     if typ == "input":
         value = read_json(d.get("json", "{}"))
         return value, value, None
@@ -4123,8 +4290,8 @@ def run_graph(g: Graph, allowed: set, seeds: list):
             if g.iter: step["iteration"] = list(g.iter)
             g.steps.append(step)
             prepared.append((nid, node, typ, data, value, step))
-        if len(prepared) == 1 and prepared[0][2] == "wait" and suspend_for_long_wait(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
-        if len(prepared) == 1 and prepared[0][2] == "callback" and suspend_for_callback(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
+        if _dry_var.get() is None and len(prepared) == 1 and prepared[0][2] == "wait" and suspend_for_long_wait(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
+        if _dry_var.get() is None and len(prepared) == 1 and prepared[0][2] == "callback" and suspend_for_callback(g, prepared[0][0], prepared[0][3], prepared[0][4], prepared[0][5]): continue
         outcomes = run_batch(g, prepared)
         for (nid, node, typ, data, value, step), (shown, passed, branch) in zip(prepared, outcomes):
             final = passed if typ in ("condition", "loop", "repeat", "switch") else shown
@@ -4353,14 +4520,14 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None, exec_id: str | N
     try: result = run_flow(doc, initial() if callable(initial) else initial, exec_id=exec_id)
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     policy = (doc.get("settings") or {}).get("save_runs", "all")
-    skip_save = kind not in ("manual", "replay") and result["status"] != "waiting" and (policy == "none" or (policy == "failures" and result["status"] == "success"))
+    skip_save = kind not in ("manual", "replay", "dry") and result["status"] != "waiting" and (policy == "none" or (policy == "failures" and result["status"] == "success"))
     with conn() as db:
         if result["status"] == "waiting" and db.execute("SELECT COUNT(*) c FROM waits WHERE status='pending'").fetchone()["c"] >= MAX_PENDING_WAITS:
             result = {"status": "failed", "output": None, "steps": result["steps"], "error": f"Too many runs are waiting (limit {MAX_PENDING_WAITS})"}
         if not skip_save: db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
                    (exec_id, doc["id"], result["status"], started, None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
         if result["status"] == "waiting" and not skip_save: add_wait(db, exec_id, doc["id"], result["wait"])
-    if result["status"] == "failed" and kind != "error": run_error_handler(doc, exec_id, kind, result)
+    if result["status"] == "failed" and kind not in ("error", "dry"): run_error_handler(doc, exec_id, kind, result)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
 
 
@@ -4599,7 +4766,7 @@ def live_run(run_id: str, request: Request):
 
 
 @app.post("/api/workflows/{workflow_id}/run")
-def run_workflow(workflow_id: str, body: RunIn | None = None, live: bool = False):
+def run_workflow(workflow_id: str, body: RunIn | None = None, live: bool = False, dry: bool = False):
     """Manual run. Schedule and webhook workflows are fed a test event so they can be tried before activating."""
     doc = get_workflow(workflow_id)
     node = start_node(doc)
@@ -4615,6 +4782,13 @@ def run_workflow(workflow_id: str, body: RunIn | None = None, live: bool = False
         if node and node["type"] == "email_in": return SAMPLE_EMAIL
         if node and node["type"] == "poll_in": return SAMPLE_POLL_ITEM
         return None
+    if dry:
+        if live: raise HTTPException(400, "A dry run cannot also be a live run")
+        noted: list = []
+        token = _dry_var.set(noted)
+        try: result = execute_workflow(doc, "dry", initial)
+        finally: _dry_var.reset(token)
+        return {**result, "dry_run": True, "not_done": noted}
     if live:
         rec = live_register(workflow_id)
         threading.Thread(target=live_worker, args=(rec, doc, initial), daemon=True, name="flowpilot-live-run").start()

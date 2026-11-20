@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.40
+- Dry run (describe, do not send) and an AI workflow draft from a plain description, both things n8n does not offer
+- Editor toolbar wraps instead of overlapping on narrower screens
+- 1282 API tests and a 78-check browser suite
+
 ### v0.38.1
 - Review of the v0.30 to v0.38 additions: webhook secrets follow project scope, credential names are hidden from outsiders, imports list the credentials they use, failed runs free their idempotency key
 - Verified that a key sent in a connector's address never appears in a stored failed run
