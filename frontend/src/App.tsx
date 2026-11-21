@@ -143,6 +143,15 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [tourOpen, setTourOpen] = useState(() => { try { return localStorage.getItem('fp-tour') !== 'done'; } catch { return false; } });
   const closeTour = () => { setTourOpen(false); try { localStorage.setItem('fp-tour', 'done'); } catch { /* private mode */ } };
   const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [runQuery, setRunQuery] = useState('');
+  const [found, setFound] = useState<{ runs: Run[]; matches: number; scanned: number } | null>(null);
+  useEffect(() => {  // search inside the data of past runs, after the person stops typing
+    const q = runQuery.trim();
+    if (q.length < 2) { setFound(null); return; }
+    let stale = false;
+    const t = window.setTimeout(() => { api<{ runs: Run[]; matches: number; scanned: number }>(`/api/executions/search?q=${encodeURIComponent(q)}`).then(r => { if (!stale) setFound(r); }).catch(() => { if (!stale) setFound(null); }); }, 350);
+    return () => { stale = true; window.clearTimeout(t); };
+  }, [runQuery]);
   const [showCatalog, setShowCatalog] = useState(() => window.innerWidth >= 1500);
   const [apiOnline, setApiOnline] = useState(true);
   const [version, setVersion] = useState('');
@@ -547,7 +556,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const filtered = flows.filter(f => flowMatches(f, query) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
   const success = runs.filter(r => r.status === 'success').length;
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
-  const shownRuns = runs.filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
+  const shownRuns = (found ? found.runs : runs).filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
   const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', tables: 'Data Tables', users: 'Users', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);
@@ -843,10 +852,14 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               </div>
             </div>
             <RunStats refreshKey={runs.length} />
+            <div className="run-search">
+              <input type="search" data-testid="run-search" aria-label="Search inside past runs" placeholder="Search inside past runs, for example an order number or an email" value={runQuery} onChange={e => setRunQuery(e.target.value)} />
+              {found && <small className="muted" data-testid="search-note">{found.matches ? `${found.matches} run${found.matches > 1 ? 's' : ''} contain this${found.matches > found.runs.length ? ` (showing the newest ${found.runs.length})` : ''}. Searched the newest ${found.scanned} runs.` : `No run contains this. Searched the newest ${found.scanned} runs.`}</small>}
+            </div>
             <div className="panel history">
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
-                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
+                  <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} />{r.snippet && <span className="run-snippet muted" data-testid="run-snippet">{r.snippet}</span>}</summary>
                   <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'failed' && <FailedRunTools run={r} credentials={creds.filter(c => c.kind !== 'oauth2').map(c => c.name)} canEdit={canEdit} notify={notify} onReplayed={refresh} />}{r.status === 'waiting' && r.waiting_for === 'response' && <p className="wait-note">Waiting for a response until {formatTime(r.resume_at)}. <button className="primary" data-testid="respond-approve" disabled={!canEdit} onClick={() => void respondRun(r.id, 'approve')}>Approve</button> <button className="ghost" data-testid="respond-reject" disabled={!canEdit} onClick={() => void respondRun(r.id, 'reject')}>Reject</button></p>}{r.status === 'waiting' && <p className="wait-note">{r.waiting_for === 'response' ? 'Or cancel it:' : `Resumes ${formatTime(r.resume_at)}.`} <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<RunCompare run={r} others={runs.filter(o => o.workflow_id === r.workflow_id && o.id !== r.id && o.status !== 'waiting' && o.status !== 'running').slice(0, 20)} label={o => `${formatTime(o.started_at)} · ${o.status}`} notify={notify} /><strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.ai_usage && <p className="hint" data-testid="run-ai-usage">{aiText(r.ai_usage)}</p>}{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}

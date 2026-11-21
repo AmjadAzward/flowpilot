@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.45.0"
+VERSION = "0.46.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -5757,9 +5757,49 @@ def executions(request: Request, workflow_id: str | None = None):
         if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
         rows = rows[:100]
         waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
-    return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
-             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
-             "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None} for r in rows]
+    return [run_json(r, waits) for r in rows]
+
+
+def run_json(r: Any, waits: dict) -> dict:
+    return {"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
+            "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
+            "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None}
+
+
+SEARCH_SCAN = 2000
+SEARCH_RESULTS = 50
+
+
+def _snippet(text: str, needle: str) -> str:
+    at = text.lower().find(needle)
+    if at < 0: return ""
+    start = max(0, at - 50)
+    return ("..." if start else "") + text[start:at + len(needle) + 70].replace("\n", " ") + ("..." if at + len(needle) + 70 < len(text) else "")
+
+
+@app.get("/api/executions/search")
+def search_executions(request: Request, q: str, workflow_id: str | None = None):
+    """Find past runs whose data contains some text, for example an order number. Looks at the newest runs only; stored run data never holds credentials."""
+    needle = q.strip().lower()
+    if len(needle) < 2: raise HTTPException(400, "Type at least 2 characters to search")
+    if len(needle) > 200: raise HTTPException(400, "The search text is too long")
+    escaped = json.dumps(needle)[1:-1]  # run data is stored as JSON, so non-ASCII text is stored escaped
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    if visible is not None and workflow_id and workflow_id not in visible: return {"runs": [], "scanned": 0, "matches": 0}
+    with conn() as db:
+        if workflow_id: rows = db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT ?", (workflow_id, SEARCH_SCAN)).fetchall()
+        else: rows = db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT ?", (SEARCH_SCAN,)).fetchall()
+        waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
+    if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
+    hits = []
+    for r in rows:
+        text = " ".join(str(r[k] or "") for k in ("output", "steps", "error"))
+        low = text.lower()
+        if needle in low or escaped in low:
+            hit = run_json(r, waits)
+            hit["snippet"] = _snippet(text, needle if needle in low else escaped)
+            hits.append(hit)
+    return {"runs": hits[:SEARCH_RESULTS], "scanned": len(rows), "matches": len(hits)}
 
 
 def _step_key(step: dict) -> str:

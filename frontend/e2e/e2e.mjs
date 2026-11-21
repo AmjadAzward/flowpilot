@@ -994,6 +994,24 @@ await check('two runs can be compared step by step to see where they differ', as
   await shot('33-run-compare');
 });
 
+await check('past runs can be searched by what is inside them', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Searchable orders', description: '', nodes: [node('t', 'trigger'), node('g', 'set', { json: '{"msg": "Order {{order}} shipped"}' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'g' }, { id: 'b', source: 'g', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    for (const order of ['ZX-4471', 'QW-9003']) await fetch(`/api/workflows/${created.id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: { order } }) });
+  });
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.getByTestId('run-search').fill('zx-4471');
+  await expectText(page.getByTestId('search-note'), /1 run contain this/);
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length === 1);
+  await expectText(page.getByTestId('run-snippet'), /ZX-4471/);
+  await page.getByTestId('run-search').fill('no-such-order-anywhere');
+  await expectText(page.getByTestId('search-note'), /No run contains this/);
+  await page.getByTestId('run-search').fill('');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });

@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.46
+- Search inside past runs: type an order number, an email or an error message on the Executions page and see which runs contained it, with a snippet around the match. It scans the newest 2,000 runs (the page says how many it searched) and shows up to 50. Run data never holds credential values, so they cannot be found this way. People only find runs of workflows they can see
+- 1362 API tests and an 88-check browser suite. This is a text scan, not an index: it is fast for thousands of runs but is not meant for millions
+
 ### v0.45
 - Compare two runs step by step: on the Executions page, pick another run of the same workflow and see which steps behaved differently (result, error or output), with both outputs side by side and the first difference named. Useful for "it worked yesterday, what changed"
 - 1350 API tests and an 87-check browser suite. Compared against real runs of a small offline workflow; outputs shown are shortened to 1,500 characters

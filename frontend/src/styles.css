@@ -586,6 +586,9 @@ button:disabled { cursor: not-allowed; }
 .diff-del { color: #b42318; }
 .failed-tools { margin: 8px 0 12px; }
 .failed-tools textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+.run-search { display: grid; gap: 4px; margin: 0 0 12px; }
+.run-search input { width: 100%; }
+.run-snippet { display: block; flex-basis: 100%; margin: 4px 0 0; font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; font-weight: 400; }
 .run-compare { margin: 8px 0 12px; }
 .compare-row { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .compare-row.differs { background: rgba(217, 119, 6, .1); }
