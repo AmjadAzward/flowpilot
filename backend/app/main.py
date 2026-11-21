@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.44.0"
+VERSION = "0.45.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -5760,6 +5760,51 @@ def executions(request: Request, workflow_id: str | None = None):
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
              "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
              "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None} for r in rows]
+
+
+def _step_key(step: dict) -> str:
+    return str(step.get("node_id")) + "#" + ".".join(str(i) for i in (step.get("iteration") or []))
+
+
+def _shown(value: Any) -> str:
+    text = json.dumps(value, default=str, sort_keys=True)
+    return text if len(text) <= 1500 else text[:1500] + "...(shortened)"
+
+
+def compare_runs(a: dict, b: dict) -> dict:
+    """Line two runs up step by step (by node and loop position) and say which steps behaved differently: status, error or output."""
+    sa = {_step_key(s): s for s in json.loads(a["steps"] or "[]")}
+    sb = {_step_key(s): s for s in json.loads(b["steps"] or "[]")}
+    order = list(sa) + [k for k in sb if k not in sa]
+    rows = []
+    for k in order:
+        x, y = sa.get(k), sb.get(k)
+        row = {"node_id": (x or y).get("node_id"), "label": (x or y).get("label"), "type": (x or y).get("type"),
+               "a": {"status": x.get("status"), "ms": x.get("duration_ms")} if x else None, "b": {"status": y.get("status"), "ms": y.get("duration_ms")} if y else None}
+        if x is None or y is None: row["change"] = "only_in_b" if x is None else "only_in_a"
+        else:
+            if x.get("status") != y.get("status"): row["change"] = "status"
+            elif x.get("error") != y.get("error"): row["change"] = "error"
+            elif x.get("output") != y.get("output"): row["change"] = "output"
+            else: row["change"] = None
+            if row["change"] in ("output", "error", "status"):
+                row["a"]["output"], row["b"]["output"] = _shown(x.get("output") if x.get("status") != "error" else x.get("error")), _shown(y.get("output") if y.get("status") != "error" else y.get("error"))
+        rows.append(row)
+    first = next((r["node_id"] for r in rows if r["change"]), None)
+    return {"a": {"id": a["id"], "status": a["status"], "started_at": a["started_at"]}, "b": {"id": b["id"], "status": b["status"], "started_at": b["started_at"]},
+            "same_workflow": a["workflow_id"] == b["workflow_id"], "steps": rows, "changed": sum(1 for r in rows if r["change"]),
+            "first_change": first, "output_changed": a["output"] != b["output"], "status_changed": a["status"] != b["status"]}
+
+
+@app.get("/api/executions/compare")
+def compare_executions(request: Request, a: str, b: str):
+    """Compare two runs step by step, to see where a run that went wrong first differs from one that went right."""
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    with conn() as db:
+        ra = db.execute("SELECT * FROM executions WHERE id=?", (a,)).fetchone()
+        rb = db.execute("SELECT * FROM executions WHERE id=?", (b,)).fetchone()
+    if not ra or not rb or (visible is not None and (ra["workflow_id"] not in visible or rb["workflow_id"] not in visible)): raise HTTPException(404, "Execution not found")
+    return compare_runs(dict(ra), dict(rb))
 
 
 STATS_WINDOWS = {"24h": 1, "7d": 7, "30d": 30}

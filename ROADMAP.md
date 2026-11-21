@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.45
+- Compare two runs step by step: on the Executions page, pick another run of the same workflow and see which steps behaved differently (result, error or output), with both outputs side by side and the first difference named. Useful for "it worked yesterday, what changed"
+- 1350 API tests and an 87-check browser suite. Compared against real runs of a small offline workflow; outputs shown are shortened to 1,500 characters
+
 ### v0.44
 - A run marks its slowest step (shown when a run has three or more timed steps and the slowest took at least 50 ms)
 - Export on a workflow now includes its saved tests, and importing that file restores them before the workflow opens. Invalid tests in a file are skipped without losing the workflow

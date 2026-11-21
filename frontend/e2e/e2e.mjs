@@ -976,6 +976,24 @@ await check('recent failures can be replayed in one go', async () => {
   if (again !== 0) throw new Error('an unknown workflow should find nothing');
 });
 
+await check('two runs can be compared step by step to see where they differ', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Compare greeter', description: '', nodes: [node('t', 'trigger'), node('g', 'set', { label: 'Make greeting', json: '{"greeting": "Hello {{name}}"}' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'g' }, { id: 'b', source: 'g', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    for (const name of ['Ada', 'Bob']) await fetch(`/api/workflows/${created.id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: { name } }) });
+  });
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  const row = page.getByTestId('history-row').filter({ hasText: 'Compare greeter' }).first();
+  await row.locator('summary').click();
+  await row.getByLabel('Compare with another run').selectOption({ index: 1 });
+  await expectText(row.getByTestId('compare-summary'), /\d+ steps? differ\. The first difference is at/);
+  const differing = row.locator('[data-testid="compare-row"].differs');
+  if (await differing.count() < 1) throw new Error('expected at least one differing step');
+  await expectText(row.getByTestId('compare-result'), /Hello (Ada|Bob)/);
+  await shot('33-run-compare');
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });

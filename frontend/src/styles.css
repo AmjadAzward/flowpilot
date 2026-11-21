@@ -586,6 +586,11 @@ button:disabled { cursor: not-allowed; }
 .diff-del { color: #b42318; }
 .failed-tools { margin: 8px 0 12px; }
 .failed-tools textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+.run-compare { margin: 8px 0 12px; }
+.compare-row { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.compare-row.differs { background: rgba(217, 119, 6, .1); }
+.compare-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+.compare-sides pre { margin: 0; max-height: 160px; overflow: auto; font-size: 11px; }
 .explain-box { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; }
 
 .expr-hints { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); position: sticky; top: 0; z-index: 5; }
