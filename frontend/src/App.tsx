@@ -146,6 +146,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [tourOpen, setTourOpen] = useState(() => { try { return localStorage.getItem('fp-tour') !== 'done'; } catch { return false; } });
   const closeTour = () => { setTourOpen(false); try { localStorage.setItem('fp-tour', 'done'); } catch { /* private mode */ } };
   const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [credUsage, setCredUsage] = useState<Record<string, { used_by: { id: string; name: string }[]; hidden: number }>>({});
   const [runQuery, setRunQuery] = useState('');
   const [found, setFound] = useState<{ runs: Run[]; matches: number; scanned: number } | null>(null);
   useEffect(() => {  // search inside the data of past runs, after the person stops typing
@@ -165,6 +166,12 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const hist = useRef<{ stack: string[]; idx: number }>({ stack: [], idx: -1 });
   const clip = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const [creds, setCreds] = useState<CredentialRow[]>([]);
+  useEffect(() => {  // which workflows use each credential, for the Credentials page
+    if (page !== 'credentials') return;
+    let stale = false;
+    api<typeof credUsage>('/api/credentials/usage').then(u => { if (!stale) setCredUsage(u); }).catch(() => { if (!stale) setCredUsage({}); });
+    return () => { stale = true; };
+  }, [page, creds]);
   const [credName, setCredName] = useState('');
   const [credValue, setCredValue] = useState('');
   const [credProject, setCredProject] = useState('keep');
@@ -527,7 +534,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     catch (e) { notify((e as Error).message, 'error'); }
   };
   const deleteCredential = async (name: string) => {
-    if (!window.confirm(`Delete credential ${name}? Workflows that use it will fail until you add it again.`)) return;
+    const users = credUsage[name]?.used_by ?? [];
+    const warn = users.length ? `${users.length} workflow${users.length > 1 ? 's use' : ' uses'} it: ${users.slice(0, 5).map(u => `"${u.name}"`).join(', ')}${users.length > 5 ? ', ...' : ''}. ` : '';
+    if (!window.confirm(`Delete credential ${name}? ${warn}Workflows that use it will fail until you add it again.`)) return;
     try { await api(`/api/credentials/${encodeURIComponent(name)}`, { method: 'DELETE' }); await refresh(); notify('Credential deleted'); }
     catch (e) { notify((e as Error).message, 'error'); }
   };
@@ -898,7 +907,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               <div className="cred-head"><span>Name</span><span>Use it in a node</span><span>Updated</span><span className="th-actions">Actions</span></div>
               {creds.length ? creds.map(c => (
                 <div className="cred-row" key={c.name} data-testid="cred-row">
-                  <strong>{c.name}{c.kind === 'oauth2' && <em className="iter"> connected account{c.provider ? ` (${c.provider})` : ''}</em>}</strong>
+                  <strong>{c.name}{credUsage[c.name] && (credUsage[c.name].used_by.length + credUsage[c.name].hidden === 0
+                    ? <em className="iter" data-testid="cred-unused" title="No workflow refers to this credential"> unused</em>
+                    : <em className="iter" data-testid="cred-used" title={credUsage[c.name].used_by.map(u => u.name).join(', ')}> used by {credUsage[c.name].used_by.length + credUsage[c.name].hidden} workflow{credUsage[c.name].used_by.length + credUsage[c.name].hidden > 1 ? 's' : ''}</em>)}{c.kind === 'oauth2' && <em className="iter"> connected account{c.provider ? ` (${c.provider})` : ''}</em>}</strong>
                   <span className="cred-use" style={{ display: 'grid', gap: 6, justifyItems: 'start' }}>
                   {c.kind === 'oauth2' ? <span className="muted">Choose it in a node</span> : <code>{`{{cred.${c.name}}}`}</code>}
                   {projectList.length > 0 && <select className="project-select" aria-label={`Who can use ${c.name}`} value={c.project_id ?? ''} disabled={!canCreds} onChange={e => void moveCredential(c.name, e.target.value)}><option value="">Every workflow</option>{projectList.map(p => <option key={p.id} value={p.id}>Only {p.name}</option>)}</select>}

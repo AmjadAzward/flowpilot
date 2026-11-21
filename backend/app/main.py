@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.48.0"
+VERSION = "0.49.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -1028,6 +1028,27 @@ def list_credentials(request: Request):
         try: cfg = oauth_config(fernet().decrypt(r["value_enc"].encode()).decode())
         except InvalidToken: cfg = None
         out.append({"name": r["name"], "project_id": r["project_id"], "project_name": names.get(r["project_id"]), "created_at": r["created_at"], "updated_at": r["updated_at"], "kind": "oauth2" if cfg else "secret", "provider": cfg.get("provider") if cfg else None})
+    return out
+
+
+@app.get("/api/credentials/usage")
+def credential_usage(request: Request):
+    """Which workflows use each credential, so unused ones can be cleaned up and a delete can warn first. Names only, never values.
+    Workflows the caller cannot see are counted, not named."""
+    actor = getattr(request.state, "actor", None)
+    visible = visible_workflow_ids(actor)
+    mine = None if sees_everything(actor) else my_project_ids(actor)
+    with conn() as db:
+        creds = db.execute("SELECT name, project_id FROM credentials").fetchall()
+        flows = db.execute("SELECT id, name, definition FROM workflows ORDER BY name").fetchall()
+    out = {r["name"]: {"used_by": [], "hidden": 0} for r in creds if mine is None or r["project_id"] is None or r["project_id"] in mine}
+    for f in flows:
+        try: names = credentials_used(json.loads(f["definition"]))
+        except ValueError: continue
+        for name in names:
+            if name not in out: continue
+            if visible is None or f["id"] in visible: out[name]["used_by"].append({"id": f["id"], "name": f["name"]})
+            else: out[name]["hidden"] += 1
     return out
 
 

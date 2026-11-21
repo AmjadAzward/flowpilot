@@ -1056,6 +1056,26 @@ await check('a run can carry a note that shows in the list and can be searched',
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
 });
 
+await check('the Credentials page shows which credentials are used, and warns before deleting one in use', async () => {
+  await page.evaluate(async () => {
+    const put = (name) => fetch(`/api/credentials/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'value-for-' + name }) });
+    await put('E2E_IN_USE'); await put('E2E_NOBODY');
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 400 : id === 'h' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Uses the key', description: '', nodes: [node('t', 'trigger'), node('h', 'http', { url: 'https://x.example/{{cred.E2E_IN_USE}}', method: 'GET' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'h' }, { id: 'b', source: 'h', target: 'o' }] }) });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: /^Credentials/ }).click();
+  const used = page.getByTestId('cred-row').filter({ hasText: 'E2E_IN_USE' });
+  const unused = page.getByTestId('cred-row').filter({ hasText: 'E2E_NOBODY' });
+  await expectText(used.getByTestId('cred-used'), /used by 1 workflow/);
+  await expectText(unused.getByTestId('cred-unused'), /unused/);
+  const asked = new Promise(resolve => page.once('dialog', d => { resolve(d.message()); void d.dismiss(); }));
+  await page.getByLabel('Delete credential E2E_IN_USE', { exact: true }).click();
+  const message = await Promise.race([asked, new Promise(resolve => setTimeout(() => resolve('(no dialog appeared)'), 10000))]);
+  if (!/1 workflow uses it: "Uses the key"/.test(message)) throw new Error('no warning before deleting a credential in use: ' + message);
+  await page.evaluate(async () => { for (const n of ['E2E_IN_USE', 'E2E_NOBODY']) await fetch(`/api/credentials/${n}`, { method: 'DELETE' }); });
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });

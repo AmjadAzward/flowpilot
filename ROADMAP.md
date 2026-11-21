@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.49
+- The Credentials page shows which workflows use each credential ("used by 2 workflows", or "unused" when nothing refers to it), and deleting one that is in use warns first and names the workflows. Credentials of other projects, and workflows you cannot see, are not named. Values are never returned
+- A credential counts as used when a workflow refers to it with `{{cred.NAME}}` or picks it in a credential field. A credential used only by something outside the saved workflows (for example a script calling the API directly) will show as unused
+- 1392 API tests and a 91-check browser suite
+
 ### v0.48
 - Notes on runs: add a short note (up to 500 characters) to any run, such as "customer confirmed fixed". It shows next to the run in the list and is found by the run search. Viewers can read notes but not write them; people cannot note runs of workflows they cannot see
 - Checked on a real Postgres as well as SQLite (the new API tests for notes, search, compare, connections and AI usage: 44 passed on Postgres)
