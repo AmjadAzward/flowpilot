@@ -14,6 +14,7 @@ import { ChangePassword, UsersPage } from './UsersPage';
 import { TablesPage } from './TablesPage';
 import { HistoryPanel } from './HistoryPanel';
 import { TestsPanel } from './TestsPanel';
+import { DependenciesPanel, deleteWarning, type Dependencies } from './DependenciesPanel';
 import { ExpressionHints, fieldPaths } from './ExpressionHints';
 import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
@@ -115,6 +116,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [page, setPage] = useState<Page>('dashboard');
   const [showHistory, setShowHistory] = useState(false);
   const [showTests, setShowTests] = useState(false);
+  const [showDeps, setShowDeps] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const canEdit = role !== 'viewer';
   const canCreds = role === 'owner' || role === 'admin';
@@ -278,7 +280,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const bulk = async (action: 'activate' | 'deactivate' | 'run' | 'delete') => {
     const targets = flows.filter(f => picked.includes(f.id));
     if (!targets.length) return;
-    if (action === 'delete' && !window.confirm(`Delete ${targets.length} workflow${targets.length > 1 ? 's' : ''} and their execution logs permanently?`)) return;
+    if (action === 'delete' && !window.confirm((await warnBeforeDelete(targets.map(t => t.id))) + `Delete ${targets.length} workflow${targets.length > 1 ? 's' : ''} and their execution logs permanently?`)) return;
     setBulkBusy(true);
     let ok = 0, skipped = 0;
     const problems: string[] = [];
@@ -300,8 +302,12 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     if (problems.length) parts.push(`${problems.length} failed: ${problems[0]}`);
     notify(parts.join(', '), problems.length ? 'error' : 'ok');
   };
+  const warnBeforeDelete = async (ids: string[]) => {
+    try { return deleteWarning((await api<{ workflows: Dependencies[] }>('/api/dependencies')).workflows, ids); } catch { return ''; }  // the warning is a courtesy; deleting still works without it
+  };
   const removeFlow = async (id: string) => {
-    if (!window.confirm('Delete this workflow and its execution logs permanently?')) return;
+    const warn = await warnBeforeDelete([id]);
+    if (!window.confirm(warn + 'Delete this workflow and its execution logs permanently?')) return;
     try {
       await api(`/api/workflows/${id}`, { method: 'DELETE' });
       if (id === selectedId) { setSelectedId(''); setPage('dashboard'); }
@@ -734,8 +740,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 </span>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
-                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => { setShowTests(false); setShowHistory(h => !h); }}><HistoryIcon size={15} />History</button>
-                <button className="ghost" aria-label="Workflow tests" data-testid="open-tests" title="Saved test cases" onClick={() => { setShowHistory(false); setShowTests(t => !t); }}><FlaskConical size={15} />Tests</button>
+                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => { setShowTests(false); setShowDeps(false); setShowHistory(h => !h); }}><HistoryIcon size={15} />History</button>
+                <button className="ghost" aria-label="Workflow tests" data-testid="open-tests" title="Saved test cases" onClick={() => { setShowHistory(false); setShowDeps(false); setShowTests(t => !t); }}><FlaskConical size={15} />Tests</button>
+                <button className="ghost" aria-label="Workflow connections" data-testid="open-deps" title="What this workflow runs, what runs it, and its credentials" onClick={() => { setShowHistory(false); setShowTests(false); setShowDeps(d => !d); }}><Network size={15} />Connections</button>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy || !canEdit} title="Ctrl+S"><Save size={15} />Save</button>
                 <button className="primary" onClick={() => void execute()} disabled={busy || !canEdit}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
                 <button className="ghost" data-testid="dry-run" title="Runs everything that only reads. Messages, writes and waits are described, not carried out." onClick={() => void executeDry()} disabled={busy || !canEdit}>Dry run</button>
@@ -743,6 +750,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             </div>
 
             <div className="studio">
+              {showDeps && selectedId && <DependenciesPanel key={selectedId} workflowId={selectedId} onClose={() => setShowDeps(false)} onOpen={id => void openFlow(id)} />}
               {showTests && selectedId && <TestsPanel key={selectedId} workflowId={selectedId} canEdit={canEdit} notify={notify} onClose={() => setShowTests(false)} suggestInput={lastRun?.steps?.[0]?.input != null ? JSON.stringify(lastRun.steps[0].input, null, 2) : '{}'} suggestExpected={lastRun?.status === 'success' && lastRun.output != null ? JSON.stringify(lastRun.output, null, 2) : ''} />}
               {showHistory && selectedId && <HistoryPanel workflowId={selectedId} canRestore={canEdit} dirty={dirty} notify={notify} onClose={() => setShowHistory(false)} onRestored={() => { setShowHistory(false); void openFlow(selectedId); void refresh(); }} />}
               {showCatalog && (

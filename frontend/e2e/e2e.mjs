@@ -1012,6 +1012,31 @@ await check('past runs can be searched by what is inside them', async () => {
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
 });
 
+await check('connections show what a workflow runs, what runs it, and warn before deleting one in use', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 400 : id === 's' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const post = async body => (await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()).id;
+    const child = await post({ name: 'Linked child', description: '', nodes: [node('t', 'trigger'), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'o' }] });
+    await post({ name: 'Linked parent', description: '', nodes: [node('t', 'trigger'), node('s', 'subflow', { workflow_id: child }), node('h', 'http', { url: 'https://x.example/{{cred.NOT_SAVED_KEY}}', method: 'GET' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 's' }, { id: 'b', source: 's', target: 'h' }, { id: 'c', source: 'h', target: 'o' }] });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Linked parent$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByTestId('open-deps').click();
+  await expectText(page.getByTestId('deps-calls'), /Linked child/);
+  await expectText(page.getByTestId('deps-creds'), /NOT_SAVED_KEY/);
+  await page.getByTestId('deps-missing-cred').waitFor();
+  await page.getByTestId('deps-calls').getByRole('button', { name: 'Linked child' }).click();  // jump to the child
+  await expectText(page.getByTestId('deps-called-by'), /Linked parent/);
+  await goOverview();
+  const asked = new Promise(resolve => page.once('dialog', d => { resolve(d.message()); void d.dismiss(); }));
+  await page.getByLabel('Delete Linked child', { exact: true }).click();
+  const message = await Promise.race([asked, new Promise(resolve => setTimeout(() => resolve('(no dialog appeared)'), 10000))]);
+  if (!/"Linked child" is used by "Linked parent"/.test(message)) throw new Error('no warning before deleting a workflow in use: ' + message);
+  await shot('34-connections');
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });

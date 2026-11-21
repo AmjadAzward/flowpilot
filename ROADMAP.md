@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.47
+- A Connections panel on each workflow: which workflows it runs (Run Workflow nodes, AI Agent tools, error handlers), which workflows run it, whether it is the shared error workflow, and which credentials it uses (flagging names that are not saved yet). Links to workflows it points at that no longer exist
+- Deleting a workflow (one or several) now warns first when another workflow still uses it or it is the shared error workflow. The warning is advice only; deleting still works
+- People only see connections to workflows they can see; others are counted, not named. Credential values are never returned
+- 1375 API tests and an 89-check browser suite. Connections are read from the saved workflow definitions, so a workflow name typed into a node's text is not detected
+
 ### v0.46
 - Search inside past runs: type an order number, an email or an error message on the Executions page and see which runs contained it, with a snippet around the match. It scans the newest 2,000 runs (the page says how many it searched) and shows up to 50. Run data never holds credential values, so they cannot be found this way. People only find runs of workflows they can see
 - 1362 API tests and an 88-check browser suite. This is a text scan, not an index: it is fast for thousands of runs but is not meant for millions

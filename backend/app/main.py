@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.46.0"
+VERSION = "0.47.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -5630,6 +5630,59 @@ def credentials_used(doc: dict) -> list[str]:
                 found.update(CRED_REF_RE.findall(value))
                 if key in ("credential", "auth_credential") and NAME_RE.fullmatch(value.strip()): found.add(value.strip())
     return sorted(found)[:20]
+
+
+def workflow_references(doc: dict) -> list[dict]:
+    """Other workflows this one runs: a Run Workflow node, an AI Agent tool, or its own error handler."""
+    refs: list[dict] = []
+    for n in doc.get("nodes") or []:
+        data = n.get("data") or {}
+        if n.get("type") == "subflow" and str(data.get("workflow_id") or "").strip(): refs.append({"id": str(data["workflow_id"]).strip(), "via": "subflow", "node": n.get("id")})
+        if n.get("type") == "agent":
+            refs += [{"id": w.strip(), "via": "agent", "node": n.get("id")} for w in str(data.get("workflows") or "").split(",") if w.strip()]
+        if str(data.get("error_workflow") or "").strip(): refs.append({"id": str(data["error_workflow"]).strip(), "via": "error_handler", "node": n.get("id")})
+    seen, out = set(), []
+    for r in refs:
+        key = (r["id"], r["via"])
+        if key not in seen: seen.add(key); out.append(r)
+    return out
+
+
+def dependency_map(actor: dict | None) -> dict:
+    """Which workflows run which, and which credentials each one uses, for the workflows the caller can see."""
+    visible = visible_workflow_ids(actor)
+    with conn() as db: rows = db.execute("SELECT id, name, definition FROM workflows ORDER BY name").fetchall()
+    exists = {r["id"] for r in rows}
+    rows = [r for r in rows if visible is None or r["id"] in visible]
+    names = {r["id"]: r["name"] for r in rows}
+    stored = set(load_secrets(ALL_PROJECTS))
+    default_handler = default_error_workflow()
+    out = {}
+    for r in rows:
+        doc = json.loads(r["definition"])
+        creds = credentials_used(doc)
+        out[r["id"]] = {"id": r["id"], "name": r["name"], "calls": [{**ref, "name": names.get(ref["id"])} for ref in workflow_references(doc) if ref["id"] in names],
+                        "missing_workflows": sorted({ref["id"] for ref in workflow_references(doc) if ref["id"] not in exists}),
+                        "hidden_references": len({ref["id"] for ref in workflow_references(doc) if ref["id"] in exists and ref["id"] not in names}), "called_by": [],
+                        "credentials": creds, "missing_credentials": [c for c in creds if c not in stored]}
+    for wid, info in out.items():
+        for call in info["calls"]: out[call["id"]]["called_by"].append({"id": wid, "name": info["name"], "via": call["via"]})
+    for info in out.values(): info["is_default_error_handler"] = info["id"] == default_handler
+    return {"workflows": list(out.values()), "default_error_workflow": default_handler if default_handler in names else None}
+
+
+@app.get("/api/dependencies")
+def all_dependencies(request: Request):
+    """The map of workflows calling workflows, and the credentials each uses."""
+    return dependency_map(getattr(request.state, "actor", None))
+
+
+@app.get("/api/workflows/{workflow_id}/dependencies")
+def workflow_dependencies(workflow_id: str, request: Request):
+    """What one workflow runs, what runs it, and which credentials it needs. Used to warn before deleting something that is in use."""
+    found = next((w for w in dependency_map(getattr(request.state, "actor", None))["workflows"] if w["id"] == workflow_id), None)
+    if not found: raise HTTPException(404, "Workflow not found")
+    return found
 
 
 @app.post("/api/backup/restore")
