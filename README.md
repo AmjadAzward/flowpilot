@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1110%20API%20%2B%2071%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1301%20API%20%2B%2081%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -88,6 +88,7 @@
 | **Wait for Response (approvals)** | A node that pauses the run until someone answers. Any earlier node can put `{{run.approve_url}}` and `{{run.reject_url}}` in a message (Slack, ntfy, email); opening a link answers the run, or an editor presses Approve or Reject on the Executions page. The next nodes get `{{decision}}` (approve, reject, timeout, or your own word with `?decision=word`), `{{data}}` and `{{body}}`. Links are signed, work once, and expire after the time limit (1 minute to 7 days), when the run continues with the decision "timeout" or fails. Anyone who has a link can answer, so send it only to people you trust |
 | **Dry run** | A Dry run button runs the whole workflow but only describes what would be sent or changed: POST/PUT/DELETE requests, emails, chat messages, file writes, table and SQL changes, app actions that write, and waits are skipped and listed ("Not carried out"). Reads still really run (GET requests, file and table reads, AI calls, list/get actions), so those services are contacted. Dry runs never call the error workflow and are stored as their own kind. n8n has no equivalent: its test run executes for real |
 | **Describe a workflow (AI draft)** | On the Overview page you describe what you want, an AI model of your choice drafts the workflow, and FlowPilot checks it (known node types only, no code/SQL/file nodes, one trigger, everything reachable, no credentials copied in) before saving it as an inactive draft with the `ai-draft` tag. One corrective retry; nothing runs by itself, so review it and try a Dry run first. Tested against a simulated model only; small local models draft poorly |
+| **Fix failed runs faster** | On a failed run you can edit the data the failed step received and replay from there, or ask an AI model to explain the failure (credentials are removed from what it sees; it is tested against a simulated model only and can be wrong). Version history has a Compare button showing which steps, settings and connections changed. A workflow can cap its AI calls per run. |
 | **Scope and import safety** | A webhook can only use secrets its own project may use; people outside a project do not see that project's credential names; a workflow import (file or link) lists the credentials each workflow refers to so you can read it before running it; a failed run frees its Idempotency-Key so the sender can retry. Known limits: error details from every project reach the shared error workflow, and a hostile PDF could make reading slow (5 MB cap, no time limit yet) |
 | **YAML, PDF and the palette** | Convert Data reads YAML (safe loading only: no aliases, dates or custom types) and writes it, and reads the text of a PDF from the files folder (first 50 pages, 5 MB, 200,000 characters; scanned PDFs without a text layer give nothing, there is no OCR). Press Ctrl+K anywhere to jump to a page or workflow. Adds two small free libraries, PyYAML and pypdf, to requirements.txt |
 | **Operations and sharing** | The Executions page shows a summary (runs, failures, failure rate, average time, workflows that fail most) for the runs you may see; owners get a Prometheus-style `/api/metrics`. Webhooks can be limited to listed IP addresses or ranges (it sees the connecting address, so a proxy hides the real caller). The workflow backup now includes connectors and can be imported from an HTTPS link (inactive workflows, nothing overwritten, owner only) |
@@ -296,7 +297,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1282 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1301 tests, use a temporary database and key):
 
 ```powershell
 cd backend

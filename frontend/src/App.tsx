@@ -21,6 +21,7 @@ import { ConnectorsPanel } from './ConnectorsPanel';
 import { RunStats } from './RunStats';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
 import { AiBuilder } from './AiBuilder';
+import { FailedRunTools } from './FailedRunTools';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -110,7 +111,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [flowName, setFlowName] = useState('Untitled workflow');
   const [description, setDescription] = useState('');
   const [tagsText, setTagsText] = useState('');
-  const [wfSettings, setWfSettings] = useState({ timeout: '', save: 'all' });
+  const [wfSettings, setWfSettings] = useState({ timeout: '', save: 'all', ai: '' });
   const [tagFilter, setTagFilter] = useState('');
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -170,9 +171,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   const loadDoc = (doc: FlowDoc) => {
     const ns = doc.nodes, es = doc.edges;
-    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWfSettings({ timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all' }); setWebhookToken(doc.webhook_token ?? '');
+    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWfSettings({ timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '' }); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
-    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), wfSettings: { timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all' }, n: cleanNodes(ns), e: cleanEdges(es) }));
+    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), wfSettings: { timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '' }, n: cleanNodes(ns), e: cleanEdges(es) }));
     hist.current = { stack: [JSON.stringify({ n: cleanNodes(ns), e: cleanEdges(es) })], idx: 0 };
     setPage('editor');
   };
@@ -185,7 +186,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       await refresh(); await openFlow(doc.id); notify('Workflow created');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
-  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
+  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save, ai_call_limit: wfSettings.ai ? Number(wfSettings.ai) : 0 }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
   const saveFlow = useCallback(async (silent = false) => {
     if (!selectedId) return false;
     try {
@@ -676,6 +677,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   {isOwner && projectList.length > 0 && <select className="project-select" aria-label="Workflow project" value={meta?.project_id ?? ''} onChange={e => void assignProject(e.target.value)}><option value="">No project</option>{projectList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
                   <details className="run-settings"><summary>Run settings</summary><div className="run-pop">
                     <label>Time limit<select value={wfSettings.timeout} onChange={e => setWfSettings(s => ({ ...s, timeout: e.target.value }))} aria-label="Workflow time limit"><option value="">No limit</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label>
+                    <label>AI calls per run<select value={wfSettings.ai} onChange={e => setWfSettings(s => ({ ...s, ai: e.target.value }))} aria-label="AI calls per run"><option value="">No limit</option><option value="1">1</option><option value="3">3</option><option value="10">10</option><option value="50">50</option><option value="200">200</option></select></label>
                     <label>Keep run history<select value={wfSettings.save} onChange={e => setWfSettings(s => ({ ...s, save: e.target.value }))} aria-label="Which runs to keep"><option value="all">Every run</option><option value="failures">Only failed runs</option><option value="none">No automatic runs</option></select></label>
                     <span className="hint">The time limit is checked between steps. Test runs from the Run button are always kept.</span>
                   </div></details>
@@ -811,7 +813,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               {shownRuns.length ? shownRuns.map(r => (
                 <details className="history-row" key={r.id} data-testid="history-row">
                   <summary><span className={'dot ' + (r.status === 'success' ? 'on' : r.status === 'waiting' ? 'warn' : 'off')} /><strong>{flowName_(r.workflow_id)}</strong><span className={'trig-chip ' + (r.trigger ?? 'manual')}>{triggerLabel[r.trigger ?? 'manual']}</span><span className="muted">{formatTime(r.started_at)}</span><span className={'status-chip ' + (r.status === 'success' ? 'ok' : r.status === 'waiting' ? 'wait' : 'fail')}>{r.status}</span><ChevronRight size={16} /></summary>
-                  <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'waiting' && r.waiting_for === 'response' && <p className="wait-note">Waiting for a response until {formatTime(r.resume_at)}. <button className="primary" data-testid="respond-approve" disabled={!canEdit} onClick={() => void respondRun(r.id, 'approve')}>Approve</button> <button className="ghost" data-testid="respond-reject" disabled={!canEdit} onClick={() => void respondRun(r.id, 'reject')}>Reject</button></p>}{r.status === 'waiting' && <p className="wait-note">{r.waiting_for === 'response' ? 'Or cancel it:' : `Resumes ${formatTime(r.resume_at)}.`} <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
+                  <div className="history-details">{r.status === 'failed' && <p className="wait-note">Run again from the node that failed, using the data it received. <button className="ghost" data-testid="replay-run" disabled={!canEdit} onClick={() => void replayRun(r.id)}>Replay from failed step</button></p>}{r.status === 'failed' && <FailedRunTools run={r} credentials={creds.filter(c => c.kind !== 'oauth2').map(c => c.name)} canEdit={canEdit} notify={notify} onReplayed={refresh} />}{r.status === 'waiting' && r.waiting_for === 'response' && <p className="wait-note">Waiting for a response until {formatTime(r.resume_at)}. <button className="primary" data-testid="respond-approve" disabled={!canEdit} onClick={() => void respondRun(r.id, 'approve')}>Approve</button> <button className="ghost" data-testid="respond-reject" disabled={!canEdit} onClick={() => void respondRun(r.id, 'reject')}>Reject</button></p>}{r.status === 'waiting' && <p className="wait-note">{r.waiting_for === 'response' ? 'Or cancel it:' : `Resumes ${formatTime(r.resume_at)}.`} <button className="ghost" data-testid="cancel-wait" disabled={!canEdit} onClick={() => void cancelWait(r.id)}>Cancel this run</button></p>}<strong>Output</strong><pre>{pretty(r.output)}</pre><strong>Steps</strong><pre>{pretty(r.steps)}</pre>{r.error && <p className="error">{r.error}</p>}</div>
                 </details>
               )) : <div className="empty">{runs.length ? 'No runs match this filter.' : 'No executions yet. Run a workflow to see it here.'}</div>}
             </div>

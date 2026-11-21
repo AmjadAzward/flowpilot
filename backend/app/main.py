@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.40.0"
+VERSION = "0.41.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -196,6 +196,11 @@ class WorkflowIn(BaseModel):
             except (TypeError, ValueError): raise ValueError("The time limit must be a number of seconds")
             if not 5 <= secs <= 3600: raise ValueError("The time limit must be between 5 and 3600 seconds")
             out["timeout_seconds"] = secs
+        if value.get("ai_call_limit") not in (None, "", 0, "0"):
+            try: calls = int(float(value["ai_call_limit"]))
+            except (TypeError, ValueError): raise ValueError("The AI call limit must be a number")
+            if not 1 <= calls <= 500: raise ValueError("The AI call limit must be between 1 and 500 per run")
+            out["ai_call_limit"] = calls
         mode = str(value.get("save_runs") or "all")
         if mode not in ("all", "failures", "none"): raise ValueError("Save runs must be all, failures or none")
         if mode != "all": out["save_runs"] = mode
@@ -377,7 +382,7 @@ async def require_login(request: Request, call_next):
         request.state.actor = user
         if user["role"] not in ("owner", "admin"):
             wf = re.match(r"^/api/workflows/([^/]+)", path)
-            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond)$", path)
+            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond|explain)$", path)
             target = wf.group(1) if wf else None
             if ex:
                 with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
@@ -3109,7 +3114,14 @@ def ai_connection(d: dict) -> tuple[str, str, str]:
     return f"{cred.scheme}://{cred.hostname}{':' + str(cred.port) if cred.port else ''}{cred.path.rstrip('/')}", model, key
 
 
+_ai_budget_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("fp_ai_budget", default=None)
+
+
 def _chat(base: str, model: str, key: str, messages: list[dict], temperature: float) -> str:
+    budget = _ai_budget_var.get()
+    if budget is not None:  # the workflow's own limit on AI calls per run (a guard against loops that spend money)
+        if budget["used"] >= budget["limit"]: raise ValueError(f"This workflow's limit of {budget['limit']} AI calls per run was reached")
+        budget["used"] += 1
     res = do_request("POST", base + "/chat/completions", {"Authorization": f"Bearer {key}"} if key else {},
                      json={"model": model, "messages": messages, "temperature": temperature, "stream": False}, timeout=90.0)
     try: text = str(res["choices"][0]["message"]["content"])
@@ -4503,8 +4515,11 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_i
     if live is not None: live["secrets"] = secrets_
     holder: dict = {}
     t1, t2, t3, t4, t5 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables()), _run_var.set(run_links(exec_id))
+    limit = (doc.get("settings") or {}).get("ai_call_limit")
+    t6 = _ai_budget_var.set({"limit": int(limit), "used": 0}) if limit and _ai_budget_var.get() is None else None  # a sub-workflow shares its caller's budget
     try: result = _execute(doc, initial, resume)
     finally:
+        if t6 is not None: _ai_budget_var.reset(t6)
         _run_var.reset(t5)
         _vars_var.reset(t4)
         _secrets_var.reset(t1)
@@ -4598,9 +4613,17 @@ def recover_waits() -> None:
             db.execute("UPDATE executions SET status='failed', finished_at=?, error='Interrupted: the API stopped while this run was resuming' WHERE id=?", (now(), w["execution_id"]))
 
 
+class ReplayIn(BaseModel):
+    input: Any = None  # optional: replace the data the failed node received (any JSON)
+
+
+def _set_in_doc_size(value: Any) -> None:
+    if len(json.dumps(value, default=str)) > 200_000: raise HTTPException(400, "The edited input is too large (200 KB at most)")
+
+
 @app.post("/api/executions/{execution_id}/replay")
-def replay_execution(execution_id: str):
-    """Run a failed execution again from the node that failed, using the data that node received."""
+def replay_execution(execution_id: str, body: ReplayIn | None = None):
+    """Run a failed execution again from the node that failed, using the data that node received (or data the caller edited)."""
     with conn() as db: ex = db.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
     if not ex: raise HTTPException(404, "Execution not found")
     if ex["status"] != "failed": raise HTTPException(400, "Only failed runs can be replayed")
@@ -4609,8 +4632,12 @@ def replay_execution(execution_id: str):
     if not failed: raise HTTPException(400, "This run did not stop at a node, so there is nothing to replay")
     if failed.get("iteration"): raise HTTPException(400, "The failure happened inside a loop, which cannot be replayed from the middle")
     if failed.get("type") == "merge": raise HTTPException(400, "A failed Merge node cannot be replayed")
+    edited = body is not None and "input" in body.model_fields_set
     value = failed.get("input")
-    if isinstance(value, dict) and value.get("truncated") is True and "preview" in value: raise HTTPException(400, "The input of the failed node was too large to keep, so it cannot be replayed")
+    if edited:
+        value = body.input
+        _set_in_doc_size(value)
+    elif isinstance(value, dict) and value.get("truncated") is True and "preview" in value: raise HTTPException(400, "The input of the failed node was too large to keep, so it cannot be replayed")
     try: doc = get_workflow(ex["workflow_id"])
     except HTTPException: raise HTTPException(404, "The workflow no longer exists")
     kept = [s for s in steps if s is not failed and s.get("status") in ("success", "skipped")]
@@ -4623,7 +4650,77 @@ def replay_execution(execution_id: str):
                    (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay"))
         if result["status"] == "waiting": add_wait(db, new_id, doc["id"], result["wait"])
     if result["status"] == "failed": run_error_handler(doc, new_id, "replay", {**result, "steps": all_steps})
-    return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, **{**result, "steps": all_steps}}
+    return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, "edited_input": edited, **{**result, "steps": all_steps}}
+
+
+class ExplainIn(BaseModel):
+    credential: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/executions/{execution_id}/explain")
+def explain_execution(execution_id: str, body: ExplainIn):
+    """Ask the caller's AI credential to explain why a run failed and what to change. Credentials are removed from everything the model sees."""
+    with conn() as db: ex = db.execute("SELECT * FROM executions WHERE id=?", (execution_id,)).fetchone()
+    if not ex: raise HTTPException(404, "Execution not found")
+    if ex["status"] != "failed": raise HTTPException(400, "Only failed runs can be explained")
+    steps = json.loads(ex["steps"] or "[]")
+    failed = next((s for s in reversed(steps) if s.get("status") == "error" and not s.get("continued")), None)
+    try: doc = get_workflow(ex["workflow_id"])
+    except HTTPException: doc = None
+    node = next((n for n in (doc or {}).get("nodes", []) if failed and n["id"] == failed.get("node_id")), None)
+    settings = {k: v for k, v in ((node or {}).get("data") or {}).items() if k not in BUILDER_DROP_KEYS and k != "code"} if node else {}
+    facts = {"workflow": (doc or {}).get("name"), "error": ex["error"], "failed_node": {"id": failed.get("node_id"), "type": failed.get("type"), "error": failed.get("error"),
+             "input": failed.get("input"), "settings": settings} if failed else None, "steps_before": [{"type": s.get("type"), "status": s.get("status")} for s in steps[:30]]}
+    secrets_ = load_secrets(ALL_PROJECTS)
+    facts = redact(facts, secrets_)
+    text = json.dumps(facts, default=str)
+    if len(text) > 12_000: text = text[:12_000] + "...(shortened)"
+    messages = [{"role": "system", "content": "You help people fix automation workflows. You are given a failed run as JSON. Explain in plain language, in at most 6 short sentences, why it most likely failed, then say exactly what to change (which setting or value). If you cannot tell, say what to check. Do not invent details that are not in the data."},
+                {"role": "user", "content": text}]
+    token = _secrets_var.set(secrets_)
+    try:
+        base, model, key = ai_connection({"credential": body.credential})
+        explanation = _chat(base, model, key, messages, 0.2)
+    except ValueError as exc: raise HTTPException(400, str(exc))
+    except httpx.HTTPError as exc: raise HTTPException(502, f"The AI service could not be used ({type(exc).__name__}). Check the credential and that the model is running.")
+    finally: _secrets_var.reset(token)
+    return {"explanation": redact({"t": explanation}, secrets_)["t"].strip(), "node_id": failed.get("node_id") if failed else None}
+
+
+def _node_map(doc: dict) -> dict:
+    return {n["id"]: n for n in doc.get("nodes", [])}
+
+
+def diff_workflows(old: dict, new: dict) -> dict:
+    """What changed between two saved definitions: nodes added, removed or edited (with the settings that differ) and connections added or removed."""
+    a, b = _node_map(old), _node_map(new)
+    changed = []
+    for nid in sorted(set(a) & set(b)):
+        da, db_ = a[nid].get("data") or {}, b[nid].get("data") or {}
+        fields = sorted(k for k in set(da) | set(db_) if da.get(k) != db_.get(k))
+        moved = a[nid].get("type") != b[nid].get("type")
+        if fields or moved:
+            changed.append({"id": nid, "type": b[nid].get("type"), "fields": [{"field": k, "before": str(da.get(k, ""))[:200], "after": str(db_.get(k, ""))[:200]} for k in fields[:30]],
+                            **({"type_before": a[nid].get("type")} if moved else {})})
+    edge = lambda d: {(e["source"], e["target"], e.get("sourceHandle") or "") for e in d.get("edges", [])}
+    ea, eb = edge(old), edge(new)
+    fmt = lambda s: [{"from": x[0], "to": x[1], **({"branch": x[2]} if x[2] else {})} for x in sorted(s)]
+    return {"name": {"before": old.get("name"), "after": new.get("name")} if old.get("name") != new.get("name") else None,
+            "nodes_added": [{"id": i, "type": b[i].get("type")} for i in sorted(set(b) - set(a))], "nodes_removed": [{"id": i, "type": a[i].get("type")} for i in sorted(set(a) - set(b))],
+            "nodes_changed": changed, "edges_added": fmt(eb - ea), "edges_removed": fmt(ea - eb),
+            "settings_changed": (old.get("settings") or {}) != (new.get("settings") or {})}
+
+
+@app.get("/api/workflows/{workflow_id}/versions/{version_id}/diff")
+def version_diff(workflow_id: str, version_id: int, against: str = "current"):
+    """Compare a saved version with the current workflow (default) or with another saved version."""
+    old = json.loads(load_version(workflow_id, version_id)["definition"])
+    if against == "current": new = get_workflow(workflow_id)
+    else:
+        try: other = int(against)
+        except ValueError: raise HTTPException(400, "against must be 'current' or a version id")
+        new = json.loads(load_version(workflow_id, other)["definition"])
+    return diff_workflows(old, new)
 
 
 DECISION_RE = re.compile(r"[a-z0-9_-]{1,30}")

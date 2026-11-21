@@ -578,3 +578,11 @@ button:disabled { cursor: not-allowed; }
 .run-step.running .step-mark { color: var(--accent); }
 @keyframes node-pulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); opacity: .85; } }
 @media (prefers-reduced-motion: reduce) { .fp-node.state-running, .run-dot { animation: none; } }
+
+.diff-box { display: grid; gap: 4px; padding: 10px 16px 14px; font-size: 13px; background: var(--surface-2, rgba(127,127,127,.06)); overflow-wrap: anywhere; }
+.diff-sub { margin-left: 14px; font-size: 12px; }
+.diff-add { color: #1a7f37; }
+.diff-del { color: #b42318; }
+.failed-tools { margin: 8px 0 12px; }
+.failed-tools textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+.explain-box { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; }

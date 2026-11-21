@@ -27,6 +27,12 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.41
+- Failed runs: replay from the failed step with edited input, and an AI "Explain this failure" (credentials are removed from what the model sees; the answer can be wrong)
+- Version history: Compare a saved version with the current workflow (steps, settings and connections that changed)
+- Per-workflow limit on AI calls per run, a guard against loops that spend money (the time limit already existed)
+- 1301 API tests and an 81-check browser suite. The explanation is tested against a simulated model only
+
 ### v0.40
 - Dry run (describe, do not send) and an AI workflow draft from a plain description, both things n8n does not offer
 - Editor toolbar wraps instead of overlapping on narrower screens

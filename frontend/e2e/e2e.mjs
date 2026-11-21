@@ -811,6 +811,72 @@ await check('a failed run can be replayed from the failed step', async () => {
   await shot('29-replay');
 });
 
+await check('failed runs: edit the input and replay, and ask for an explanation', async () => {
+  const wid = await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Edit replay flow', description: '', nodes: [node('t', 'trigger'), node('i', 'input', { json: '{"n": 1}' }), node('f', 'fail', { message: 'edit me' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'i' }, { id: 'b', source: 'i', target: 'f' }, { id: 'c', source: 'f', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+    await fetch('/api/credentials/E2E_EXPLAIN_LLM', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'http://127.0.0.1:11434/v1?model=llama3.2' }) });
+    return created.id;
+  });
+  await page.route('**/api/executions/*/explain', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ explanation: 'The Fail node always stops the run. Remove it.', node_id: 'f' }) }));
+  await page.reload();
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.locator('summary', { hasText: 'Edit replay flow' }).first().click();
+  await page.getByTestId('explain-run').first().click();
+  await expectText(page.getByTestId('explanation'), /Fail node always stops/);
+  await page.getByTestId('edit-replay').first().click();
+  const box = page.getByTestId('edit-input').first();
+  const shown = JSON.parse(await box.inputValue());
+  if (shown.n !== 1) throw new Error('the box should start with the failed step input: ' + JSON.stringify(shown));
+  await box.fill('{ not json');
+  await page.getByTestId('replay-edited').first().click();
+  await expectText(toast(), /not valid JSON/i);
+  let sent = null;
+  page.on('request', r => { if (/\/replay$/.test(r.url()) && r.method() === 'POST') sent = r.postData(); });
+  await box.fill('{"n": 2}');
+  await page.getByTestId('replay-edited').first().click();
+  await expectText(toast(), /Replay failed/i);
+  if (!sent || JSON.parse(sent).input.n !== 2) throw new Error('the edited input was not sent: ' + sent);
+  await page.unroute('**/api/executions/*/explain');
+  await page.evaluate(async id => { await fetch(`/api/workflows/${id}`, { method: 'DELETE' }); await fetch('/api/credentials/E2E_EXPLAIN_LLM', { method: 'DELETE' }); }, wid);
+  await shot('30-failed-run-tools');
+});
+
+await check('version history compares a saved version with the current workflow', async () => {
+  const name = 'Diff flow';
+  await page.evaluate(async name => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const base = { name, description: '' };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, nodes: [node('t', 'trigger'), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'o' }] }) })).json();
+    await fetch(`/api/workflows/${created.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, nodes: [node('t', 'trigger'), node('n', 'template', { template: 'hi' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'n' }, { id: 'b', source: 'n', target: 'o' }] }) });
+  }, name);
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: new RegExp(`^${name}$`) }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByLabel('Version history').click();
+  await page.getByTestId('history-row').first().waitFor();
+  await page.getByTestId('history-compare').first().click();
+  await expectText(page.getByTestId('diff-view'), /Step n \(template\) added/);
+  await expectText(page.getByTestId('diff-view'), /Connection t → n/);
+  await shot('31-version-diff');
+});
+
+await check('a workflow can limit how many AI calls one run makes', async () => {
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Diff flow$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByText('Run settings').first().click();
+  await page.getByLabel('AI calls per run').selectOption('10');
+  const sent = page.waitForRequest(r => r.method() === 'PUT' && /\/api\/workflows\/[^/]+$/.test(r.url()));
+  await page.keyboard.press('Control+s');
+  const saved = JSON.parse((await sent).postData() ?? '{}').settings;
+  await expectText(toast(), /saved/i);
+  if (!saved || saved.ai_call_limit !== 10) throw new Error('limit not sent: ' + JSON.stringify(saved));
+});
+
 await check('the owner sees an activity log of changes', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('audit-row').first().waitFor();
