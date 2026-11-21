@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.48
+- Notes on runs: add a short note (up to 500 characters) to any run, such as "customer confirmed fixed". It shows next to the run in the list and is found by the run search. Viewers can read notes but not write them; people cannot note runs of workflows they cannot see
+- Checked on a real Postgres as well as SQLite (the new API tests for notes, search, compare, connections and AI usage: 44 passed on Postgres)
+- 1384 API tests and a 90-check browser suite
+
 ### v0.47
 - A Connections panel on each workflow: which workflows it runs (Run Workflow nodes, AI Agent tools, error handlers), which workflows run it, whether it is the shared error workflow, and which credentials it uses (flagging names that are not saved yet). Links to workflows it points at that no longer exist
 - Deleting a workflow (one or several) now warns first when another workflow still uses it or it is the shared error workflow. The warning is advice only; deleting still works

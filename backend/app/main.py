@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.47.0"
+VERSION = "0.48.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -145,6 +145,8 @@ def initialize():
             db.execute("ALTER TABLE executions ADD COLUMN replay_of TEXT")
         if "ai_usage" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
             db.execute("ALTER TABLE executions ADD COLUMN ai_usage TEXT")
+        if "note" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
+            db.execute("ALTER TABLE executions ADD COLUMN note TEXT")
         db.execute("CREATE TABLE IF NOT EXISTS workflow_tests (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_at TEXT NOT NULL)")
         for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
@@ -392,7 +394,7 @@ async def require_login(request: Request, call_next):
         request.state.actor = user
         if user["role"] not in ("owner", "admin"):
             wf = re.match(r"^/api/workflows/([^/]+)", path)
-            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond|explain)$", path)
+            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond|explain|note)$", path)
             target = wf.group(1) if wf else None
             if ex:
                 with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
@@ -5816,7 +5818,21 @@ def executions(request: Request, workflow_id: str | None = None):
 def run_json(r: Any, waits: dict) -> dict:
     return {"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
-            "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None}
+            "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None, "note": r["note"]}
+
+
+class NoteIn(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+@app.put("/api/executions/{execution_id}/note")
+def set_run_note(execution_id: str, body: NoteIn):
+    """A short human note on a run, such as "customer confirmed fixed". An empty note clears it. Searchable on the Executions page."""
+    note = body.note.strip()
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM executions WHERE id=?", (execution_id,)).fetchone(): raise HTTPException(404, "Execution not found")
+        db.execute("UPDATE executions SET note=? WHERE id=?", (note or None, execution_id))
+    return {"id": execution_id, "note": note or None}
 
 
 SEARCH_SCAN = 2000
@@ -5846,7 +5862,7 @@ def search_executions(request: Request, q: str, workflow_id: str | None = None):
     if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
     hits = []
     for r in rows:
-        text = " ".join(str(r[k] or "") for k in ("output", "steps", "error"))
+        text = " ".join(str(r[k] or "") for k in ("output", "steps", "error", "note"))
         low = text.lower()
         if needle in low or escaped in low:
             hit = run_json(r, waits)

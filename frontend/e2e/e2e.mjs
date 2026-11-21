@@ -1037,6 +1037,25 @@ await check('connections show what a workflow runs, what runs it, and warn befor
   await shot('34-connections');
 });
 
+await check('a run can carry a note that shows in the list and can be searched', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id } });
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Noted run flow', description: '', nodes: [node('t', 'trigger'), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'o' }] }) })).json();
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  const row = page.getByTestId('history-row').filter({ hasText: 'Noted run flow' }).first();
+  await row.locator('summary').click();
+  await row.getByTestId('note-input').fill('customer confirmed fixed');
+  await row.getByTestId('note-save').click();
+  await expectText(toast(), /Note saved/);
+  await expectText(page.getByTestId('history-row').filter({ hasText: 'Noted run flow' }).first().getByTestId('run-note-chip'), /customer confirmed fixed/);
+  await page.getByTestId('run-search').fill('confirmed fixed');
+  await expectText(page.getByTestId('search-note'), /1 run contain this/);
+  await page.getByTestId('run-search').fill('');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
