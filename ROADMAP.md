@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.50
+- Workflow health on the dashboard: a workflow whose last day looks worse than its own previous week gets a badge (failing, failing more than usual, or slower than usual), with the reason on hover. It is calculated from stored runs and nothing is sent. It needs at least 3 runs in the last day, so one bad run never raises it; "slower" needs a baseline of 3 runs, at least twice the usual typical run time and at least half a second of difference. Dry runs, waiting runs and running runs are ignored
+- This only shows a badge. It does not notify anyone; sending alerts is still to do
+- 1409 API tests and a 92-check browser suite. One older browser check (cancelling a waiting run) failed once in about eight full runs and passed on re-run; it looks like a timing race in that check and has not been fixed yet
+
 ### v0.49
 - The Credentials page shows which workflows use each credential ("used by 2 workflows", or "unused" when nothing refers to it), and deleting one that is in use warns first and names the workflows. Credentials of other projects, and workflows you cannot see, are not named. Values are never returned
 - A credential counts as used when a workflow refers to it with `{{cred.NAME}}` or picks it in a credential field. A credential used only by something outside the saved workflows (for example a script calling the API directly) will show as unused

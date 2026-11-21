@@ -123,6 +123,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const canCreds = role === 'owner' || role === 'admin';
   const isOwner = role === 'owner';
   const [theme, setTheme] = useState<Theme>(readTheme);
+  const [health, setHealth] = useState<Record<string, { status: string; reason: string }>>({});
   const [flows, setFlows] = useState<FlowDoc[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [flowName, setFlowName] = useState('Untitled workflow');
@@ -149,6 +150,12 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [credUsage, setCredUsage] = useState<Record<string, { used_by: { id: string; name: string }[]; hidden: number }>>({});
   const [runQuery, setRunQuery] = useState('');
   const [found, setFound] = useState<{ runs: Run[]; matches: number; scanned: number } | null>(null);
+  useEffect(() => {  // is each workflow failing more or running slower than usual? Only worth showing when it is
+    let stale = false;
+    api<{ workflows: { workflow_id: string; status: string; reason: string }[] }>('/api/stats/health')
+      .then(r => { if (!stale) setHealth(Object.fromEntries(r.workflows.map(w => [w.workflow_id, w]))); }).catch(() => { if (!stale) setHealth({}); });
+    return () => { stale = true; };
+  }, [runs]);
   useEffect(() => {  // search inside the data of past runs, after the person stops typing
     const q = runQuery.trim();
     if (q.length < 2) { setFound(null); return; }
@@ -675,7 +682,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                       <input type="checkbox" aria-label={`Select ${f.name}`} checked={picked.includes(f.id)} onChange={e => setPicked(p => e.target.checked ? [...p, f.id] : p.filter(x => x !== f.id))} />
                       <button className="flow-meta" onClick={() => void openFlow(f.id)}>
                         <span className="flow-tile"><Workflow size={17} /></span>
-                        <span className="flow-text"><strong>{f.name}</strong><span>{f.description || 'Custom automation'}</span>{(!!f.tags?.length || !!f.project_name) && <span className="tag-row">{f.project_name && <em className="tag-mini project" data-testid="project-chip">{f.project_name}</em>}{(f.tags ?? []).map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
+                        <span className="flow-text"><strong>{f.name}</strong>{['failing', 'worse', 'slower'].includes(health[f.id]?.status) && <em className={'health-chip ' + health[f.id].status} data-testid="health-chip" title={health[f.id].reason}>{{ failing: 'failing', worse: 'failing more than usual', slower: 'slower than usual' }[health[f.id].status]}</em>}<span>{f.description || 'Custom automation'}</span>{(!!f.tags?.length || !!f.project_name) && <span className="tag-row">{f.project_name && <em className="tag-mini project" data-testid="project-chip">{f.project_name}</em>}{(f.tags ?? []).map(t => <em key={t} className="tag-mini">{t}</em>)}</span>}</span>
                       </button>
                       </span>
                       <span className={'trig-chip ' + (f.trigger ?? 'manual')}>{triggerLabel[f.trigger ?? 'manual']}</span>

@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.49.0"
+VERSION = "0.50.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -5966,6 +5966,62 @@ def run_stats(request: Request, window: str = "7d"):
             "failure_rate": round(len(failed) / len(done), 4) if done else None, "average_seconds": round(sum(times) / len(times), 3) if times else None,
             "ai_calls": sum(u.get("calls", 0) for u in usage), "ai_tokens": sum(u.get("tokens", 0) for u in usage),
             "top_failing": [{"workflow_id": w, "name": names.get(w, "(deleted)"), "failed": n} for w, n in top]}
+
+
+HEALTH_MIN_RUNS = 3
+HEALTH_RECENT_HOURS = 24
+HEALTH_BASELINE_DAYS = 7
+
+
+def _median(values: list[float]) -> float | None:
+    if not values: return None
+    v = sorted(values)
+    mid = len(v) // 2
+    return v[mid] if len(v) % 2 else (v[mid - 1] + v[mid]) / 2
+
+
+def summarize_runs(runs: list[tuple[bool, float | None]]) -> dict:
+    failed = sum(1 for ok, _ in runs if not ok)
+    med = _median([t for _, t in runs if t is not None])
+    return {"runs": len(runs), "failed": failed, "failure_rate": round(failed / len(runs), 4) if runs else None, "median_seconds": round(med, 3) if med is not None else None}
+
+
+def judge_health(recent: dict, baseline: dict) -> tuple[str, str]:
+    """Compare a workflow's last day with its own previous week. Needs a few runs on both sides, so one bad run never raises an alarm."""
+    if recent["runs"] < HEALTH_MIN_RUNS: return "quiet", "Too few runs in the last day to judge" if recent["runs"] else "No runs in the last day"
+    rate = recent["failure_rate"]
+    if rate >= 0.5: return "failing", f"{recent['failed']} of {recent['runs']} runs failed in the last day"
+    base_ok = baseline["runs"] >= HEALTH_MIN_RUNS
+    if base_ok and rate - baseline["failure_rate"] >= 0.25:
+        return "worse", f"Failing {round(rate * 100)}% of the time in the last day, against {round(baseline['failure_rate'] * 100)}% in the week before"
+    r, b = recent["median_seconds"], baseline["median_seconds"]
+    if base_ok and r is not None and b is not None and r >= 2 * b and r - b >= 0.5:
+        return "slower", f"Typical run time is {r:g}s, against {b:g}s in the week before"
+    return "healthy", "Behaving as it usually does"
+
+
+@app.get("/api/stats/health")
+def workflow_health(request: Request):
+    """For each workflow: is the last day failing more, or running slower, than its own previous week? Calculated from stored runs; nothing is sent."""
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    now_ = datetime.now(timezone.utc)
+    recent_from = (now_ - timedelta(hours=HEALTH_RECENT_HOURS)).isoformat()
+    base_from = (now_ - timedelta(hours=HEALTH_RECENT_HOURS, days=HEALTH_BASELINE_DAYS)).isoformat()
+    with conn() as db:
+        flows = db.execute("SELECT id, name FROM workflows ORDER BY name").fetchall()
+        rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE started_at >= ? AND status IN ('success','failed') AND trigger_kind != 'dry'", (base_from,)).fetchall()
+    recent: dict[str, list] = {}
+    base: dict[str, list] = {}
+    for r in rows:
+        bucket = recent if r["started_at"] >= recent_from else base
+        bucket.setdefault(r["workflow_id"], []).append((r["status"] == "success", duration_seconds(r["started_at"], r["finished_at"])))
+    out = []
+    for f in flows:
+        if visible is not None and f["id"] not in visible: continue
+        rec, bas = summarize_runs(recent.get(f["id"], [])), summarize_runs(base.get(f["id"], []))
+        status, reason = judge_health(rec, bas)
+        out.append({"workflow_id": f["id"], "name": f["name"], "status": status, "reason": reason, "recent": rec, "baseline": bas})
+    return {"recent_hours": HEALTH_RECENT_HOURS, "baseline_days": HEALTH_BASELINE_DAYS, "min_runs": HEALTH_MIN_RUNS, "workflows": out}
 
 
 @app.get("/api/metrics")

@@ -589,6 +589,8 @@ button:disabled { cursor: not-allowed; }
 .run-search { display: grid; gap: 4px; margin: 0 0 12px; }
 .run-search input { width: 100%; }
 .run-snippet { display: block; flex-basis: 100%; margin: 4px 0 0; font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; font-weight: 400; }
+.health-chip { display: inline-block; width: fit-content; font-style: normal; font-size: 10px; margin: 2px 0; padding: 1px 7px; border-radius: 8px; background: rgba(217, 119, 6, .16); color: #b45309; }
+.health-chip.failing { background: rgba(220, 38, 38, .14); color: #b91c1c; }
 .run-note { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 .run-note label { display: flex; gap: 6px; align-items: center; flex: 1; }
 .run-note input { flex: 1; }

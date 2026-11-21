@@ -1076,6 +1076,23 @@ await check('the Credentials page shows which credentials are used, and warns be
   await page.evaluate(async () => { for (const n of ['E2E_IN_USE', 'E2E_NOBODY']) await fetch(`/api/credentials/${n}`, { method: 'DELETE' }); });
 });
 
+await check('the dashboard flags a workflow that keeps failing, with the reason on hover', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 400 : id === 'f' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Keeps breaking', description: '', nodes: [node('t', 'trigger'), node('f', 'fail', { message: 'nope' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'f' }, { id: 'b', source: 'f', target: 'o' }] }) })).json();
+    for (let i = 0; i < 3; i++) await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.reload();
+  await goOverview();
+  const row = page.getByTestId('workflow-row').filter({ hasText: 'Keeps breaking' });
+  await expectText(row.getByTestId('health-chip'), /failing/);
+  const why = await row.getByTestId('health-chip').getAttribute('title');
+  if (!/3 of 3 runs failed in the last day/.test(why ?? '')) throw new Error('unexpected reason: ' + why);
+  const healthy = page.getByTestId('workflow-row').filter({ hasText: 'Compare greeter' });
+  if (await healthy.count() !== 1) throw new Error('expected the healthy workflow to be listed');
+  if (await healthy.getByTestId('health-chip').count() !== 0) throw new Error('a workflow with no failures should not be flagged');
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
