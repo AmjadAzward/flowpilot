@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.43.0"
+VERSION = "0.44.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 

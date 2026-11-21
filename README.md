@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1340%20API%20%2B%2085%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1340%20API%20%2B%2086%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)

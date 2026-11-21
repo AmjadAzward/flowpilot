@@ -907,6 +907,24 @@ await check('saved tests: add, run, see a pass and a failure', async () => {
   await shot('32-workflow-tests');
 });
 
+await check('an exported workflow carries its saved tests and importing it restores them', async () => {
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /^Export$/ }).click()]);
+  const chunks = [];
+  for await (const c of await dl.createReadStream()) chunks.push(c);
+  const doc = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  if (!Array.isArray(doc.tests) || doc.tests.length !== 2) throw new Error('exported file has no tests: ' + JSON.stringify(doc.tests));
+  doc.name = 'Imported tested flow';
+  await goOverview();
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'tested.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(doc)) });
+  await expectText(toast(), /imported with 2 saved tests/);
+  if (!(await page.getByTestId('tests-panel').isVisible())) await page.getByTestId('open-tests').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="test-row"]').length === 2, null, { timeout: 8000 }).catch(async () => {
+    throw new Error('test rows: ' + await page.getByTestId('test-row').count() + '; panel text: ' + (await page.getByTestId('tests-panel').innerText().catch(() => 'none')).slice(0, 300) + '; toast: ' + await toast().innerText().catch(() => 'none'));
+  });
+  await page.getByTestId('run-tests').click();
+  await expectText(toast(), /1 of 2 tests failed/);  // the restored tests really run, including the one that is meant to fail
+});
+
 await check('typing {{ suggests fields from the previous step, and node and workflow limits are saved', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}, x = 0) => ({ id, type, position: { x, y: 0 }, data: { label: id, ...data } });
@@ -968,9 +986,11 @@ await check('a run shows how many AI calls and tokens it used', async () => {
   await goOverview();
   await page.locator('.flow-meta strong', { hasText: /^Usage display flow$/ }).click();
   await page.locator('.react-flow__node').first().waitFor();
-  await page.route(/\/api\/workflows\/[^/]+\/run\?dry=true/, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'fake-run', workflow_id: 'x', status: 'success', trigger: 'dry', dry_run: true, not_done: [], output: { ok: true }, error: null, steps: [{ node_id: 't', label: 't', type: 'trigger', status: 'success', duration_ms: 1 }], ai_usage: { calls: 2, tokens: 1500 } }) }));
+  await page.route(/\/api\/workflows\/[^/]+\/run\?dry=true/, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'fake-run', workflow_id: 'x', status: 'success', trigger: 'dry', dry_run: true, not_done: [], output: { ok: true }, error: null, steps: [{ node_id: 't', label: 't', type: 'trigger', status: 'success', duration_ms: 1 }, { node_id: 'a', label: 'Slow call', type: 'http', status: 'success', duration_ms: 900 }, { node_id: 'b', label: 'Quick set', type: 'set', status: 'success', duration_ms: 3 }], ai_usage: { calls: 2, tokens: 1500 } }) }));
   await page.getByTestId('dry-run').click();
   await expectText(page.getByTestId('ai-usage'), /AI: 2 calls, 1[,.]?500 tokens/);
+  if (await page.getByTestId('slowest-step').count() !== 1) throw new Error('expected exactly one slowest-step marker');
+  await expectText(page.locator('.run-step', { has: page.getByTestId('slowest-step') }), /Slow call/);
   await page.unroute(/\/api\/workflows\/[^/]+\/run\?dry=true/);
 });
 

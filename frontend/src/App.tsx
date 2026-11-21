@@ -52,6 +52,15 @@ const api = async <T,>(url: string, options?: RequestInit): Promise<T> => {
   return res.json();
 };
 
+/** Index of the step that took longest, or -1 when the run is too short or too quick for it to mean anything. */
+function slowestStep(steps: { duration_ms?: number | null }[]): number {
+  const timed = steps.filter(s => s.duration_ms != null);
+  if (timed.length < 3) return -1;
+  let best = -1;
+  steps.forEach((s, i) => { if (s.duration_ms != null && (best < 0 || s.duration_ms > (steps[best].duration_ms ?? 0))) best = i; });
+  return best >= 0 && (steps[best].duration_ms ?? 0) >= 50 ? best : -1;
+}
+
 const triggerLabel: Record<TriggerKind | 'error' | 'replay' | 'dry', string> = { dry: 'Dry run', replay: 'Replay', manual: 'Manual', schedule: 'Schedule', webhook: 'Webhook', email_in: 'Email', poll_in: 'New items', error: 'On error' };
 const formatTime = (date?: string | null) => (date ? new Date(date).toLocaleString() : '—');
 const pretty = (obj: unknown) => JSON.stringify(obj, null, 2);
@@ -184,10 +193,13 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const openFlow = async (id: string) => {
     try { loadDoc(await api<FlowDoc>(`/api/workflows/${id}`)); } catch (e) { notify((e as Error).message, 'error'); }
   };
-  const createFlow = async (name = 'Untitled workflow', desc = 'Build something great.', ns: Node[] = blankNodes, es: Edge[] = blankEdges) => {
+  const createFlow = async (name = 'Untitled workflow', desc = 'Build something great.', ns: Node[] = blankNodes, es: Edge[] = blankEdges, tests: unknown[] = []) => {
     try {
       const doc = await api<{ id: string }>(`/api/workflows${newProject ? `?project_id=${encodeURIComponent(newProject)}` : ''}`, { method: 'POST', body: JSON.stringify({ name, description: desc, nodes: ns, edges: es }) });
-      await refresh(); await openFlow(doc.id); notify('Workflow created');
+      let kept = 0;  // saved tests that came with an imported file; an invalid one is skipped, the workflow is already created
+      for (const t of tests.slice(0, 50)) { try { await api(`/api/workflows/${doc.id}/tests`, { method: 'POST', body: JSON.stringify(t) }); kept++; } catch { /* skipped */ } }
+      await refresh(); await openFlow(doc.id); notify(kept ? `Workflow imported with ${kept} saved test${kept > 1 ? 's' : ''}` : 'Workflow created');
+      return doc.id;
     } catch (e) { notify((e as Error).message, 'error'); }
   };
   const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save, ai_call_limit: wfSettings.ai ? Number(wfSettings.ai) : 0, ai_token_limit: wfSettings.tokens ? Number(wfSettings.tokens) : 0 }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
@@ -311,8 +323,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
     setEdges(e => e.filter(x => x.source !== selectedNode && x.target !== selectedNode));
     setSelectedNode(null);
   };
-  const download = () => {
-    const file = new Blob([JSON.stringify({ name: flowName, description, nodes: cleanNodes(nodes), edges: cleanEdges(edges) }, null, 2)], { type: 'application/json' });
+  const download = async () => {
+    let tests: unknown[] = [];
+    try { tests = (await api<Record<string, unknown>[]>(`/api/workflows/${selectedId}/tests`)).map(t => ({ name: t.name, input: t.input, expected: t.expected, mode: t.mode, expect: t.expect })); } catch { /* an export without tests is still useful */ }
+    const file = new Blob([JSON.stringify({ name: flowName, description, nodes: cleanNodes(nodes), edges: cleanEdges(edges), ...(tests.length ? { tests } : {}) }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(file);
     a.download = `${flowName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'workflow'}.json`; a.click(); URL.revokeObjectURL(a.href);
   };
@@ -328,7 +342,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
         return;
       }
       if (!Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) throw Error('Invalid workflow file');
-      await createFlow(doc.name || 'Imported workflow', doc.description || '', doc.nodes, doc.edges);
+      await createFlow(doc.name || 'Imported workflow', doc.description || '', doc.nodes, doc.edges, Array.isArray(doc.tests) ? doc.tests : []);
     } catch (e) { notify((e as Error).message, 'error'); }
   };
 
@@ -797,11 +811,11 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 </div>
                 <div className="run-body">
                   <div className="run-steps">
-                    {lastRun.steps.map((s, i) => (
-                      <div key={i} className={'run-step ' + (s.status ?? 'running')}>
+                    {lastRun.steps.map((s, i, all) => (
+                      <div key={i} className={'run-step ' + (s.status ?? 'running') + (i === slowestStep(all) ? ' slowest' : '')}>
                         <span className="step-mark">{s.status === 'success' ? '✓' : s.status === 'waiting' || !s.status ? '…' : '!'}</span>
                         <span className="step-label">{s.label}{s.iteration && <em className="iter">#{s.iteration.map(k => k + 1).join('.')}</em>}{s.pinned && <em className="pin-chip">pinned</em>}{s.branch && <em className={'branch-tag ' + s.branch}>{s.branch}</em>}</span>
-                        <span className="step-ms">{s.duration_ms != null ? `${s.duration_ms} ms` : ''}</span>
+                        <span className="step-ms">{i === slowestStep(all) && <em className="slow-chip" data-testid="slowest-step" title="The step that took the longest">slowest</em>}{s.duration_ms != null ? `${s.duration_ms} ms` : ''}</span>
                       </div>
                     ))}
                   </div>

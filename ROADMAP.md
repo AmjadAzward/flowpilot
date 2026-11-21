@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.44
+- A run marks its slowest step (shown when a run has three or more timed steps and the slowest took at least 50 ms)
+- Export on a workflow now includes its saved tests, and importing that file restores them before the workflow opens. Invalid tests in a file are skipped without losing the workflow
+- 1340 API tests and an 86-check browser suite. The slowest-step marker is checked against a stubbed run response; the export and import check runs against the real test backend
+
 ### v0.43
 - Every run that used AI records how many calls and tokens it used (shown in the run panel and on the Executions page, and summed in the run stats). Tokens come from what the AI service reports, or are estimated when it reports nothing
 - Workflow backups, restores and duplicates now carry the saved test cases (before this, restoring a backup silently dropped them)
