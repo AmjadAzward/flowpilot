@@ -586,3 +586,7 @@ button:disabled { cursor: not-allowed; }
 .failed-tools { margin: 8px 0 12px; }
 .failed-tools textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .explain-box { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; }
+
+.expr-hints { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); position: sticky; top: 0; z-index: 5; }
+.expr-chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; background: transparent; color: inherit; cursor: pointer; font-family: ui-monospace, monospace; }
+.expr-chip:hover { border-color: var(--accent, #6366f1); }

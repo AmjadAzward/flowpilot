@@ -877,6 +877,87 @@ await check('a workflow can limit how many AI calls one run makes', async () => 
   if (!saved || saved.ai_call_limit !== 10) throw new Error('limit not sent: ' + JSON.stringify(saved));
 });
 
+await check('saved tests: add, run, see a pass and a failure', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 400 : id === 'g' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Tested flow', description: '', nodes: [node('t', 'trigger'), node('g', 'set', { json: '{"greeting": "Hello {{name}}"}' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'g' }, { id: 'b', source: 'g', target: 'o' }] };
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Tested flow$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByTestId('open-tests').click();
+  await page.getByLabel('Test name').fill('greets Ada');
+  await page.getByLabel('Test input').fill('{"name": "Ada"}');
+  await page.getByLabel('Test expected').fill('{"greeting": "Hello Ada"}');
+  await page.getByTestId('add-test').click();
+  await page.getByTestId('test-row').first().waitFor();
+  await page.getByTestId('run-tests').click();
+  await expectText(toast(), /All 1 tests passed/);
+  await expectText(page.getByTestId('test-row').first(), /✓ greets Ada/);
+  await page.getByLabel('Test name').fill('wrong greeting');
+  await page.getByLabel('Test input').fill('{"name": "Bob"}');
+  await page.getByLabel('Test expected').fill('{"greeting": "Hello Ada"}');
+  await page.getByTestId('add-test').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="test-row"]').length === 2);
+  await page.getByTestId('run-tests').click();
+  await expectText(toast(), /1 of 2 tests failed/);
+  await expectText(page.getByTestId('test-detail'), /Hello Bob/);
+  await shot('32-workflow-tests');
+});
+
+await check('typing {{ suggests fields from the previous step, and node and workflow limits are saved', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}, x = 0) => ({ id, type, position: { x, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Hints flow', description: '', nodes: [node('t', 'trigger'), node('i', 'input', { json: '{"customer": {"email": "ada@example.com"}, "total": 5}', label: 'Order data' }, 200), node('m', 'template', { template: '', label: 'Message' }, 400), node('o', 'output', {}, 600)], edges: [{ id: 'a', source: 't', target: 'i' }, { id: 'b', source: 'i', target: 'm' }, { id: 'c', source: 'm', target: 'o' }] };
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Hints flow$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.locator('.react-flow__node', { hasText: 'Message' }).click();
+  const field = page.getByLabel('Template', { exact: false }).first();
+  await field.click();
+  await field.pressSequentially('{{');
+  await expectText(page.getByTestId('expr-hints'), /Run the workflow once/);
+  await page.getByRole('button', { name: /Run workflow/ }).click();
+  await expectText(runPanel(), /Execution successful/);
+  await page.locator('.react-flow__node', { hasText: 'Message' }).click();
+  await field.fill('');
+  await field.pressSequentially('Hi {{cus');
+  await page.locator('.expr-chip', { hasText: 'customer.email' }).click();
+  const value = await field.inputValue();
+  if (value !== 'Hi {{customer.email}}') throw new Error('unexpected text after choosing a field: ' + value);
+  await page.getByLabel('Step time limit').selectOption('15');
+  await page.getByText('Run settings').first().click();
+  await page.getByLabel('AI tokens per run').selectOption('20000');
+  const sent = page.waitForRequest(r => r.method() === 'PUT' && /\/api\/workflows\/[^/]+$/.test(r.url()));
+  await page.keyboard.press('Control+s');
+  const body = JSON.parse((await sent).postData() ?? '{}');
+  const m = body.nodes.find(n => n.id === 'm');
+  if (m.data.step_timeout !== '15') throw new Error('step limit not saved: ' + JSON.stringify(m.data));
+  if (body.settings.ai_token_limit !== 20000) throw new Error('token limit not saved: ' + JSON.stringify(body.settings));
+  await shot('33-expression-hints');
+});
+
+await check('recent failures can be replayed in one go', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Mass retry flow', description: '', nodes: [node('t', 'trigger'), node('f', 'fail', { message: 'still broken' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'f' }, { id: 'b', source: 'f', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.getByRole('button', { name: /^Executions/ }).click();
+  await page.getByTestId('replay-recent').waitFor();
+  page.once('dialog', d => d.accept());
+  await page.getByTestId('replay-recent').click();
+  await expectText(toast(), /Replayed \d+: \d+ succeeded, \d+ still failing/);
+  const again = await page.evaluate(async () => (await (await fetch('/api/executions/replay-failed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workflow_id: 'none-such' }) })).json()).found);
+  if (again !== 0) throw new Error('an unknown workflow should find nothing');
+});
+
 await check('the owner sees an activity log of changes', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('audit-row').first().waitFor();

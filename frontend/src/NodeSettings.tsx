@@ -51,6 +51,7 @@ export function NodeSettings(props: Props) {
           <span className="field-label">When this node fails</span>
           <label>Retry<select value={v('retries', '0')} onChange={e => update('retries', e.target.value)}>{[0, 1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n === 0 ? 'Do not retry' : `Up to ${n} more time${n > 1 ? 's' : ''}`}</option>)}</select></label>
           {v('retries', '0') !== '0' && <label>Wait between tries (seconds, max 3)<input type="number" min={0} max={3} step={0.5} value={v('retry_wait', '1')} onChange={e => update('retry_wait', e.target.value)} /></label>}
+          <label>Give up on this step after<select aria-label="Step time limit" value={v('step_timeout', '')} onChange={e => update('step_timeout', e.target.value)}><option value="">No step limit</option><option value="5">5 seconds</option><option value="15">15 seconds</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option></select></label>
           <label>After the last try<select value={v('on_error', 'stop')} onChange={e => update('on_error', e.target.value)}><option value="stop">Stop the workflow</option><option value="continue">Continue with the error as data</option></select></label>
         </div>
       )}

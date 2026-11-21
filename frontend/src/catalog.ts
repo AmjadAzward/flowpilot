@@ -1,7 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 
 export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in' | 'poll_in';
-export type FlowDoc = { search?: string; settings?: { timeout_seconds?: number; save_runs?: string; ai_call_limit?: number }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
+export type FlowDoc = { search?: string; settings?: { timeout_seconds?: number; save_runs?: string; ai_call_limit?: number; ai_token_limit?: number }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
 export type Run = { waiting_for?: string | null; id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay' | 'dry'; dry_run?: boolean; not_done?: { node: string; type: string; not_done: string }[]; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 

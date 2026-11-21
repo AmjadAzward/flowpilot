@@ -27,6 +27,13 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.42
+- Saved test cases per workflow (sample input, expected output or expected failure), run together as a dry run
+- Replay all recent failed runs in one click; each run is replayed once
+- Typing `{{` suggests fields from the previous step's real data (after one run)
+- Limit AI tokens per run, and a time limit per step. The step limit stops waiting for a slow step; it cannot stop a request that was already sent
+- 1330 API tests and an 84-check browser suite, which also passes against a real Postgres
+
 ### v0.41
 - Failed runs: replay from the failed step with edited input, and an AI "Explain this failure" (credentials are removed from what the model sees; the answer can be wrong)
 - Version history: Compare a saved version with the current workflow (steps, settings and connections that changed)

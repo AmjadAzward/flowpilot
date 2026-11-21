@@ -31,12 +31,12 @@ import ssl
 import uuid
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from email import message_from_bytes, policy as email_policy
 from email.parser import BytesParser
 from email.message import EmailMessage
@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.41.0"
+VERSION = "0.42.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -141,6 +141,9 @@ def initialize():
         if "next_run_at" not in wf_cols: db.execute("ALTER TABLE workflows ADD COLUMN next_run_at TEXT")
         if "trigger_kind" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
             db.execute("ALTER TABLE executions ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'")
+        if "replay_of" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
+            db.execute("ALTER TABLE executions ADD COLUMN replay_of TEXT")
+        db.execute("CREATE TABLE IF NOT EXISTS workflow_tests (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_at TEXT NOT NULL)")
         for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
         db.execute("CREATE TABLE IF NOT EXISTS credentials (name TEXT PRIMARY KEY, value_enc TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
@@ -201,6 +204,11 @@ class WorkflowIn(BaseModel):
             except (TypeError, ValueError): raise ValueError("The AI call limit must be a number")
             if not 1 <= calls <= 500: raise ValueError("The AI call limit must be between 1 and 500 per run")
             out["ai_call_limit"] = calls
+        if value.get("ai_token_limit") not in (None, "", 0, "0"):
+            try: toks = int(float(value["ai_token_limit"]))
+            except (TypeError, ValueError): raise ValueError("The AI token limit must be a number")
+            if not 1000 <= toks <= 5_000_000: raise ValueError("The AI token limit must be between 1000 and 5000000 per run")
+            out["ai_token_limit"] = toks
         mode = str(value.get("save_runs") or "all")
         if mode not in ("all", "failures", "none"): raise ValueError("Save runs must be all, failures or none")
         if mode != "all": out["save_runs"] = mode
@@ -765,6 +773,7 @@ def delete_workflow(workflow_id: str):
         db.execute("DELETE FROM workflows WHERE id=?",(workflow_id,))
         db.execute("DELETE FROM executions WHERE workflow_id=?",(workflow_id,))
         db.execute("DELETE FROM workflow_versions WHERE workflow_id=?", (workflow_id,))
+        db.execute("DELETE FROM workflow_tests WHERE workflow_id=?", (workflow_id,))
         db.execute("DELETE FROM waits WHERE workflow_id=?", (workflow_id,))
         db.execute("DELETE FROM poll_seen WHERE workflow_id=?", (workflow_id,))
         db.execute("DELETE FROM poll_state WHERE workflow_id=?", (workflow_id,))
@@ -3119,14 +3128,19 @@ _ai_budget_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("fp
 
 def _chat(base: str, model: str, key: str, messages: list[dict], temperature: float) -> str:
     budget = _ai_budget_var.get()
-    if budget is not None:  # the workflow's own limit on AI calls per run (a guard against loops that spend money)
-        if budget["used"] >= budget["limit"]: raise ValueError(f"This workflow's limit of {budget['limit']} AI calls per run was reached")
+    if budget is not None:  # the workflow's own limits per run (a guard against loops that spend money); checked before each call
+        if budget["limit"] and budget["used"] >= budget["limit"]: raise ValueError(f"This workflow's limit of {budget['limit']} AI calls per run was reached")
+        if budget["token_limit"] and budget["tokens"] >= budget["token_limit"]: raise ValueError(f"This workflow's limit of {budget['token_limit']} AI tokens per run was reached")
         budget["used"] += 1
     res = do_request("POST", base + "/chat/completions", {"Authorization": f"Bearer {key}"} if key else {},
                      json={"model": model, "messages": messages, "temperature": temperature, "stream": False}, timeout=90.0)
     try: text = str(res["choices"][0]["message"]["content"])
     except (TypeError, KeyError, IndexError): raise ValueError("The AI service returned an unexpected reply")
     if len(text) > 200_000: raise ValueError("The AI reply is too large")
+    if budget is not None:
+        usage = res.get("usage") if isinstance(res, dict) else None
+        total = usage.get("total_tokens") if isinstance(usage, dict) else None
+        budget["tokens"] += int(total) if isinstance(total, (int, float)) and total >= 0 else (len(text) + sum(len(str(m.get("content", ""))) for m in messages)) // 4  # a rough estimate when the service reports nothing
     return text
 
 
@@ -4162,6 +4176,28 @@ def step_each_item(node: dict, value: Any):
     return shown, passed, None
 
 
+MAX_STEP_TIMEOUT = 300
+
+
+def node_timeout(data: dict, typ: str) -> int | None:
+    raw = data.get("step_timeout")
+    if typ not in ERROR_SETTINGS or raw in (None, "", 0, "0"): return None
+    try: secs = int(float(raw))
+    except (TypeError, ValueError): raise ValueError("The step time limit must be a number of seconds")
+    if not 1 <= secs <= MAX_STEP_TIMEOUT: raise ValueError(f"The step time limit must be between 1 and {MAX_STEP_TIMEOUT} seconds")
+    return secs
+
+
+def with_step_timeout(limit: int | None, call):
+    """Give up waiting for one step after `limit` seconds. The step itself cannot be stopped from outside, so a request already sent may still finish."""
+    if not limit: return call()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flowpilot-step")
+    future = pool.submit(contextvars.copy_context().run, call)
+    try: return future.result(timeout=limit)
+    except FutureTimeout: raise ValueError(f"This step took longer than its limit of {limit} seconds")
+    finally: pool.shutdown(wait=False)
+
+
 def run_one(g: Graph, nid: str, node: dict, value: Any, step: dict):
     """Run a single node (pin, retries and continue-on-error included). Updates its step and returns (shown, passed, branch)."""
     typ, data = node["type"], node.get("data", {}) or {}
@@ -4182,7 +4218,7 @@ def run_one(g: Graph, nid: str, node: dict, value: Any, step: dict):
                 attempt += 1
                 try:
                     each = typ in EACH_ITEM_TYPES and str(data.get("each_item") or "false") == "true"
-                    shown, passed, branch = step_each_item(node, value) if each else step_action(node, value)
+                    shown, passed, branch = with_step_timeout(node_timeout(data, typ), lambda: step_each_item(node, value) if each else step_action(node, value))
                     break
                 except StepFailure: raise
                 except Exception:
@@ -4515,8 +4551,8 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_i
     if live is not None: live["secrets"] = secrets_
     holder: dict = {}
     t1, t2, t3, t4, t5 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables()), _run_var.set(run_links(exec_id))
-    limit = (doc.get("settings") or {}).get("ai_call_limit")
-    t6 = _ai_budget_var.set({"limit": int(limit), "used": 0}) if limit and _ai_budget_var.get() is None else None  # a sub-workflow shares its caller's budget
+    limit, token_limit = (doc.get("settings") or {}).get("ai_call_limit"), (doc.get("settings") or {}).get("ai_token_limit")
+    t6 = _ai_budget_var.set({"limit": int(limit) if limit else None, "used": 0, "token_limit": int(token_limit) if token_limit else None, "tokens": 0}) if (limit or token_limit) and _ai_budget_var.get() is None else None  # a sub-workflow shares its caller's budget
     try: result = _execute(doc, initial, resume)
     finally:
         if t6 is not None: _ai_budget_var.reset(t6)
@@ -4646,11 +4682,109 @@ def replay_execution(execution_id: str, body: ReplayIn | None = None):
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     all_steps = kept + result["steps"]
     with conn() as db:
-        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
-                   (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay"))
+        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind,replay_of) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                   (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay", execution_id))
         if result["status"] == "waiting": add_wait(db, new_id, doc["id"], result["wait"])
     if result["status"] == "failed": run_error_handler(doc, new_id, "replay", {**result, "steps": all_steps})
     return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, "edited_input": edited, **{**result, "steps": all_steps}}
+
+
+class BulkReplayIn(BaseModel):
+    workflow_id: str | None = None
+    since_minutes: int = Field(60, ge=1, le=10080)
+    limit: int = Field(25, ge=1, le=100)
+
+
+@app.post("/api/executions/replay-failed")
+def replay_failed(body: BulkReplayIn, request: Request):
+    """Replay recent failed runs from their failed step, once each. Runs that were already replayed are left alone."""
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=body.since_minutes)).isoformat()
+    sql, args = "SELECT id, workflow_id FROM executions WHERE status='failed' AND started_at >= ? AND trigger_kind NOT IN ('dry','error') AND id NOT IN (SELECT replay_of FROM executions WHERE replay_of IS NOT NULL)", [cutoff]
+    if body.workflow_id: sql, args = sql + " AND workflow_id=?", args + [body.workflow_id]
+    with conn() as db: rows = db.execute(sql + " ORDER BY started_at", args).fetchall()
+    rows = [r for r in rows if visible is None or r["workflow_id"] in visible][:body.limit]
+    results = []
+    for r in rows:
+        try:
+            res = replay_execution(r["id"])
+            results.append({"id": r["id"], "new_id": res["id"], "workflow_id": r["workflow_id"], "status": res["status"], "error": res.get("error")})
+        except HTTPException as exc: results.append({"id": r["id"], "workflow_id": r["workflow_id"], "status": "skipped", "error": str(exc.detail)})
+    return {"found": len(rows), "succeeded": sum(r["status"] == "success" for r in results), "still_failing": sum(r["status"] in ("failed", "waiting") for r in results),
+            "skipped": sum(r["status"] == "skipped" for r in results), "results": results}
+
+
+MAX_TESTS = 50
+
+
+class TestCaseIn(BaseModel):
+    __test__ = False  # not a pytest class
+    name: str = Field(min_length=1, max_length=80)
+    input: Any = None
+    expected: Any = None
+    mode: Literal["contains", "equals"] = "contains"
+    expect: Literal["success", "failed"] = "success"
+
+
+def _test_row(r) -> dict:
+    spec = json.loads(r["spec"])
+    return {"id": r["id"], "name": r["name"], "created_at": r["created_at"], **spec}
+
+
+@app.get("/api/workflows/{workflow_id}/tests")
+def list_tests(workflow_id: str):
+    get_workflow(workflow_id)
+    with conn() as db: rows = db.execute("SELECT * FROM workflow_tests WHERE workflow_id=? ORDER BY created_at, id", (workflow_id,)).fetchall()
+    return [_test_row(r) for r in rows]
+
+
+@app.post("/api/workflows/{workflow_id}/tests", status_code=201)
+def add_test(workflow_id: str, body: TestCaseIn):
+    get_workflow(workflow_id)
+    spec = {"input": body.input, "expected": body.expected, "mode": body.mode, "expect": body.expect}
+    if len(json.dumps(spec, default=str)) > 100_000: raise HTTPException(400, "The test is too large (100 KB at most)")
+    tid = str(uuid.uuid4())
+    with conn() as db:
+        if db.execute("SELECT COUNT(*) c FROM workflow_tests WHERE workflow_id=?", (workflow_id,)).fetchone()["c"] >= MAX_TESTS: raise HTTPException(400, f"At most {MAX_TESTS} tests per workflow")
+        if db.execute("SELECT 1 FROM workflow_tests WHERE workflow_id=? AND name=?", (workflow_id, body.name)).fetchone(): raise HTTPException(400, "A test with this name already exists")
+        db.execute("INSERT INTO workflow_tests (id,workflow_id,name,spec,created_at) VALUES (?,?,?,?,?)", (tid, workflow_id, body.name, json.dumps(spec, default=str), now()))
+    return {"id": tid, "name": body.name, **spec}
+
+
+@app.delete("/api/workflows/{workflow_id}/tests/{test_id}", status_code=204)
+def delete_test(workflow_id: str, test_id: str):
+    with conn() as db: db.execute("DELETE FROM workflow_tests WHERE id=? AND workflow_id=?", (test_id, workflow_id))
+
+
+def contains(expected: Any, actual: Any) -> bool:
+    """Every field in `expected` is present in `actual` with the same value (extra fields in `actual` are fine)."""
+    if isinstance(expected, dict): return isinstance(actual, dict) and all(k in actual and contains(v, actual[k]) for k, v in expected.items())
+    if isinstance(expected, list): return isinstance(actual, list) and len(expected) == len(actual) and all(contains(e, a) for e, a in zip(expected, actual))
+    return expected == actual
+
+
+@app.post("/api/workflows/{workflow_id}/tests/run")
+def run_tests(workflow_id: str):
+    """Run every saved test as a dry run (writes and messages are described, never done) and compare the outcome with what was expected."""
+    doc = get_workflow(workflow_id)
+    with conn() as db: rows = db.execute("SELECT * FROM workflow_tests WHERE workflow_id=? ORDER BY created_at, id", (workflow_id,)).fetchall()
+    results = []
+    for r in rows:
+        case = _test_row(r)
+        token, t0 = _dry_var.set([]), time.perf_counter()
+        try: result = run_flow(doc, case["input"])
+        except Exception as exc: result = {"status": "failed", "output": None, "error": str(exc), "steps": []}
+        finally: _dry_var.reset(token)
+        if case["expect"] == "failed":
+            ok = result["status"] == "failed" and (case["expected"] in (None, "") or str(case["expected"]).lower() in str(result.get("error") or "").lower())
+        elif result["status"] != "success": ok = False
+        elif case["expected"] is None: ok = True
+        else: ok = contains(case["expected"], result["output"]) if case["mode"] == "contains" else case["expected"] == result["output"]
+        shown = result["output"] if case["expect"] == "success" else result.get("error")
+        text = json.dumps(shown, default=str)
+        results.append({"id": case["id"], "name": case["name"], "passed": bool(ok), "status": result["status"], "error": result.get("error"),
+                        "actual": shown if len(text) <= 3000 else text[:3000] + "...(shortened)", "ms": round((time.perf_counter() - t0) * 1000, 1)})
+    return {"passed": sum(r["passed"] for r in results), "failed": sum(not r["passed"] for r in results), "results": results}
 
 
 class ExplainIn(BaseModel):

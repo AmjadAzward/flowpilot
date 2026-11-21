@@ -3,6 +3,7 @@ import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEd
 import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
   History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
+  FlaskConical,
 } from 'lucide-react';
 import { blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templateGroup, templateGroups, templates, type FlowDoc, type Run, type Step, type TriggerKind } from './catalog';
 import { icons, nodeTypes, RunStateContext } from './nodes';
@@ -12,6 +13,8 @@ import { Login } from './Login';
 import { ChangePassword, UsersPage } from './UsersPage';
 import { TablesPage } from './TablesPage';
 import { HistoryPanel } from './HistoryPanel';
+import { TestsPanel } from './TestsPanel';
+import { ExpressionHints, fieldPaths } from './ExpressionHints';
 import { OAuthConnect } from './OAuthConnect';
 import { DataSettings } from './DataSettings';
 import { AuditPanel } from './AuditPanel';
@@ -101,6 +104,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [newProject, setNewProject] = useState('');
   const [page, setPage] = useState<Page>('dashboard');
   const [showHistory, setShowHistory] = useState(false);
+  const [showTests, setShowTests] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const canEdit = role !== 'viewer';
   const canCreds = role === 'owner' || role === 'admin';
@@ -111,7 +115,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [flowName, setFlowName] = useState('Untitled workflow');
   const [description, setDescription] = useState('');
   const [tagsText, setTagsText] = useState('');
-  const [wfSettings, setWfSettings] = useState({ timeout: '', save: 'all', ai: '' });
+  const [wfSettings, setWfSettings] = useState({ timeout: '', save: 'all', ai: '', tokens: '' });
   const [tagFilter, setTagFilter] = useState('');
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -171,9 +175,9 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
 
   const loadDoc = (doc: FlowDoc) => {
     const ns = doc.nodes, es = doc.edges;
-    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWfSettings({ timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '' }); setWebhookToken(doc.webhook_token ?? '');
+    setSelectedId(doc.id); setFlowName(doc.name); setDescription(doc.description); setTagsText((doc.tags ?? []).join(', ')); setWfSettings({ timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '', tokens: doc.settings?.ai_token_limit ? String(doc.settings.ai_token_limit) : '' }); setWebhookToken(doc.webhook_token ?? '');
     setNodes(ns); setEdges(es); setSelectedNode(null); setLastRun(null);
-    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), wfSettings: { timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '' }, n: cleanNodes(ns), e: cleanEdges(es) }));
+    setSavedSnap(JSON.stringify({ flowName: doc.name, description: doc.description, tagsText: (doc.tags ?? []).join(', '), wfSettings: { timeout: doc.settings?.timeout_seconds ? String(doc.settings.timeout_seconds) : '', save: doc.settings?.save_runs ?? 'all', ai: doc.settings?.ai_call_limit ? String(doc.settings.ai_call_limit) : '', tokens: doc.settings?.ai_token_limit ? String(doc.settings.ai_token_limit) : '' }, n: cleanNodes(ns), e: cleanEdges(es) }));
     hist.current = { stack: [JSON.stringify({ n: cleanNodes(ns), e: cleanEdges(es) })], idx: 0 };
     setPage('editor');
   };
@@ -186,7 +190,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       await refresh(); await openFlow(doc.id); notify('Workflow created');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
-  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save, ai_call_limit: wfSettings.ai ? Number(wfSettings.ai) : 0 }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
+  const payload = () => JSON.stringify({ name: flowName.trim() || 'Untitled workflow', description, tags: tagsText.split(',').map(t => t.trim()).filter(Boolean), settings: { timeout_seconds: wfSettings.timeout ? Number(wfSettings.timeout) : 0, save_runs: wfSettings.save, ai_call_limit: wfSettings.ai ? Number(wfSettings.ai) : 0, ai_token_limit: wfSettings.tokens ? Number(wfSettings.tokens) : 0 }, nodes: cleanNodes(nodes), edges: cleanEdges(edges) });
   const saveFlow = useCallback(async (silent = false) => {
     if (!selectedId) return false;
     try {
@@ -453,6 +457,15 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       if (res.status === 'success') notify('Replay finished successfully'); else notify(`Replay ${res.status}${res.error ? ': ' + res.error : ''}`, 'error');
     } catch (e) { notify((e as Error).message, 'error'); }
   };
+  const replayRecent = async () => {
+    if (!window.confirm('Replay every run that failed in the last hour from the step that failed? Runs that were already replayed are skipped. Steps that send messages or write data will do so again.')) return;
+    try {
+      const res = await api<{ found: number; succeeded: number; still_failing: number; skipped: number }>('/api/executions/replay-failed', { method: 'POST', body: JSON.stringify({ since_minutes: 60 }) });
+      await refresh();
+      if (!res.found) notify('No failed runs from the last hour need replaying');
+      else notify(`Replayed ${res.found}: ${res.succeeded} succeeded, ${res.still_failing} still failing, ${res.skipped} skipped`, res.still_failing || res.skipped ? 'error' : 'ok');
+    } catch (e) { notify((e as Error).message, 'error'); }
+  };
   const respondRun = async (id: string, decision: string) => {
     try { await api(`/api/executions/${id}/respond`, { method: 'POST', body: JSON.stringify({ decision }) }); await refresh(); notify(`Recorded: ${decision}`); }
     catch (e) { notify((e as Error).message, 'error'); await refresh(); }
@@ -678,6 +691,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   <details className="run-settings"><summary>Run settings</summary><div className="run-pop">
                     <label>Time limit<select value={wfSettings.timeout} onChange={e => setWfSettings(s => ({ ...s, timeout: e.target.value }))} aria-label="Workflow time limit"><option value="">No limit</option><option value="30">30 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option></select></label>
                     <label>AI calls per run<select value={wfSettings.ai} onChange={e => setWfSettings(s => ({ ...s, ai: e.target.value }))} aria-label="AI calls per run"><option value="">No limit</option><option value="1">1</option><option value="3">3</option><option value="10">10</option><option value="50">50</option><option value="200">200</option></select></label>
+                    <label>AI tokens per run<select value={wfSettings.tokens} onChange={e => setWfSettings(s => ({ ...s, tokens: e.target.value }))} aria-label="AI tokens per run"><option value="">No limit</option><option value="5000">5,000</option><option value="20000">20,000</option><option value="100000">100,000</option><option value="500000">500,000</option></select></label>
                     <label>Keep run history<select value={wfSettings.save} onChange={e => setWfSettings(s => ({ ...s, save: e.target.value }))} aria-label="Which runs to keep"><option value="all">Every run</option><option value="failures">Only failed runs</option><option value="none">No automatic runs</option></select></label>
                     <span className="hint">The time limit is checked between steps. Test runs from the Run button are always kept.</span>
                   </div></details>
@@ -696,7 +710,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 </span>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
-                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => setShowHistory(h => !h)}><HistoryIcon size={15} />History</button>
+                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => { setShowTests(false); setShowHistory(h => !h); }}><HistoryIcon size={15} />History</button>
+                <button className="ghost" aria-label="Workflow tests" data-testid="open-tests" title="Saved test cases" onClick={() => { setShowHistory(false); setShowTests(t => !t); }}><FlaskConical size={15} />Tests</button>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy || !canEdit} title="Ctrl+S"><Save size={15} />Save</button>
                 <button className="primary" onClick={() => void execute()} disabled={busy || !canEdit}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
                 <button className="ghost" data-testid="dry-run" title="Runs everything that only reads. Messages, writes and waits are described, not carried out." onClick={() => void executeDry()} disabled={busy || !canEdit}>Dry run</button>
@@ -704,6 +719,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             </div>
 
             <div className="studio">
+              {showTests && selectedId && <TestsPanel key={selectedId} workflowId={selectedId} canEdit={canEdit} notify={notify} onClose={() => setShowTests(false)} suggestInput={lastRun?.steps?.[0]?.input != null ? JSON.stringify(lastRun.steps[0].input, null, 2) : '{}'} suggestExpected={lastRun?.status === 'success' && lastRun.output != null ? JSON.stringify(lastRun.output, null, 2) : ''} />}
               {showHistory && selectedId && <HistoryPanel workflowId={selectedId} canRestore={canEdit} dirty={dirty} notify={notify} onClose={() => setShowHistory(false)} onRestored={() => { setShowHistory(false); void openFlow(selectedId); void refresh(); }} />}
               {showCatalog && (
                 <aside className="node-panel">
@@ -745,8 +761,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   <div className="inspect-body" data-testid="inspector">
                     <div className="inspect-type">{currentNode.type}</div>
                     <label>Display name<input value={String(currentNode.data.label || '')} onChange={e => updateData('label', e.target.value)} /></label>
+                    <ExpressionHints fields={fieldPaths(nodeSteps[0]?.input)}>
                     <NodeSettings node={currentNode} update={updateData} credentials={creds.filter(c => c.kind !== 'oauth2' && (!c.project_id || c.project_id === (meta?.project_id ?? null))).map(c => c.name)} oauth={creds.filter(c => c.kind === 'oauth2' && (!c.project_id || c.project_id === (meta?.project_id ?? null))).map(c => c.name)} flows={flows} currentFlowId={selectedId}
                       webhookUrl={webhookUrl} isActive={isActive} onCopyWebhook={() => void copyWebhook()} onRotateWebhook={() => void rotateWebhook()} />
+                    </ExpressionHints>
                     {lastRun && nodeSteps.length > 0 && shownStep && (
                       <div className="data-panel" data-testid="data-panel">
                         <div className="data-head"><span>Last run</span>{nodeSteps.length > 1 && <em className="iter">{nodeSteps.length} runs</em>}{shownStep.pinned && <em className="pin-chip">pinned</em>}</div>
@@ -804,6 +822,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                   {(['all', 'success', 'failed'] as const).map(f => <button key={f} role="tab" aria-selected={runFilter === f} className={runFilter === f ? 'on' : ''} onClick={() => setRunFilter(f)}>{f}</button>)}
                 </div>
                 <button className="ghost" onClick={() => void refresh()}><RefreshCcw size={15} />Refresh</button>
+                <button className="ghost" data-testid="replay-recent" title="Replay failed runs from the last hour" onClick={() => void replayRecent()} disabled={!canEdit || !runs.some(r => r.status === 'failed')}><RefreshCcw size={15} />Replay recent failures</button>
                 <button className="ghost" data-testid="export-runs" onClick={() => void exportRuns()} disabled={!runs.length}><Download size={15} />Export CSV</button>
                 <button className="ghost danger" onClick={() => void clearRuns()} disabled={!runs.length}><Trash2 size={15} />Clear</button>
               </div>
