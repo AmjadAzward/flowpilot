@@ -958,6 +958,22 @@ await check('recent failures can be replayed in one go', async () => {
   if (again !== 0) throw new Error('an unknown workflow should find nothing');
 });
 
+await check('a run shows how many AI calls and tokens it used', async () => {
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Usage display flow', description: '', nodes: [node('t', 'trigger'), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'o' }] };
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Usage display flow$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.route(/\/api\/workflows\/[^/]+\/run\?dry=true/, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'fake-run', workflow_id: 'x', status: 'success', trigger: 'dry', dry_run: true, not_done: [], output: { ok: true }, error: null, steps: [{ node_id: 't', label: 't', type: 'trigger', status: 'success', duration_ms: 1 }], ai_usage: { calls: 2, tokens: 1500 } }) }));
+  await page.getByTestId('dry-run').click();
+  await expectText(page.getByTestId('ai-usage'), /AI: 2 calls, 1[,.]?500 tokens/);
+  await page.unroute(/\/api\/workflows\/[^/]+\/run\?dry=true/);
+});
+
 await check('the owner sees an activity log of changes', async () => {
   await page.getByRole('button', { name: /^Settings/ }).click();
   await page.getByTestId('audit-row').first().waitFor();

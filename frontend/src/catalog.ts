@@ -3,7 +3,7 @@ import type { Edge, Node } from '@xyflow/react';
 export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'email_in' | 'poll_in';
 export type FlowDoc = { search?: string; settings?: { timeout_seconds?: number; save_runs?: string; ai_call_limit?: number; ai_token_limit?: number }; project_id?: string | null; project_name?: string | null; tags?: string[]; id: string; name: string; description: string; nodes: Node[]; edges: Edge[]; updated_at?: string; active?: boolean; trigger?: TriggerKind; next_run_at?: string | null; webhook_token?: string };
 export type Step = { node_id: string; label: string; type?: string; status: string; input?: unknown; output?: unknown; error?: string; branch?: string | null; duration_ms?: number; iteration?: number[]; pinned?: boolean; attempts?: number; continued?: boolean };
-export type Run = { waiting_for?: string | null; id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay' | 'dry'; dry_run?: boolean; not_done?: { node: string; type: string; not_done: string }[]; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
+export type Run = { ai_usage?: { calls: number; tokens: number } | null; waiting_for?: string | null; id: string; resume_at?: string | null; wait?: { resume_at: string }; trigger?: TriggerKind | 'error' | 'replay' | 'dry'; dry_run?: boolean; not_done?: { node: string; type: string; not_done: string }[]; status: string; error: string | null; output: unknown; steps: Step[]; started_at?: string; workflow_id?: string };
 
 export type NodeKind = 'trigger' | 'schedule' | 'webhook' | 'input' | 'transform' | 'template' | 'set' | 'filter' | 'csv' | 'condition' | 'loop' | 'merge' | 'subflow' | 'switch' | 'code' | 'fail' | 'sql' | 'rss' | 'telegram' | 'github' | 'wait' | 'respond' | 'sheets' | 'gmail' | 'sticky' | 'ai' | 'repeat' | 'file' | 'app' | 'agent' | 'callback' | 'poll_in' | 'sort' | 'limit' | 'dedupe' | 'split' | 'aggregate' | 'rename' | 'datetime' | 'crypto' | 'convert' | 'table' | 'email_in' | 'http' | 'notify' | 'email' | 'delay' | 'note' | 'output';
 export type Category = 'Start' | 'Data' | 'Logic' | 'Network' | 'Finish';
@@ -542,3 +542,5 @@ const groupById: Record<string, (typeof templateGroups)[number]> = {
   'resilient-call': 'Reliability', 'error-alert': 'Reliability', 'slack-alert': 'Apps',
 };
 export const templateGroup = (id: string) => groupById[id] ?? 'Getting started';
+
+export const aiText = (u?: { calls: number; tokens: number } | null) => (u ? `AI: ${u.calls} call${u.calls === 1 ? '' : 's'}, ${u.tokens.toLocaleString()} tokens` : '');

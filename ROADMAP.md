@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.43
+- Every run that used AI records how many calls and tokens it used (shown in the run panel and on the Executions page, and summed in the run stats). Tokens come from what the AI service reports, or are estimated when it reports nothing
+- Workflow backups, restores and duplicates now carry the saved test cases (before this, restoring a backup silently dropped them)
+- 1340 API tests and an 85-check browser suite. The AI usage display in the browser is checked against a stubbed run response, since the test backend has no model
+
 ### v0.42
 - Saved test cases per workflow (sample input, expected output or expected failure), run together as a dry run
 - Replay all recent failed runs in one click; each run is replayed once

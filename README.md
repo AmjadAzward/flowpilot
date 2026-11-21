@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1330%20API%20%2B%2084%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1340%20API%20%2B%2085%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -89,7 +89,7 @@
 | **Dry run** | A Dry run button runs the whole workflow but only describes what would be sent or changed: POST/PUT/DELETE requests, emails, chat messages, file writes, table and SQL changes, app actions that write, and waits are skipped and listed ("Not carried out"). Reads still really run (GET requests, file and table reads, AI calls, list/get actions), so those services are contacted. Dry runs never call the error workflow and are stored as their own kind. n8n has no equivalent: its test run executes for real |
 | **Describe a workflow (AI draft)** | On the Overview page you describe what you want, an AI model of your choice drafts the workflow, and FlowPilot checks it (known node types only, no code/SQL/file nodes, one trigger, everything reachable, no credentials copied in) before saving it as an inactive draft with the `ai-draft` tag. One corrective retry; nothing runs by itself, so review it and try a Dry run first. Tested against a simulated model only; small local models draft poorly |
 | **Fix failed runs faster** | On a failed run you can edit the data the failed step received and replay from there, or ask an AI model to explain the failure (credentials are removed from what it sees; it is tested against a simulated model only and can be wrong). Version history has a Compare button showing which steps, settings and connections changed. A workflow can cap its AI calls per run. |
-| **Test cases and guards** | Save sample inputs with the output you expect (or the failure you expect) and run them all after an edit; they run as a dry run, so nothing is sent or written. Replay every failure from the last hour in one click. Typing `{{` suggests fields from the previous step's real data once the workflow has run. Per-workflow limits on AI calls and AI tokens per run, and a per-step time limit that stops waiting for a slow step (a request already sent may still finish). Tokens are counted from what the AI service reports, or estimated. |
+| **Test cases and guards** | Save sample inputs with the output you expect (or the failure you expect) and run them all after an edit; they run as a dry run, so nothing is sent or written. Replay every failure from the last hour in one click. Typing `{{` suggests fields from the previous step's real data once the workflow has run. Per-workflow limits on AI calls and AI tokens per run, and a per-step time limit that stops waiting for a slow step (a request already sent may still finish). Tokens are counted from what the AI service reports, or estimated. Each run shows the AI calls and tokens it used, and the run stats add them up. Saved tests travel with workflow backups and copies. |
 | **Scope and import safety** | A webhook can only use secrets its own project may use; people outside a project do not see that project's credential names; a workflow import (file or link) lists the credentials each workflow refers to so you can read it before running it; a failed run frees its Idempotency-Key so the sender can retry. Known limits: error details from every project reach the shared error workflow, and a hostile PDF could make reading slow (5 MB cap, no time limit yet) |
 | **YAML, PDF and the palette** | Convert Data reads YAML (safe loading only: no aliases, dates or custom types) and writes it, and reads the text of a PDF from the files folder (first 50 pages, 5 MB, 200,000 characters; scanned PDFs without a text layer give nothing, there is no OCR). Press Ctrl+K anywhere to jump to a page or workflow. Adds two small free libraries, PyYAML and pypdf, to requirements.txt |
 | **Operations and sharing** | The Executions page shows a summary (runs, failures, failure rate, average time, workflows that fail most) for the runs you may see; owners get a Prometheus-style `/api/metrics`. Webhooks can be limited to listed IP addresses or ranges (it sees the connecting address, so a proxy hides the real caller). The workflow backup now includes connectors and can be imported from an HTTPS link (inactive workflows, nothing overwritten, owner only) |
@@ -298,7 +298,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1330 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1340 tests, use a temporary database and key):
 
 ```powershell
 cd backend

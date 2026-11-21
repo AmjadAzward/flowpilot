@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.42.0"
+VERSION = "0.43.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -143,6 +143,8 @@ def initialize():
             db.execute("ALTER TABLE executions ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'manual'")
         if "replay_of" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
             db.execute("ALTER TABLE executions ADD COLUMN replay_of TEXT")
+        if "ai_usage" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
+            db.execute("ALTER TABLE executions ADD COLUMN ai_usage TEXT")
         db.execute("CREATE TABLE IF NOT EXISTS workflow_tests (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_at TEXT NOT NULL)")
         for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
@@ -820,6 +822,8 @@ def duplicate_workflow(workflow_id: str):
     with conn() as db:
         src = db.execute("SELECT project_id FROM workflows WHERE id=?", (workflow_id,)).fetchone()
         insert_workflow(db, new_id, name, source["description"], doc, now(), src["project_id"] if src else None)
+        old_tests = db.execute("SELECT name, spec FROM workflow_tests WHERE workflow_id=?", (workflow_id,)).fetchall()
+        for t in old_tests: db.execute("INSERT INTO workflow_tests (id,workflow_id,name,spec,created_at) VALUES (?,?,?,?,?)", (str(uuid.uuid4()), new_id, t["name"], t["spec"], now()))
     return {"id": new_id, "name": name}
 
 
@@ -4552,7 +4556,9 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_i
     holder: dict = {}
     t1, t2, t3, t4, t5 = _secrets_var.set(secrets_), _stack_var.set((doc.get("id"),)), _response_var.set(holder), _vars_var.set(load_variables()), _run_var.set(run_links(exec_id))
     limit, token_limit = (doc.get("settings") or {}).get("ai_call_limit"), (doc.get("settings") or {}).get("ai_token_limit")
-    t6 = _ai_budget_var.set({"limit": int(limit) if limit else None, "used": 0, "token_limit": int(token_limit) if token_limit else None, "tokens": 0}) if (limit or token_limit) and _ai_budget_var.get() is None else None  # a sub-workflow shares its caller's budget
+    budget = {"limit": int(limit) if limit else None, "used": 0, "token_limit": int(token_limit) if token_limit else None, "tokens": 0}
+    own_budget = _ai_budget_var.get() is None  # a sub-workflow shares its caller's budget and usage count
+    t6 = _ai_budget_var.set(budget) if own_budget else None
     try: result = _execute(doc, initial, resume)
     finally:
         if t6 is not None: _ai_budget_var.reset(t6)
@@ -4562,6 +4568,7 @@ def run_flow(doc: dict, initial: Any = None, resume: tuple | None = None, exec_i
         _stack_var.reset(t2)
         _response_var.reset(t3)
     if result["status"] == "success" and "response" in holder: result["response"] = holder["response"]
+    if own_budget and budget["used"]: result["ai_usage"] = {"calls": budget["used"], "tokens": budget["tokens"]}
     return redact(result, secrets_)
 
 
@@ -4575,8 +4582,9 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None, exec_id: str | N
     with conn() as db:
         if result["status"] == "waiting" and db.execute("SELECT COUNT(*) c FROM waits WHERE status='pending'").fetchone()["c"] >= MAX_PENDING_WAITS:
             result = {"status": "failed", "output": None, "steps": result["steps"], "error": f"Too many runs are waiting (limit {MAX_PENDING_WAITS})"}
-        if not skip_save: db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind) VALUES (?,?,?,?,?,?,?,?,?)",
-                   (exec_id, doc["id"], result["status"], started, None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind))
+        if not skip_save: db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind,ai_usage) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                   (exec_id, doc["id"], result["status"], started, None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(result["steps"]), result["error"], kind,
+                    json.dumps(result["ai_usage"]) if result.get("ai_usage") else None))
         if result["status"] == "waiting" and not skip_save: add_wait(db, exec_id, doc["id"], result["wait"])
     if result["status"] == "failed" and kind not in ("error", "dry"): run_error_handler(doc, exec_id, kind, result)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
@@ -4682,8 +4690,9 @@ def replay_execution(execution_id: str, body: ReplayIn | None = None):
     except Exception as exc: result = {"status": "failed", "output": None, "steps": [], "error": str(exc)}
     all_steps = kept + result["steps"]
     with conn() as db:
-        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind,replay_of) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                   (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay", execution_id))
+        db.execute("INSERT INTO executions (id,workflow_id,status,started_at,finished_at,output,steps,error,trigger_kind,replay_of,ai_usage) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   (new_id, doc["id"], result["status"], now(), None if result["status"] == "waiting" else now(), json.dumps(result["output"]), json.dumps(all_steps), result["error"], "replay", execution_id,
+                    json.dumps(result["ai_usage"]) if result.get("ai_usage") else None))
         if result["status"] == "waiting": add_wait(db, new_id, doc["id"], result["wait"])
     if result["status"] == "failed": run_error_handler(doc, new_id, "replay", {**result, "steps": all_steps})
     return {"id": new_id, "workflow_id": doc["id"], "trigger": "replay", "replayed_from": execution_id, "edited_input": edited, **{**result, "steps": all_steps}}
@@ -5594,7 +5603,9 @@ def backup_workflows():
     items = []
     for r in rows:
         d = json.loads(r["definition"])
-        items.append({k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges", "settings")})
+        item = {k: d.get(k) for k in ("name", "description", "tags", "nodes", "edges", "settings")}
+        with conn() as db: item["tests"] = [{k: t[k] for k in ("name", "input", "expected", "mode", "expect")} for t in (_test_row(x) for x in db.execute("SELECT * FROM workflow_tests WHERE workflow_id=? ORDER BY created_at, id", (d["id"],)).fetchall())]
+        items.append(item)
     with conn() as db: conns = {r["name"]: json.loads(r["manifest"]) for r in db.execute("SELECT name, manifest FROM connectors ORDER BY name").fetchall()}
     body = {"format": "flowpilot-backup", "version": 1, "exported_at": now(), "workflows": items, "connectors": conns}  # connectors hold addresses and field templates, never secrets
     return JSONResponse(body, headers={"Content-Disposition": 'attachment; filename="flowpilot-workflows.json"'})
@@ -5645,6 +5656,21 @@ def import_from_link(body: ImportUrlIn):
     return apply_backup(pack)
 
 
+def restore_tests(workflow_id: str, tests: Any) -> int:
+    """Saved test cases that came with a workflow in a backup. Invalid ones are dropped; the workflow itself is unaffected."""
+    kept = 0
+    for t in (tests if isinstance(tests, list) else [])[:MAX_TESTS]:
+        try: case = TestCaseIn(**t)
+        except Exception: continue
+        spec = {"input": case.input, "expected": case.expected, "mode": case.mode, "expect": case.expect}
+        if len(json.dumps(spec, default=str)) > 100_000: continue
+        with conn() as db:
+            if db.execute("SELECT 1 FROM workflow_tests WHERE workflow_id=? AND name=?", (workflow_id, case.name)).fetchone(): continue
+            db.execute("INSERT INTO workflow_tests (id,workflow_id,name,spec,created_at) VALUES (?,?,?,?,?)", (str(uuid.uuid4()), workflow_id, case.name, json.dumps(spec, default=str), now()))
+        kept += 1
+    return kept
+
+
 def apply_backup(body: RestoreIn) -> dict:
     if body.format != "flowpilot-backup": raise HTTPException(400, "This is not a FlowPilot backup file")
     created, skipped = [], []
@@ -5659,7 +5685,8 @@ def apply_backup(body: RestoreIn) -> dict:
         doc = wf.model_dump()
         doc["id"] = wid
         with conn() as db: insert_workflow(db, wid, wf.name, wf.description, doc, now())
-        created.append({"id": wid, "name": wf.name, "uses_credentials": credentials_used(doc)})
+        kept = restore_tests(wid, item.get("tests"))
+        created.append({"id": wid, "name": wf.name, "uses_credentials": credentials_used(doc), "tests": kept})
     made, passed = [], []
     for cname, manifest in body.connectors.items():
         try:
@@ -5731,7 +5758,8 @@ def executions(request: Request, workflow_id: str | None = None):
         rows = rows[:100]
         waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
     return [{"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
-             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None} for r in rows]
+             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
+             "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None} for r in rows]
 
 
 STATS_WINDOWS = {"24h": 1, "7d": 7, "30d": 30}
@@ -5749,7 +5777,7 @@ def run_stats(request: Request, window: str = "7d"):
     visible = visible_workflow_ids(getattr(request.state, "actor", None))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=STATS_WINDOWS[window])).isoformat()
     with conn() as db:
-        rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE started_at >= ?", (cutoff,)).fetchall()
+        rows = db.execute("SELECT workflow_id, status, started_at, finished_at, ai_usage FROM executions WHERE started_at >= ?", (cutoff,)).fetchall()
         names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM workflows").fetchall()}
     rows = [r for r in rows if visible is None or r["workflow_id"] in visible]
     done = [r for r in rows if r["status"] in ("success", "failed")]
@@ -5758,8 +5786,10 @@ def run_stats(request: Request, window: str = "7d"):
     per: dict[str, int] = {}
     for r in failed: per[r["workflow_id"]] = per.get(r["workflow_id"], 0) + 1
     top = sorted(per.items(), key=lambda kv: (-kv[1], names.get(kv[0], "")))[:5]
+    usage = [json.loads(r["ai_usage"]) for r in rows if r["ai_usage"]]
     return {"window": window, "total": len(rows), "success": len(done) - len(failed), "failed": len(failed), "waiting": sum(1 for r in rows if r["status"] == "waiting"),
             "failure_rate": round(len(failed) / len(done), 4) if done else None, "average_seconds": round(sum(times) / len(times), 3) if times else None,
+            "ai_calls": sum(u.get("calls", 0) for u in usage), "ai_tokens": sum(u.get("tokens", 0) for u in usage),
             "top_failing": [{"workflow_id": w, "name": names.get(w, "(deleted)"), "failed": n} for w, n in top]}
 
 
