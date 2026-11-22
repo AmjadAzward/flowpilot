@@ -1093,6 +1093,26 @@ await check('the dashboard flags a workflow that keeps failing, with the reason 
   if (await healthy.getByTestId('health-chip').count() !== 0) throw new Error('a workflow with no failures should not be flagged');
 });
 
+await check('the timings panel lists a workflow\'s steps with how often each failed, and says so when there are no runs', async () => {
+  await page.locator('.flow-meta strong', { hasText: /^Keeps breaking$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByTestId('open-timings').click();
+  await page.getByTestId('timing-row').first().waitFor();
+  if (await page.getByTestId('timing-row').count() < 2) throw new Error('expected a row per step that ran');
+  await expectText(page.getByTestId('timings-panel'), /last 3 finished runs/);
+  await expectText(page.getByTestId('timing-failed').first(), /failed 3×/);
+  await page.evaluate(async () => {
+    const node = (id, type) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id } });
+    await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Never run yet', description: '', nodes: [node('t', 'trigger'), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'o' }] }) });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Never run yet$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByTestId('open-timings').click();
+  await page.getByTestId('timings-empty').waitFor();
+});
+
 await check('a run shows how many AI calls and tokens it used', async () => {
   await page.evaluate(async () => {
     const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 200 : 0, y: 0 }, data: { label: id, ...data } });

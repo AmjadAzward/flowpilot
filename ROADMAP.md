@@ -27,6 +27,10 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.51
+- Slowest steps: a Timings button on each workflow lists its steps by typical time (the median over its latest 50 finished runs), with the worst time, how often each step ran and how often it failed. Dry runs and unfinished runs are left out, and waiting steps do not count towards the time. It reads stored runs only; `GET /api/workflows/{id}/step-timings?runs=N` (1 to 500)
+- 1422 API tests and a 93-check browser suite. The older cancel-wait browser check did not fail in this release's runs, but it is still not fixed
+
 ### v0.50
 - Workflow health on the dashboard: a workflow whose last day looks worse than its own previous week gets a badge (failing, failing more than usual, or slower than usual), with the reason on hover. It is calculated from stored runs and nothing is sent. It needs at least 3 runs in the last day, so one bad run never raises it; "slower" needs a baseline of 3 runs, at least twice the usual typical run time and at least half a second of difference. Dry runs, waiting runs and running runs are ignored
 - This only shows a badge. It does not notify anyone; sending alerts is still to do

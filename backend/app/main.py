@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.50.0"
+VERSION = "0.51.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -5966,6 +5966,44 @@ def run_stats(request: Request, window: str = "7d"):
             "failure_rate": round(len(failed) / len(done), 4) if done else None, "average_seconds": round(sum(times) / len(times), 3) if times else None,
             "ai_calls": sum(u.get("calls", 0) for u in usage), "ai_tokens": sum(u.get("tokens", 0) for u in usage),
             "top_failing": [{"workflow_id": w, "name": names.get(w, "(deleted)"), "failed": n} for w, n in top]}
+
+
+TIMING_RUNS_DEFAULT = 50
+
+
+def summarize_step_timings(runs: list[list[dict]]) -> list[dict]:
+    """Per node across several runs: how often it ran, its typical and worst time, and how often it failed. Slowest typical time first."""
+    per: dict[str, dict] = {}
+    for steps in runs:
+        for st in steps:
+            nid = st.get("node_id")
+            if nid is None or st.get("status") == "waiting": continue
+            e = per.setdefault(nid, {"node_id": nid, "label": st.get("label") or nid, "type": st.get("type"), "times": [], "runs": 0, "failed": 0})
+            e["runs"] += 1
+            if st.get("status") == "error": e["failed"] += 1
+            if isinstance(st.get("duration_ms"), (int, float)): e["times"].append(float(st["duration_ms"]))
+    out = []
+    for e in per.values():
+        t = e.pop("times")
+        med = _median(t)
+        e.update(timed=len(t), median_ms=round(med) if med is not None else None, max_ms=round(max(t)) if t else None, total_ms=round(sum(t)))
+        out.append(e)
+    out.sort(key=lambda e: (-(e["median_ms"] or 0), -e["total_ms"], e["label"]))
+    return out
+
+
+@app.get("/api/workflows/{wid}/step-timings")
+def workflow_step_timings(wid: str, runs: int = TIMING_RUNS_DEFAULT):
+    """Which steps of this workflow are usually slowest, from its latest finished runs (dry runs left out)."""
+    if runs < 1 or runs > 500: raise HTTPException(400, "runs must be between 1 and 500")
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM workflows WHERE id=?", (wid,)).fetchone(): raise HTTPException(404, "Workflow not found")
+        rows = db.execute("SELECT steps FROM executions WHERE workflow_id=? AND status IN ('success','failed') AND trigger_kind != 'dry' ORDER BY started_at DESC LIMIT ?", (wid, runs)).fetchall()
+    parsed = []
+    for r in rows:
+        try: parsed.append(json.loads(r["steps"] or "[]"))
+        except ValueError: continue
+    return {"workflow_id": wid, "runs_used": len(parsed), "steps": summarize_step_timings(parsed)}
 
 
 HEALTH_MIN_RUNS = 3

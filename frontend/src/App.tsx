@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, addEdge, useNodesState, useEdgesState, type Connection, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
 import {
   Activity, ArrowLeft, CheckCircle2, ChevronRight, CircleHelp, Clock3, Code2, Copy, Database, Download, Layers3,
-  History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
+  History as HistoryIcon, KeyRound, LayoutDashboard, Menu, Users as UsersIcon, LogOut, Moon, Network, Pin, PinOff, Play, Plus, Redo2, RefreshCcw, Save, Search, Settings2, ShieldCheck, Sparkles, Sun, Timer, Trash2, Undo2, Upload, Workflow, X, Zap, TrendingUp,
   FlaskConical,
 } from 'lucide-react';
 import { aiText, blankEdges, blankNodes, catalog, defaultData, pinnableTypes, startTypes, templateGroup, templateGroups, templates, type FlowDoc, type Run, type Step, type TriggerKind } from './catalog';
@@ -14,6 +14,7 @@ import { ChangePassword, UsersPage } from './UsersPage';
 import { TablesPage } from './TablesPage';
 import { HistoryPanel } from './HistoryPanel';
 import { TestsPanel } from './TestsPanel';
+import { StepTimingsPanel } from './StepTimingsPanel';
 import { DependenciesPanel, deleteWarning, type Dependencies } from './DependenciesPanel';
 import { ExpressionHints, fieldPaths } from './ExpressionHints';
 import { OAuthConnect } from './OAuthConnect';
@@ -118,6 +119,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [showHistory, setShowHistory] = useState(false);
   const [showTests, setShowTests] = useState(false);
   const [showDeps, setShowDeps] = useState(false);
+  const [showTimings, setShowTimings] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const canEdit = role !== 'viewer';
   const canCreds = role === 'owner' || role === 'admin';
@@ -757,9 +759,10 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
                 </span>
                 <button className="ghost" onClick={download}><Download size={15} />Export</button>
                 <label className="ghost file-label"><Upload size={15} />Import<input type="file" accept=".json,application/json" onChange={e => { const f = e.target.files?.[0]; if (f) void upload(f); e.target.value = ''; }} /></label>
-                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => { setShowTests(false); setShowDeps(false); setShowHistory(h => !h); }}><HistoryIcon size={15} />History</button>
-                <button className="ghost" aria-label="Workflow tests" data-testid="open-tests" title="Saved test cases" onClick={() => { setShowHistory(false); setShowDeps(false); setShowTests(t => !t); }}><FlaskConical size={15} />Tests</button>
-                <button className="ghost" aria-label="Workflow connections" data-testid="open-deps" title="What this workflow runs, what runs it, and its credentials" onClick={() => { setShowHistory(false); setShowTests(false); setShowDeps(d => !d); }}><Network size={15} />Connections</button>
+                <button className="ghost" aria-label="Version history" title="Version history" onClick={() => { setShowTests(false); setShowDeps(false); setShowTimings(false); setShowHistory(h => !h); }}><HistoryIcon size={15} />History</button>
+                <button className="ghost" aria-label="Workflow tests" data-testid="open-tests" title="Saved test cases" onClick={() => { setShowHistory(false); setShowDeps(false); setShowTimings(false); setShowTests(t => !t); }}><FlaskConical size={15} />Tests</button>
+                <button className="ghost" aria-label="Workflow connections" data-testid="open-deps" title="What this workflow runs, what runs it, and its credentials" onClick={() => { setShowHistory(false); setShowTests(false); setShowTimings(false); setShowDeps(d => !d); }}><Network size={15} />Connections</button>
+                <button className="ghost" aria-label="Slowest steps" data-testid="open-timings" title="Which steps usually take the longest" onClick={() => { setShowHistory(false); setShowTests(false); setShowDeps(false); setShowTimings(t => !t); }}><Timer size={15} />Timings</button>
                 <button className="ghost" onClick={() => void saveFlow()} disabled={busy || !canEdit} title="Ctrl+S"><Save size={15} />Save</button>
                 <button className="primary" onClick={() => void execute()} disabled={busy || !canEdit}><Play size={15} fill="currentColor" />{busy ? 'Running…' : 'Run workflow'}</button>
                 <button className="ghost" data-testid="dry-run" title="Runs everything that only reads. Messages, writes and waits are described, not carried out." onClick={() => void executeDry()} disabled={busy || !canEdit}>Dry run</button>
@@ -767,6 +770,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
             </div>
 
             <div className="studio">
+              {showTimings && selectedId && <StepTimingsPanel key={selectedId} workflowId={selectedId} onClose={() => setShowTimings(false)} />}
               {showDeps && selectedId && <DependenciesPanel key={selectedId} workflowId={selectedId} onClose={() => setShowDeps(false)} onOpen={id => void openFlow(id)} />}
               {showTests && selectedId && <TestsPanel key={selectedId} workflowId={selectedId} canEdit={canEdit} notify={notify} onClose={() => setShowTests(false)} suggestInput={lastRun?.steps?.[0]?.input != null ? JSON.stringify(lastRun.steps[0].input, null, 2) : '{}'} suggestExpected={lastRun?.status === 'success' && lastRun.output != null ? JSON.stringify(lastRun.output, null, 2) : ''} />}
               {showHistory && selectedId && <HistoryPanel workflowId={selectedId} canRestore={canEdit} dirty={dirty} notify={notify} onClose={() => setShowHistory(false)} onRestored={() => { setShowHistory(false); void openFlow(selectedId); void refresh(); }} />}
