@@ -1054,6 +1054,11 @@ await check('a run can carry a note that shows in the list and can be searched',
   await expectText(page.getByTestId('search-note'), /1 run contain this/);
   await page.getByTestId('run-search').fill('');
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
+  await page.getByTestId('run-filter-noted').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length === 1);
+  await expectText(page.getByTestId('history-row').first(), /Noted run flow/);
+  await page.getByTestId('run-filter-all').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
 });
 
 await check('the Credentials page shows which credentials are used, and warns before deleting one in use', async () => {

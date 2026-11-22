@@ -148,7 +148,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [tplGroup, setTplGroup] = useState<(typeof templateGroups)[number]>('All');
   const [tourOpen, setTourOpen] = useState(() => { try { return localStorage.getItem('fp-tour') !== 'done'; } catch { return false; } });
   const closeTour = () => { setTourOpen(false); try { localStorage.setItem('fp-tour', 'done'); } catch { /* private mode */ } };
-  const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed'>('all');
+  const [runFilter, setRunFilter] = useState<'all' | 'success' | 'failed' | 'noted'>('all');
   const [credUsage, setCredUsage] = useState<Record<string, { used_by: { id: string; name: string }[]; hidden: number }>>({});
   const [runQuery, setRunQuery] = useState('');
   const [found, setFound] = useState<{ runs: Run[]; matches: number; scanned: number } | null>(null);
@@ -492,7 +492,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   };
   const exportRuns = async () => {
     try {
-      const res = await fetch(`/api/executions/export${runFilter === 'all' ? '' : '?status=' + (runFilter === 'failed' ? 'failed' : 'success')}`, { credentials: 'same-origin' });
+      const res = await fetch(`/api/executions/export${runFilter === 'all' || runFilter === 'noted' ? '' : '?status=' + (runFilter === 'failed' ? 'failed' : 'success')}`, { credentials: 'same-origin' });
       if (!res.ok) throw new Error('Could not export the runs');
       const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = 'flowpilot-runs.csv'; a.click(); URL.revokeObjectURL(a.href);
     } catch (e) { notify((e as Error).message, 'error'); }
@@ -581,7 +581,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const filtered = flows.filter(f => flowMatches(f, query) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
   const success = runs.filter(r => r.status === 'success').length;
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
-  const shownRuns = (found ? found.runs : runs).filter(r => runFilter === 'all' || (runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
+  const shownRuns = (found ? found.runs : runs).filter(r => runFilter === 'all' || (runFilter === 'noted' ? !!r.note : runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
   const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', tables: 'Data Tables', users: 'Users', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);
@@ -872,7 +872,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
               <div><div className="eyebrow">Run monitoring</div><h1>Execution history</h1><p>Inspect all workflow runs and troubleshoot errors.</p></div>
               <div className="section-actions">
                 <div className="segmented" role="tablist">
-                  {(['all', 'success', 'failed'] as const).map(f => <button key={f} role="tab" aria-selected={runFilter === f} className={runFilter === f ? 'on' : ''} onClick={() => setRunFilter(f)}>{f}</button>)}
+                  {(['all', 'success', 'failed', 'noted'] as const).map(f => <button key={f} role="tab" data-testid={'run-filter-' + f} title={f === 'noted' ? 'Only runs that carry a note' : undefined} aria-selected={runFilter === f} className={runFilter === f ? 'on' : ''} onClick={() => setRunFilter(f)}>{f}</button>)}
                 </div>
                 <button className="ghost" onClick={() => void refresh()}><RefreshCcw size={15} />Refresh</button>
                 <button className="ghost" data-testid="replay-recent" title="Replay failed runs from the last hour" onClick={() => void replayRecent()} disabled={!canEdit || !runs.some(r => r.status === 'failed')}><RefreshCcw size={15} />Replay recent failures</button>

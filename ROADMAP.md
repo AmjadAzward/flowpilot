@@ -29,6 +29,7 @@ This file describes planned functionality, **not current features**.
 
 ### v0.51
 - Slowest steps: a Timings button on each workflow lists its steps by typical time (the median over its latest 50 finished runs), with the worst time, how often each step ran and how often it failed. Dry runs and unfinished runs are left out, and waiting steps do not count towards the time. It reads stored runs only; `GET /api/workflows/{id}/step-timings?runs=N` (1 to 500)
+- Run history gets a "noted" filter next to all, success and failed, showing only runs that carry a note. It filters the runs already loaded in the page (the same ones the other filters use); the export ignores it
 - 1422 API tests and a 93-check browser suite. The older cancel-wait browser check did not fail in this release's runs, but it is still not fixed
 
 ### v0.50
