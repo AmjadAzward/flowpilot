@@ -215,7 +215,7 @@ pre { margin: 0; font-family: var(--mono); font-size: 12px; }
 .workflow-title:hover { border-color: var(--border-strong); }
 .workflow-title:focus { outline: 0; border-color: var(--accent); background: var(--surface); }
 .sub { display: flex; align-items: center; color: var(--muted); font-size: 12px; }
-.editor-actions { display: flex; align-items: center; gap: 8px; }
+.editor-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .studio { flex: 1; min-height: 0; display: flex; }
 .node-panel, .inspector { width: 262px; flex-shrink: 0; background: var(--bg-2); padding: 14px; display: flex; flex-direction: column; min-height: 0; }
 .node-panel { border-right: 1px solid var(--border); }
@@ -611,3 +611,6 @@ button:disabled { cursor: not-allowed; }
 .run-tag-chip { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; padding: 1px 4px 1px 9px; border-radius: 99px; background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
 .run-tag-chip .icon-button { padding: 1px; min-width: 0; }
 .run-tag-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+
+.drawer-pad { padding: 14px 16px; }
+.drawer-pad .mini-heading { padding: 0 0 10px; }

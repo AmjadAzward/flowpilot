@@ -25,7 +25,7 @@ export function StepTimingsPanel({ workflowId, onClose }: { workflowId: string; 
 
   const top = info?.steps[0]?.median_ms || 0;
   return (
-    <aside className="history-drawer" data-testid="timings-panel" aria-label="Slowest steps">
+    <aside className="history-drawer drawer-pad" data-testid="timings-panel" aria-label="Slowest steps">
       <div className="mini-heading"><span><Timer size={14} /> Slowest steps</span><button className="icon-button" aria-label="Close slowest steps" onClick={onClose}><X size={15} /></button></div>
       {error && <p className="error">{error}</p>}
       {!info && !error && <p className="hint">Loading…</p>}

@@ -30,6 +30,8 @@ This file describes planned functionality, **not current features**.
 ### v0.52
 - Run tags: put short labels such as "billing" or "needs-review" on any run, from the run's row in Executions. Tags are lower-cased, spaces become dashes, up to 8 per run and 24 characters each. They show on the row, can be searched, and a tag bar filters the list. `PUT /api/executions/{id}/tags`, `GET /api/executions/tags` (tags in use, with counts, only for runs you can see). Viewers can read tags but not change them. Adds an `executions.tags` column, migrated on SQLite and Postgres
 - The tag bar and the filter work on the runs loaded in the page, like the other filters; the search box also finds runs by tag
+- The editor's button row now wraps instead of running off the right edge (it had outgrown a 1440 px window), and the Connections and Timings panels have padding. The browser tests take screenshots of the newer screens, which are in the README
+- The cancel-wait browser check now waits for the cancel request itself and fails with the reason, instead of waiting on a toast; I could not reproduce the old failure, so I cannot say the flake is gone
 - 1438 API tests (the new ones also pass on Postgres) and a 94-check browser suite. The cancel-wait browser check did not fail this time but is not fixed
 
 ### v0.51

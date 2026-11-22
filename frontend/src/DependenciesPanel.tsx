@@ -35,7 +35,7 @@ export function DependenciesPanel({ workflowId, onClose, onOpen }: { workflowId:
     : <p className="hint">{empty}</p>;
 
   return (
-    <aside className="history-drawer" data-testid="deps-panel" aria-label="Workflow dependencies">
+    <aside className="history-drawer drawer-pad" data-testid="deps-panel" aria-label="Workflow dependencies">
       <div className="mini-heading"><span><Network size={14} /> Connections</span><button className="icon-button" aria-label="Close connections" onClick={onClose}><X size={15} /></button></div>
       {error && <p className="error">{error}</p>}
       {!info && !error && <p className="hint">Loading…</p>}

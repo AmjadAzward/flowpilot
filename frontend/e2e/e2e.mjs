@@ -632,9 +632,14 @@ await check('a long wait shows as waiting with a resume time and can be cancelle
   await expectText(page.locator('.status-chip.wait'), /waiting/i);
   await expectText(page.locator('.wait-note'), /Resumes/);
   await shot('21-waiting');
-  await page.getByTestId('cancel-wait').click();
-  await expectText(toast(), /cancelled/i);
-  if ((await page.locator('.status-chip.wait').count()) !== 0) throw new Error('the run should no longer be waiting');
+  // Wait for the cancel request itself, so a failure says whether the click, the server or the page was at fault
+  const [cancel] = await Promise.all([
+    page.waitForResponse(r => /\/api\/executions\/[^/]+\/cancel$/.test(r.url()), { timeout: 15000 }),
+    page.getByTestId('cancel-wait').click(),
+  ]);
+  if (!cancel.ok()) throw new Error('the cancel request answered ' + cancel.status());
+  await expectText(toast(), /cancelled/i, 15000);
+  await page.waitForFunction(() => document.querySelectorAll('.status-chip.wait').length === 0, null, { timeout: 15000 });
 });
 
 await check('tags filter the dashboard, and sticky notes and the AI node work in the editor', async () => {
@@ -1006,6 +1011,7 @@ await check('past runs can be searched by what is inside them', async () => {
   await expectText(page.getByTestId('search-note'), /1 run contain this/);
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length === 1);
   await expectText(page.getByTestId('run-snippet'), /ZX-4471/);
+  await shot('40-run-search');
   await page.getByTestId('run-search').fill('no-such-order-anywhere');
   await expectText(page.getByTestId('search-note'), /No run contains this/);
   await page.getByTestId('run-search').fill('');
@@ -1027,6 +1033,7 @@ await check('connections show what a workflow runs, what runs it, and warn befor
   await expectText(page.getByTestId('deps-calls'), /Linked child/);
   await expectText(page.getByTestId('deps-creds'), /NOT_SAVED_KEY/);
   await page.getByTestId('deps-missing-cred').waitFor();
+  await shot('41-connections');
   await page.getByTestId('deps-calls').getByRole('button', { name: 'Linked child' }).click();  // jump to the child
   await expectText(page.getByTestId('deps-called-by'), /Linked parent/);
   await goOverview();
@@ -1050,6 +1057,7 @@ await check('a run can carry a note that shows in the list and can be searched',
   await row.getByTestId('note-save').click();
   await expectText(toast(), /Note saved/);
   await expectText(page.getByTestId('history-row').filter({ hasText: 'Noted run flow' }).first().getByTestId('run-note-chip'), /customer confirmed fixed/);
+  await shot('42-run-note');
   await page.getByTestId('run-search').fill('confirmed fixed');
   await expectText(page.getByTestId('search-note'), /1 run contain this/);
   await page.getByTestId('run-search').fill('');
@@ -1068,6 +1076,7 @@ await check('a run can be tagged, and the history list can be filtered by tag', 
   await row().getByTestId('tag-input').fill('Billing Team');
   await row().getByTestId('tag-add').click();
   await expectText(row().getByTestId('run-tag-badge'), /billing-team/);
+  await shot('43-run-tags');
   await page.getByTestId('run-tag-filter-chip').filter({ hasText: 'billing-team' }).click();
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length === 1);
   await expectText(page.getByTestId('history-row').first(), /Noted run flow/);
@@ -1091,6 +1100,7 @@ await check('the Credentials page shows which credentials are used, and warns be
   const unused = page.getByTestId('cred-row').filter({ hasText: 'E2E_NOBODY' });
   await expectText(used.getByTestId('cred-used'), /used by 1 workflow/);
   await expectText(unused.getByTestId('cred-unused'), /unused/);
+  await shot('46-credential-usage');
   const asked = new Promise(resolve => page.once('dialog', d => { resolve(d.message()); void d.dismiss(); }));
   await page.getByLabel('Delete credential E2E_IN_USE', { exact: true }).click();
   const message = await Promise.race([asked, new Promise(resolve => setTimeout(() => resolve('(no dialog appeared)'), 10000))]);
@@ -1108,6 +1118,7 @@ await check('the dashboard flags a workflow that keeps failing, with the reason 
   await goOverview();
   const row = page.getByTestId('workflow-row').filter({ hasText: 'Keeps breaking' });
   await expectText(row.getByTestId('health-chip'), /failing/);
+  await shot('44-health');
   const why = await row.getByTestId('health-chip').getAttribute('title');
   if (!/3 of 3 runs failed in the last day/.test(why ?? '')) throw new Error('unexpected reason: ' + why);
   const healthy = page.getByTestId('workflow-row').filter({ hasText: 'Compare greeter' });
@@ -1133,6 +1144,19 @@ await check('the timings panel lists a workflow\'s steps with how often each fai
   await page.locator('.react-flow__node').first().waitFor();
   await page.getByTestId('open-timings').click();
   await page.getByTestId('timings-empty').waitFor();
+  await page.evaluate(async () => {
+    const node = (id, type, data = {}) => ({ id, type, position: { x: id === 'o' ? 600 : id === 'd2' ? 400 : id === 'd1' ? 200 : 0, y: 0 }, data: { label: id, ...data } });
+    const body = { name: 'Slow steps demo', description: '', nodes: [node('t', 'trigger'), node('d1', 'delay', { label: 'Wait for the API', seconds: '0.4' }), node('d2', 'delay', { label: 'Pause between calls', seconds: '0.15' }), node('o', 'output')], edges: [{ id: 'a', source: 't', target: 'd1' }, { id: 'b', source: 'd1', target: 'd2' }, { id: 'c', source: 'd2', target: 'o' }] };
+    const created = await (await fetch('/api/workflows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+    for (let i = 0; i < 3; i++) await fetch(`/api/workflows/${created.id}/run`, { method: 'POST' });
+  });
+  await page.reload();
+  await goOverview();
+  await page.locator('.flow-meta strong', { hasText: /^Slow steps demo$/ }).click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.getByTestId('open-timings').click();
+  await expectText(page.getByTestId('timing-row').first(), /Wait for the API/);
+  await shot('45-timings');
 });
 
 await check('a run shows how many AI calls and tokens it used', async () => {

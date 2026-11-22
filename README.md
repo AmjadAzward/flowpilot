@@ -45,6 +45,22 @@
     <td width="50%"><img src="docs/screenshots/00-login.png" alt="Sign in screen"/><br/><sub><b>Sign in</b> screen protecting your workspace</sub></td>
     <td width="50%"><img src="docs/screenshots/06-executions.png" alt="Execution history"/><br/><sub><b>Execution history</b> with status filters and step details</sub></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/15-run-compare.png" alt="Comparing two runs"/><br/><sub><b>Compare two runs</b> step by step and see where they first differ</sub></td>
+    <td width="50%"><img src="docs/screenshots/16-run-search.png" alt="Searching past runs"/><br/><sub><b>Search inside past runs</b>, for example an order number, with a snippet around the match</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/17-connections.png" alt="Workflow connections"/><br/><sub><b>Connections</b>: what a workflow runs, what runs it and which credentials it uses</sub></td>
+    <td width="50%"><img src="docs/screenshots/22-credential-usage.png" alt="Credential usage"/><br/><sub><b>Credential usage</b>: which workflows use each credential, with a warning before deleting one in use</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/18-run-note.png" alt="Note on a run"/><br/><sub><b>Notes on runs</b> show in the list and are searchable</sub></td>
+    <td width="50%"><img src="docs/screenshots/19-run-tags.png" alt="Tags on runs"/><br/><sub><b>Tags on runs</b> with a tag bar that filters the history</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/20-health.png" alt="Workflow health badge"/><br/><sub><b>Health badge</b> on the dashboard when a workflow fails more than usual</sub></td>
+    <td width="50%"><img src="docs/screenshots/21-timings.png" alt="Slowest steps"/><br/><sub><b>Slowest steps</b> of a workflow, from its latest finished runs</sub></td>
+  </tr>
 </table>
 
 ---
@@ -111,6 +127,14 @@
 | **Data tables page** | The Data tables page in the sidebar lists every table and its rows (newest first) and lets editors remove a row or empty a table. Tables follow projects: a workflow reads and writes the tables of its own project, workflows without a project share one set, and people only see the tables of projects they belong to (owners and admins see all). Moving a workflow to another project makes it see that project's tables instead. Rows added before v0.25 count as belonging to no project |
 | **Search inside workflows** | The Overview search also finds workflows by node type and the text typed into node settings, not just by name and tag |
 | **Run settings per workflow** | An optional time limit (checked between steps) and a choice of which automatic runs to keep: every run, only failed runs, or none. Test runs from the Run button are always kept |
+| **Compare two runs** | On the Executions page pick another run of the same workflow and see which steps differ (result, error or output), with both outputs side by side and the first difference named. Outputs are shortened to 1,500 characters |
+| **Search inside past runs** | Find the runs that contained an order number, an email or an error message, with a snippet around the match. It scans the newest 2,000 runs you may see (a text scan, not an index) |
+| **Notes and tags on runs** | Add a note (up to 500 characters) and up to 8 short tags to any run. They show on the run's row, notes and tags are found by the search, and a tag bar and a "noted" tab filter the list. Viewers can read but not change them |
+| **Connections panel** | Per workflow: which workflows it runs (Run Workflow nodes, AI Agent tools, error handlers), which run it, and which credentials it uses, flagging ones not saved yet. Deleting a workflow that others still use warns first and names them |
+| **Credential usage** | The Credentials page shows which workflows use each credential, or "unused", and warns before deleting one in use. Other projects' workflows are counted, not named |
+| **Workflow health badges** | The dashboard flags a workflow whose last day looks worse than its own previous week: failing, failing more than usual, or slower than usual, with the reason on hover. It needs at least 3 runs, ignores dry, waiting and running runs, and only shows a badge: nothing is sent |
+| **Slowest steps** | Each run marks its slowest step, and a Timings button on a workflow lists its steps by typical time over its latest 50 finished runs, with the worst time and how often each step ran and failed |
+| **AI usage per run** | Runs that used AI record how many calls and tokens they used (reported by the service, or estimated), shown on the run and summed in the run stats |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
 | **Activity log** | The owner sees who changed what (every successful change, plus sign-ins and failed sign-ins by account name). Passwords and bodies are never recorded. The latest 5000 entries are kept |
 | **Twenty-eight templates** | Ready-made workflows in five groups (Getting started, Lists and data, Webhooks and APIs, Reliability, Apps), each one created and run in the browser tests with its exact expected result, except the ones that need internet or an account |
@@ -306,7 +330,7 @@ cd backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-**Browser end-to-end tests** (34 checks driving a real Chrome or Edge: account setup, sign in and out, activation, a webhook called from a separate session, schedules and cron, credentials, loops, pinning, undo and redo, copy and paste, and more). These create and delete workflows, so start the API on a throwaway database first:
+**Browser end-to-end tests** (94 checks driving a real Chrome or Edge: account setup, sign in and out, activation, a webhook called from a separate session, schedules and cron, credentials, loops, pinning, undo and redo, copy and paste, and more). These create and delete workflows, so start the API on a throwaway database first:
 
 ```powershell
 $env:FLOWPILOT_DB = "$env:TEMP\flowpilot-e2e.db"
@@ -352,6 +376,8 @@ flowpilot/
     public/favicon.svg       browser tab icon
     src/nodes.tsx            custom canvas nodes and run-state badges
     src/catalog.ts           node definitions and starter templates
+    src/RunCompare.tsx, RunNote.tsx, RunTags.tsx   compare, note and tag a run
+    src/DependenciesPanel.tsx, StepTimingsPanel.tsx   workflow connections and slowest steps
     src/styles.css           design tokens, light and dark themes
     e2e/e2e.mjs              browser end-to-end tests
   examples/hello-world.json  sample workflow to import
@@ -428,6 +454,8 @@ Everything works with no configuration. These optional environment variables cha
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
 - **One incoming connection per node, except Merge.** Branches come back together through a Merge node, and cycles are rejected (use Loop Over Items or Repeat Until). One node may fan out to several.
 - **HTTP checks are an MVP safeguard.** Public-HTTPS-only, private-address blocking and no redirects are not a hardened defence for untrusted multi-tenant use. Only run workflows you trust. Use the Credentials page for secrets instead of typing them into a node.
+- **Run search, tags and compare are simple on purpose.** Search is a text scan of the newest 2,000 runs, not an index, so it is not meant for millions of runs. The tag bar and the "noted" tab filter the runs loaded in the page. Compare shortens outputs to 1,500 characters.
+- **Health badges and timings are calculated, not monitored.** They read stored runs when you open the page. Nothing is sent when a workflow starts failing, so you still need to look at the dashboard, or use an error workflow, to be told.
 - **Run history can hold sensitive data.** Credentials are hidden from results, but data that passes through a workflow is stored. Use the retention settings, and the "keep only failed runs" workflow setting, to limit what is kept.
 
 ---
