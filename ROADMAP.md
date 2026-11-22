@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.52
+- Run tags: put short labels such as "billing" or "needs-review" on any run, from the run's row in Executions. Tags are lower-cased, spaces become dashes, up to 8 per run and 24 characters each. They show on the row, can be searched, and a tag bar filters the list. `PUT /api/executions/{id}/tags`, `GET /api/executions/tags` (tags in use, with counts, only for runs you can see). Viewers can read tags but not change them. Adds an `executions.tags` column, migrated on SQLite and Postgres
+- The tag bar and the filter work on the runs loaded in the page, like the other filters; the search box also finds runs by tag
+- 1438 API tests (the new ones also pass on Postgres) and a 94-check browser suite. The cancel-wait browser check did not fail this time but is not fixed
+
 ### v0.51
 - Slowest steps: a Timings button on each workflow lists its steps by typical time (the median over its latest 50 finished runs), with the worst time, how often each step ran and how often it failed. Dry runs and unfinished runs are left out, and waiting steps do not count towards the time. It reads stored runs only; `GET /api/workflows/{id}/step-timings?runs=N` (1 to 500)
 - Run history gets a "noted" filter next to all, success and failed, showing only runs that carry a note. It filters the runs already loaded in the page (the same ones the other filters use); the export ignores it

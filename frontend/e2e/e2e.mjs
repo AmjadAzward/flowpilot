@@ -1061,6 +1061,23 @@ await check('a run can carry a note that shows in the list and can be searched',
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
 });
 
+await check('a run can be tagged, and the history list can be filtered by tag', async () => {
+  const row = () => page.getByTestId('history-row').filter({ hasText: 'Noted run flow' }).first();
+  const open = async () => { if (!(await row().evaluate(el => el.open))) await row().locator('summary').click(); };
+  await open();
+  await row().getByTestId('tag-input').fill('Billing Team');
+  await row().getByTestId('tag-add').click();
+  await expectText(row().getByTestId('run-tag-badge'), /billing-team/);
+  await page.getByTestId('run-tag-filter-chip').filter({ hasText: 'billing-team' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length === 1);
+  await expectText(page.getByTestId('history-row').first(), /Noted run flow/);
+  await page.getByTestId('run-tag-filter-chip').filter({ hasText: 'billing-team' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="history-row"]').length > 1);
+  await open();
+  await row().getByRole('button', { name: 'Remove tag billing-team' }).click();
+  await page.getByTestId('run-tag-filter').waitFor({ state: 'detached' });
+});
+
 await check('the Credentials page shows which credentials are used, and warns before deleting one in use', async () => {
   await page.evaluate(async () => {
     const put = (name) => fetch(`/api/credentials/${name}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: 'value-for-' + name }) });

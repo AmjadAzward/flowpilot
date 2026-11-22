@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.51.0"
+VERSION = "0.52.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -147,6 +147,8 @@ def initialize():
             db.execute("ALTER TABLE executions ADD COLUMN ai_usage TEXT")
         if "note" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
             db.execute("ALTER TABLE executions ADD COLUMN note TEXT")
+        if "tags" not in {r["name"] for r in db.execute("PRAGMA table_info(executions)")}:
+            db.execute("ALTER TABLE executions ADD COLUMN tags TEXT")
         db.execute("CREATE TABLE IF NOT EXISTS workflow_tests (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, created_at TEXT NOT NULL)")
         for r in db.execute("SELECT id FROM workflows WHERE webhook_token IS NULL").fetchall():
             db.execute("UPDATE workflows SET webhook_token=? WHERE id=?", (new_token(), r["id"]))
@@ -394,7 +396,7 @@ async def require_login(request: Request, call_next):
         request.state.actor = user
         if user["role"] not in ("owner", "admin"):
             wf = re.match(r"^/api/workflows/([^/]+)", path)
-            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond|explain|note)$", path)
+            ex = re.match(r"^/api/executions/([^/]+)/(?:cancel|replay|respond|explain|note|tags)$", path)
             target = wf.group(1) if wf else None
             if ex:
                 with conn() as db: row = db.execute("SELECT workflow_id FROM executions WHERE id=?", (ex.group(1),)).fetchone()
@@ -5839,7 +5841,12 @@ def executions(request: Request, workflow_id: str | None = None):
 def run_json(r: Any, waits: dict) -> dict:
     return {"id":r["id"],"workflow_id":r["workflow_id"],"status":r["status"],"started_at":r["started_at"],"error":r["error"],"trigger":r["trigger_kind"],"steps":json.loads(r["steps"] or "[]"),"output":json.loads(r["output"] or "null"),
             "resume_at":waits.get(r["id"], (None, None))[0], "waiting_for": "response" if waits.get(r["id"], (None, None))[1] == "callback" else None,
-            "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None, "note": r["note"]}
+            "ai_usage": json.loads(r["ai_usage"]) if r["ai_usage"] else None, "note": r["note"], "tags": run_tags(r)}
+
+
+def run_tags(r: Any) -> list[str]:
+    try: return json.loads(r["tags"]) if r["tags"] else []
+    except (ValueError, TypeError): return []
 
 
 class NoteIn(BaseModel):
@@ -5867,6 +5874,50 @@ def _snippet(text: str, needle: str) -> str:
     return ("..." if start else "") + text[start:at + len(needle) + 70].replace("\n", " ") + ("..." if at + len(needle) + 70 < len(text) else "")
 
 
+RUN_TAG_MAX = 8
+RUN_TAG_LENGTH = 24
+
+
+def normalize_tags(raw: list[str]) -> list[str]:
+    """Lower case, spaces become dashes, only letters, digits, dash and underscore. Duplicates and empty tags drop out."""
+    out: list[str] = []
+    for t in raw:
+        tag = re.sub(r"\s+", "-", str(t).strip().lower()).strip("-")
+        if not tag: continue
+        if len(tag) > RUN_TAG_LENGTH: raise HTTPException(400, f'The tag "{tag[:RUN_TAG_LENGTH]}..." is longer than {RUN_TAG_LENGTH} characters')
+        if not re.fullmatch(r"[a-z0-9_-]+", tag): raise HTTPException(400, f'The tag "{tag}" may only use letters, digits, dashes and underscores')
+        if tag not in out: out.append(tag)
+    if len(out) > RUN_TAG_MAX: raise HTTPException(400, f"A run can have at most {RUN_TAG_MAX} tags")
+    return out
+
+
+class TagsIn(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=50)
+
+
+@app.put("/api/executions/{execution_id}/tags")
+def set_run_tags(execution_id: str, body: TagsIn):
+    """Labels on a run, such as "billing" or "needs-review". Replaces the run's tags; an empty list clears them."""
+    tags = normalize_tags(body.tags)
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM executions WHERE id=?", (execution_id,)).fetchone(): raise HTTPException(404, "Execution not found")
+        db.execute("UPDATE executions SET tags=? WHERE id=?", (json.dumps(tags) if tags else None, execution_id))
+    return {"id": execution_id, "tags": tags}
+
+
+@app.get("/api/executions/tags")
+def run_tag_counts(request: Request):
+    """Every tag in use on runs this person may see, with how many runs carry it."""
+    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    with conn() as db:
+        rows = db.execute("SELECT workflow_id, tags FROM executions WHERE tags IS NOT NULL").fetchall()
+    counts: dict[str, int] = {}
+    for r in rows:
+        if visible is not None and r["workflow_id"] not in visible: continue
+        for t in run_tags(r): counts[t] = counts.get(t, 0) + 1
+    return {"tags": [{"tag": t, "runs": n} for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]}
+
+
 @app.get("/api/executions/search")
 def search_executions(request: Request, q: str, workflow_id: str | None = None):
     """Find past runs whose data contains some text, for example an order number. Looks at the newest runs only; stored run data never holds credentials."""
@@ -5883,7 +5934,7 @@ def search_executions(request: Request, q: str, workflow_id: str | None = None):
     if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
     hits = []
     for r in rows:
-        text = " ".join(str(r[k] or "") for k in ("output", "steps", "error", "note"))
+        text = " ".join(str(r[k] or "") for k in ("output", "steps", "error", "note", "tags"))
         low = text.lower()
         if needle in low or escaped in low:
             hit = run_json(r, waits)
