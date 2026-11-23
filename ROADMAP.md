@@ -28,7 +28,7 @@ This file describes planned functionality, **not current features**.
 - 126 API tests and a 27-check browser suite
 
 ### v0.54
-- Connector library grows from 22 to 36 ready-made manifests: CoinGecko, Wikipedia, Free Dictionary, Open Library, SpaceX, public holidays (Nager.Date), Zippopotam postal codes, Stack Exchange, Cloudflare (read only), Postmark, Brevo, Lemon Squeezy, Hunter and Sunrise-Sunset. Eight need no sign-in at all; the rest need a key saved on the Credentials page
+- Connector library grows from 22 to 36 ready-made manifests: CoinGecko, Wikipedia, Free Dictionary, Open Library, SpaceX, public holidays (Nager.Date), Zippopotam postal codes, Stack Exchange, Cloudflare (read only), Postmark, Brevo, Lemon Squeezy, Hunter and Sunrise-Sunset. Nine need no sign-in at all; the other five need a key saved on the Credentials page
 - Like the others, these were written from public API documentation and have never been run against the live services. The tests check that every manifest is valid and builds its example requests, and run three of them end to end (Postmark, Hunter, Lemon Squeezy) against a fake HTTP layer, so the way keys are sent is checked but not whether the live API accepts them
 - 1464 API tests and a 95-check browser suite
 
