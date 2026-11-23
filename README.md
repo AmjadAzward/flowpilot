@@ -158,6 +158,40 @@
 
 ---
 
+## <img src="https://img.shields.io/badge/-Requirements%20and%20stack-0EA5E9?style=flat-square" alt="Requirements and stack"/>
+
+### What you need
+
+| To do this | You need |
+| :--- | :--- |
+| **Run FlowPilot** | A computer running Windows, macOS or Linux, **Python 3.11 or newer** and **Node.js LTS** (development was done on Python 3.13 and Node 24). About 10 MB of disk for the project, plus its dependencies and your data |
+| **Run it in one window** | The same, after building the interface once (`npm run build`). The API then serves the built app on port 8000 |
+| **Run it in Docker (optional)** | Docker with Compose. The image uses Node 22 to build the interface and Python 3.12 to run it. It was built and run once on an early version, and has not been rebuilt since |
+| **Use Postgres (optional)** | A PostgreSQL server (tested against 16) instead of the built-in SQLite file |
+| **Run the tests** | `pytest` for the API tests, and Google Chrome or Microsoft Edge for the browser tests. The browser tests need a throwaway database, never your real one |
+| **Use AI nodes (optional)** | Any OpenAI-compatible service: a model on your own computer (Ollama or LM Studio, free) or a hosted one with your own key |
+| **Use the connectors and App Actions (optional)** | An account and key with each service, saved on the Credentials page. They need nothing else installed |
+
+No paid service, account or licence is needed to run FlowPilot.
+
+### What it is built with
+
+| Layer | Technology |
+| :--- | :--- |
+| **Backend** | Python, FastAPI, Uvicorn, Pydantic 2 |
+| **HTTP client** | httpx |
+| **Storage** | SQLite (default, WAL mode) or PostgreSQL through psycopg 3 |
+| **Secrets** | `cryptography` (Fernet, AES) for the credentials vault, and PBKDF2 password hashing from the standard library |
+| **File formats** | PyYAML (safe loading) and pypdf for the YAML and PDF tools; `tzdata` for time zones |
+| **Frontend** | React 18, TypeScript 5, Vite 6 |
+| **Canvas and icons** | React Flow (`@xyflow/react` 12) and lucide-react |
+| **Tests** | pytest for the API, and Playwright (`playwright-core`, driving your own Chrome or Edge) for the browser checks |
+| **Packaging** | A Dockerfile and docker-compose file, Windows `.bat` launchers, a macOS and Linux shell script |
+
+The exact versions are in `backend/requirements.txt` and `frontend/package.json`. Everything above is free and open source.
+
+---
+
 ## <img src="https://img.shields.io/badge/-Quick%20start-F59E0B?style=flat-square" alt="Quick start"/>
 
 ### Windows
