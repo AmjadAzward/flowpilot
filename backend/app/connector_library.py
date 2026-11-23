@@ -110,4 +110,54 @@ LIBRARY = [
         "aggregate": _op("Aggregate stats", "/aggregate", query={"site_id": "{site_id}", "period": "{period}", "metrics": "{metrics}"}, required=["site_id"], result="results", example={"site_id": "example.com", "period": "30d", "metrics": "visitors,pageviews"}),
         "top_pages": _op("Top pages", "/breakdown", query={"site_id": "{site_id}", "period": "{period}", "property": "event:page", "limit": "{limit}"}, required=["site_id"], result="results", example={"site_id": "example.com", "period": "7d", "limit": 10}),
     }, "Credential: a Stats API key. Self-hosted: edit base_url."),
+    _entry("coingecko", "CoinGecko prices", "https://api.coingecko.com/api/v3", NONE, {
+        "price": _op("Current price of coins", "/simple/price", query={"ids": "{ids}", "vs_currencies": "{vs_currencies}"}, required=["ids", "vs_currencies"], example={"ids": "bitcoin,ethereum", "vs_currencies": "usd,eur"}),
+        "markets": _op("Top coins by market cap", "/coins/markets", query={"vs_currency": "{vs_currency}", "per_page": "{per_page}"}, required=["vs_currency"], example={"vs_currency": "usd", "per_page": 10}),
+    }, "Free public prices, rate limited. No sign-in."),
+    _entry("wikipedia", "Wikipedia summaries", "https://en.wikipedia.org/api/rest_v1", NONE, {
+        "summary": _op("Short summary of a page", "/page/summary/{title}", required=["title"], example={"title": "Alan_Turing"}),
+    }, "Wikimedia REST API. No sign-in. Change en to another language code in base_url."),
+    _entry("dictionary", "Free Dictionary", "https://api.dictionaryapi.dev/api/v2", NONE, {
+        "define": _op("Look up an English word", "/entries/en/{word}", required=["word"], example={"word": "hello"}),
+    }, "Definitions, phonetics and examples. No sign-in."),
+    _entry("openlibrary", "Open Library", "https://openlibrary.org", NONE, {
+        "search": _op("Search books", "/search.json", query={"q": "{query}", "limit": "{limit}"}, required=["query"], result="docs", example={"query": "the hobbit", "limit": 5}),
+        "isbn": _op("Get a book by ISBN", "/isbn/{isbn}.json", required=["isbn"], example={"isbn": "9780140328721"}),
+    }, "Free book data. No sign-in."),
+    _entry("spacex", "SpaceX launches", "https://api.spacexdata.com/v4", NONE, {
+        "latest": _op("Latest launch", "/launches/latest"),
+        "upcoming": _op("Upcoming launches", "/launches/upcoming"),
+    }, "Community-run open data. No sign-in."),
+    _entry("nager_holidays", "Public holidays (Nager.Date)", "https://date.nager.at/api/v3", NONE, {
+        "holidays": _op("Public holidays of a year", "/PublicHolidays/{year}/{country}", required=["year", "country"], example={"year": 2026, "country": "US"}),
+        "next": _op("Next public holidays in a country", "/NextPublicHolidays/{country}", required=["country"], example={"country": "GB"}),
+    }, "Two-letter country codes. No sign-in."),
+    _entry("zippopotam", "Zippopotam postal codes", "https://api.zippopotam.us", NONE, {
+        "lookup": _op("Places for a postal code", "/{country}/{postal_code}", required=["country", "postal_code"], example={"country": "us", "postal_code": "90210"}),
+    }, "Postal code to city and coordinates. No sign-in."),
+    _entry("stackexchange", "Stack Exchange", "https://api.stackexchange.com/2.3", NONE, {
+        "search": _op("Search questions by title", "/search", query={"intitle": "{title}", "site": "{site}", "pagesize": "{pagesize}", "order": "desc", "sort": "votes"}, required=["title"], result="items", example={"title": "python decorators", "site": "stackoverflow", "pagesize": 5}),
+    }, "Public reads, rate limited without a key. No sign-in."),
+    _entry("cloudflare", "Cloudflare", "https://api.cloudflare.com/client/v4", BEARER, {
+        "zones": _op("List zones", "/zones", result="result"),
+        "dns_records": _op("List DNS records of a zone", "/zones/{zone_id}/dns_records", required=["zone_id"], result="result", example={"zone_id": "ZONE_ID"}),
+    }, "Credential: an API token with Zone read permission. Read only here."),
+    _entry("postmark", "Postmark email", "https://api.postmarkapp.com", {"type": "header", "name": "X-Postmark-Server-Token"}, {
+        "send": _op("Send an email", "/email", "POST", body={"From": "{from}", "To": "{to}", "Subject": "{subject}", "TextBody": "{text}", "MessageStream": "outbound"}, required=["from", "to", "subject", "text"], example={"from": "you@example.com", "to": "them@example.com", "subject": "Hello", "text": "Hi there"}),
+    }, "Credential: a server token. The From address must be a verified sender."),
+    _entry("brevo", "Brevo (email and contacts)", "https://api.brevo.com/v3", {"type": "header", "name": "api-key"}, {
+        "account": _op("Account details", "/account"),
+        "contacts": _op("List contacts", "/contacts", query={"limit": "{limit}"}, result="contacts", example={"limit": 20}),
+    }, "Credential: a Brevo API key."),
+    _entry("lemonsqueezy", "Lemon Squeezy", "https://api.lemonsqueezy.com/v1", BEARER, {
+        "orders": _op("List orders", "/orders", query={"page[size]": "{page_size}"}, result="data", example={"page_size": 10}),
+        "customers": _op("List customers", "/customers", query={"page[size]": "{page_size}"}, result="data", example={"page_size": 10}),
+    }, "Credential: an API key. Replies follow the JSON:API format."),
+    _entry("hunter", "Hunter email finder", "https://api.hunter.io/v2", {"type": "query", "name": "api_key"}, {
+        "domain_search": _op("Email addresses at a domain", "/domain-search", query={"domain": "{domain}", "limit": "{limit}"}, required=["domain"], result="data", example={"domain": "stripe.com", "limit": 5}),
+        "verify": _op("Check an email address", "/email-verifier", query={"email": "{email}"}, required=["email"], result="data", example={"email": "someone@example.com"}),
+    }, "Credential: a Hunter API key (a free plan exists)."),
+    _entry("sunrise_sunset", "Sunrise and sunset", "https://api.sunrise-sunset.org", NONE, {
+        "times": _op("Sunrise and sunset for a place", "/json", query={"lat": "{lat}", "lng": "{lng}", "date": "{date}", "formatted": "0"}, required=["lat", "lng"], result="results", example={"lat": 51.5, "lng": -0.12, "date": "today"}),
+    }, "Times are in UTC. No sign-in."),
 ]

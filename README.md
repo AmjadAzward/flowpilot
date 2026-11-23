@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1447%20API%20%2B%2095%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1464%20API%20%2B%2095%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -116,7 +116,7 @@
 | **AI tasks** | The AI node can also extract named fields from text (typed, null when missing), sort text into your categories, judge sentiment, summarize, translate or rewrite, on any OpenAI-compatible service (free with Ollama). Answers outside your categories are refused. Tested against a simulated model only; small local models can get structured answers wrong, so check results |
 | **Project credentials** | A credential can be limited to one project: only workflows in that project can use it (credentials with no project stay shared by every workflow). A workflow that calls another through Run Workflow runs with its own credentials, so it cannot borrow another project's. A project that still has credentials cannot be deleted. Scope is changed on the Credentials page without retyping the value |
 | **Shared error workflow** | One workflow, chosen in Settings, runs whenever any workflow fails and has no error workflow of its own (the workflow's own choice wins; an error workflow never triggers another). Custom connectors can be downloaded as a file and imported again |
-| **Connector library** | 22 ready-made connector manifests (Open-Meteo, OpenWeatherMap, Calendly, Typeform, Clockify, Vercel, Netlify, DigitalOcean, Sentry, Webflow, Plausible and more) that you can pick in Settings and save. They were written from public API documentation and never run against the live services, so treat each as a starting point |
+| **Connector library** | 36 ready-made connector manifests (Open-Meteo, OpenWeatherMap, Calendly, Typeform, Clockify, Vercel, Netlify, DigitalOcean, Sentry, Webflow, Plausible, CoinGecko, Wikipedia, Cloudflare, Postmark, Brevo, Lemon Squeezy, Hunter and more) that you can pick in Settings and save. They were written from public API documentation and never run against the live services, so treat each as a starting point |
 | **Folder and connector triggers** | The New Items trigger can also watch a folder inside the files folder (new or changed files, optional name pattern such as *.csv; symlinks ignored) and any GET action of a custom connector. Simulated-server tests only for connectors |
 | **Custom connectors** | Owners and admins describe any REST API in a small JSON manifest (https address, sign-in style: none, bearer, basic, header or query, and actions with method, path, query and body templates) in Settings. It then appears as "Custom connector" in the App Action node. Addresses go through the same public-host check as every other call. Tested against simulated servers only |
 | **Signed webhooks, repeats and time zones** | A webhook can require an HMAC-SHA256 signature of the body (optionally of `timestamp.body` with a five-minute window, which blocks replays), can ignore repeated requests that carry the same `Idempotency-Key` for a day, and Daily and Cron schedules can run in any IANA time zone (daylight saving follows the zone). Checked with self-made signatures only, not against a real sender such as GitHub or Stripe |
@@ -327,7 +327,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1447 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1464 tests, use a temporary database and key):
 
 ```powershell
 cd backend

@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.54
+- Connector library grows from 22 to 36 ready-made manifests: CoinGecko, Wikipedia, Free Dictionary, Open Library, SpaceX, public holidays (Nager.Date), Zippopotam postal codes, Stack Exchange, Cloudflare (read only), Postmark, Brevo, Lemon Squeezy, Hunter and Sunrise-Sunset. Eight need no sign-in at all; the rest need a key saved on the Credentials page
+- Like the others, these were written from public API documentation and have never been run against the live services. The tests check that every manifest is valid and builds its example requests, and run three of them end to end (Postmark, Hunter, Lemon Squeezy) against a fake HTTP layer, so the way keys are sent is checked but not whether the live API accepts them
+- 1464 API tests and a 95-check browser suite
+
 ### v0.53
 - A needs-attention bell in the top bar: a count and a list of runs waiting for an approval and of workflows that are failing or slower than usual (the same judgement as the health badges), each with its reason; clicking one opens it. `GET /api/attention`. It is worked out from stored runs when asked, refreshed every minute while the page is open, and shows only workflows you can see
 - It is a bell you have to look at, not an alert: nothing is emailed or pushed, so a failure at night is still only noticed when someone opens the page. Real alerts still need a delivery channel to be chosen
@@ -126,7 +131,7 @@ This file describes planned functionality, **not current features**.
 - 1176 API tests and a 72-check browser suite
 
 ### v0.33
-- Connector library: 22 ready-made manifests (not run against the live services)
+- Connector library: 22 ready-made manifests at the time (36 since v0.54; none run against the live services)
 - Fixed a settings race (a late reply could overwrite what you were typing, which made one browser check flaky), and the footer shows the real version
 - 1166 API tests and a 72-check browser suite
 
