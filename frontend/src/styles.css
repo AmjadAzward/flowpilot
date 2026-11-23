@@ -624,3 +624,15 @@ button:disabled { cursor: not-allowed; }
 .attention-tag { justify-self: start; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 99px; background: rgba(245, 158, 11, .16); }
 .attention-tag.failing, .attention-tag.worse { background: rgba(239, 68, 68, .16); }
 .attention-tag.ask { background: rgba(99, 102, 241, .16); }
+
+.connector-check { flex-basis: 100%; display: grid; gap: 8px; padding: 10px 0 4px; }
+.check-result { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line, #d7dde5); overflow-wrap: anywhere; }
+.check-result.ok { border-color: #1a9d6a; }
+.check-result.bad { border-color: #d64545; }
+.check-result code { font-size: 12px; white-space: pre-wrap; }
+.check-row { display: flex; align-items: center; gap: 8px; }
+.connector-form { display: grid; gap: 8px; margin: 10px 0; }
+.connector-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.connector-row > code { flex: 0 0 200px; overflow-wrap: anywhere; }
+.connector-row > span:first-of-type { flex: 1 1 200px; }
+.settings-card label.check-row { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; }

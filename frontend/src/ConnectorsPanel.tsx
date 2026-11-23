@@ -21,6 +21,39 @@ export function useConnectors() {
   return rows;
 }
 
+type CheckResult = { ok: boolean; seconds: number; error: string | null; sample: string | null };
+
+/** One real, read-only call to the live service with a saved key, to see whether the connector works. */
+function ConnectorCheck({ c, notify }: { c: Connector; notify: (msg: string, kind?: 'ok' | 'error') => void }) {
+  const reads = Object.entries(c.operations).filter(([, o]) => o.method === 'GET');
+  const [op, setOp] = useState(reads[0]?.[0] ?? '');
+  const [fields, setFields] = useState(JSON.stringify(reads[0]?.[1].example ?? {}, null, 2));
+  const [cred, setCred] = useState('');
+  const [creds, setCreds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<CheckResult | null>(null);
+  useEffect(() => { if (c.auth.type !== 'none') request<{ name: string }[]>('/api/credentials').then(r => setCreds(r.map(x => x.name))).catch(() => setCreds([])); }, [c.auth.type]);
+  if (!reads.length) return <div className="hint" data-testid="check-none">This connector has no read-only actions to check.</div>;
+  const run = async () => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(fields || '{}'); } catch { notify('Fields must be valid JSON', 'error'); return; }
+    setBusy(true); setRes(null);
+    try { setRes(await request<CheckResult>(`/api/connectors/${encodeURIComponent(c.name)}/check`, { method: 'POST', body: JSON.stringify({ operation: op, fields: parsed, credential: cred }) })); }
+    catch (e) { notify((e as Error).message, 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="connector-check" data-testid="connector-check">
+      <span className="hint">Makes one real read-only call to {c.label} with the key you pick. It never changes anything, and the key is not shown.</span>
+      <label>Action<select aria-label="Check action" value={op} onChange={e => { setOp(e.target.value); setFields(JSON.stringify(c.operations[e.target.value].example, null, 2)); setRes(null); }}>{reads.map(([k, o]) => <option key={k} value={k}>{o.label}</option>)}</select></label>
+      {c.auth.type !== 'none' && <label>Credential<select aria-label="Check credential" value={cred} onChange={e => setCred(e.target.value)}><option value="">Choose a credential</option>{creds.map(n => <option key={n} value={n}>{n}</option>)}</select></label>}
+      <textarea aria-label="Check fields" rows={4} spellCheck={false} value={fields} onChange={e => setFields(e.target.value)} />
+      <button className="primary" type="button" disabled={busy || !op || (c.auth.type !== 'none' && !cred)} onClick={() => void run()}>{busy ? 'Checking…' : 'Run check'}</button>
+      {res && <div className={'check-result ' + (res.ok ? 'ok' : 'bad')} data-testid="check-result"><strong>{res.ok ? `Worked in ${res.seconds}s` : `Failed after ${res.seconds}s`}</strong>{res.ok ? <code>{res.sample}</code> : <span>{res.error}</span>}</div>}
+    </div>
+  );
+}
+
 /** Owners and admins describe a REST API in a small JSON manifest; it then appears as the "Custom connector" service in App Action. */
 export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify: (msg: string, kind?: 'ok' | 'error') => void }) {
   const [rows, setRows] = useState<Connector[] | null>(null);
@@ -28,6 +61,7 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
   const [text, setText] = useState('');
   const [lib, setLib] = useState<{ id: string; label: string; about: string; manifest: unknown }[]>([]);
   const [about, setAbout] = useState('');
+  const [checking, setChecking] = useState('');
   useEffect(() => { request<typeof lib>('/api/connector-library').then(setLib).catch(() => setLib([])); }, []);
   const load = useCallback(() => {
     request<Connector[]>('/api/connectors').then(setRows).catch(e => { setRows([]); notify((e as Error).message, 'error'); });
@@ -73,7 +107,7 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
       <h2>Custom connectors</h2>
       <p>Describe any REST API once in a small JSON manifest (address, how it signs in, and its actions), then use it from an App Action node by choosing "Custom connector". Secrets stay on the Credentials page.</p>
       {canEdit && (
-        <div className="var-form" style={{ display: 'grid', gap: 8 }}>
+        <div className="connector-form">
           <label>Start from a ready-made connector
             <select aria-label="Connector library" value="" onChange={e => { const hit = lib.find(x => x.id === e.target.value); if (hit) { setName(hit.id); setText(JSON.stringify(hit.manifest, null, 2)); setAbout(hit.about); } }}>
               <option value="">Choose one ({lib.length} available)</option>
@@ -95,12 +129,14 @@ export function ConnectorsPanel({ canEdit, notify }: { canEdit: boolean; notify:
         {rows === null && <span className="muted">Loading…</span>}
         {rows?.length === 0 && <span className="muted">No connectors yet.</span>}
         {rows?.map(c => (
-          <div className="var-row" key={c.name} data-testid="connector-row">
+          <div className="connector-row" key={c.name} data-testid="connector-row">
             <code>{c.name}</code>
             <span>{c.label}: {Object.keys(c.operations).length} actions, {c.auth.type} sign-in</span>
+            {canEdit && <button className="ghost" type="button" aria-label={`Check ${c.name}`} onClick={() => setChecking(n => n === c.name ? '' : c.name)}>Check</button>}
             <button className="ghost" type="button" aria-label={`Download ${c.name}`} onClick={() => void download(c.name)}>Download</button>
             {canEdit && <button className="ghost" type="button" aria-label={`Edit ${c.name}`} onClick={() => void edit(c.name)}>Edit</button>}
             {canEdit && <button className="icon-button danger" aria-label={`Delete ${c.name}`} onClick={() => void remove(c.name)}><Trash2 size={15} /></button>}
+            {checking === c.name && <ConnectorCheck c={c} notify={notify} />}
           </div>
         ))}
       </div>

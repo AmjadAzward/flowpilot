@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1464%20API%20%2B%2095%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1504%20API%20%2B%2096%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -63,6 +63,10 @@
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/23-attention.png" alt="Needs-attention bell"/><br/><sub><b>Needs-attention bell</b>: failing workflows and runs waiting for an answer</sub></td>
+    <td width="50%"><img src="docs/screenshots/25-health-alerts.png" alt="Health alerts switch"/><br/><sub><b>Health alerts</b>: run the error workflow when a workflow turns failing or slower</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/24-connector-check.png" alt="Connector check"/><br/><sub><b>Connector check</b>: one read-only call to the live service with your saved key</sub></td>
     <td width="50%"></td>
   </tr>
 </table>
@@ -116,7 +120,7 @@
 | **AI tasks** | The AI node can also extract named fields from text (typed, null when missing), sort text into your categories, judge sentiment, summarize, translate or rewrite, on any OpenAI-compatible service (free with Ollama). Answers outside your categories are refused. Tested against a simulated model only; small local models can get structured answers wrong, so check results |
 | **Project credentials** | A credential can be limited to one project: only workflows in that project can use it (credentials with no project stay shared by every workflow). A workflow that calls another through Run Workflow runs with its own credentials, so it cannot borrow another project's. A project that still has credentials cannot be deleted. Scope is changed on the Credentials page without retyping the value |
 | **Shared error workflow** | One workflow, chosen in Settings, runs whenever any workflow fails and has no error workflow of its own (the workflow's own choice wins; an error workflow never triggers another). Custom connectors can be downloaded as a file and imported again |
-| **Connector library** | 36 ready-made connector manifests (Open-Meteo, OpenWeatherMap, Calendly, Typeform, Clockify, Vercel, Netlify, DigitalOcean, Sentry, Webflow, Plausible, CoinGecko, Wikipedia, Cloudflare, Postmark, Brevo, Lemon Squeezy, Hunter and more) that you can pick in Settings and save. They were written from public API documentation and never run against the live services, so treat each as a starting point |
+| **Connector library** | 48 ready-made connector manifests (Open-Meteo, OpenWeatherMap, Calendly, Typeform, Clockify, Vercel, Netlify, DigitalOcean, Sentry, Webflow, Plausible, CoinGecko, Wikipedia, Cloudflare, Postmark, Brevo, Lemon Squeezy, Hunter, npm, PyPI, Docker Hub and more) that you can pick in Settings and save. They were written from public API documentation and never run against the live services, so treat each as a starting point |
 | **Folder and connector triggers** | The New Items trigger can also watch a folder inside the files folder (new or changed files, optional name pattern such as *.csv; symlinks ignored) and any GET action of a custom connector. Simulated-server tests only for connectors |
 | **Custom connectors** | Owners and admins describe any REST API in a small JSON manifest (https address, sign-in style: none, bearer, basic, header or query, and actions with method, path, query and body templates) in Settings. It then appears as "Custom connector" in the App Action node. Addresses go through the same public-host check as every other call. Tested against simulated servers only |
 | **Signed webhooks, repeats and time zones** | A webhook can require an HMAC-SHA256 signature of the body (optionally of `timestamp.body` with a five-minute window, which blocks replays), can ignore repeated requests that carry the same `Idempotency-Key` for a day, and Daily and Cron schedules can run in any IANA time zone (daylight saving follows the zone). Checked with self-made signatures only, not against a real sender such as GitHub or Stripe |
@@ -138,6 +142,8 @@
 | **Credential usage** | The Credentials page shows which workflows use each credential, or "unused", and warns before deleting one in use. Other projects' workflows are counted, not named |
 | **Workflow health badges** | The dashboard flags a workflow whose last day looks worse than its own previous week: failing, failing more than usual, or slower than usual, with the reason on hover. It needs at least 3 runs, ignores dry, waiting and running runs, and only shows a badge: nothing is sent |
 | **Needs-attention bell** | A bell in the top bar counts what needs a person: runs waiting for an approval, and workflows that are failing or slower than usual, each with its reason. Click one to open it. It is worked out from stored runs when you look, checked again every minute while the page is open, and only covers workflows you may see. Nothing is sent to you |
+| **Health alerts** | An optional switch in Settings. When a workflow turns failing, fails much more than its usual week, or runs much slower, your shared (or the workflow's own) error workflow runs once with `{{health.status}}`, `{{health.was}}` and `{{health.reason}}` as well as the usual failure details, and not again while the state stays the same. Switching it on starts from today's picture, so old trouble does not alert. Delivery is whatever your error workflow does (Slack, email and so on). Off by default, and tested with simulated handler workflows only |
+| **Connector check** | A Check button on each saved connector makes one real, read-only (GET) call with a credential you pick and shows whether it worked, how long it took and a short sample. Actions that change data cannot be checked this way. This is the quickest way to find out whether a connector works against the live service, and it needs your own key |
 | **Slowest steps** | Each run marks its slowest step, and a Timings button on a workflow lists its steps by typical time over its latest 50 finished runs, with the worst time and how often each step ran and failed |
 | **AI usage per run** | Runs that used AI record how many calls and tokens they used (reported by the service, or estimated), shown on the run and summed in the run stats |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
@@ -361,7 +367,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1464 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1504 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -418,6 +424,7 @@ flowpilot/
     src/RunCompare.tsx, RunNote.tsx, RunTags.tsx   compare, note and tag a run
     src/DependenciesPanel.tsx, StepTimingsPanel.tsx   workflow connections and slowest steps
     src/AttentionBell.tsx    the needs-attention bell in the top bar
+    src/ConnectorsPanel.tsx  custom connectors, the library and the live check
     src/styles.css           design tokens, light and dark themes
     e2e/e2e.mjs              browser end-to-end tests
   examples/hello-world.json  sample workflow to import
@@ -494,8 +501,8 @@ Everything works with no configuration. These optional environment variables cha
 - **Webhook URLs are local.** They work on this computer. To receive calls from other services you would have to expose the app yourself (for example with a tunnel). That also exposes the login page and API, so only do it if you understand the risk.
 - **One incoming connection per node, except Merge.** Branches come back together through a Merge node, and cycles are rejected (use Loop Over Items or Repeat Until). One node may fan out to several.
 - **HTTP checks are an MVP safeguard.** Public-HTTPS-only, private-address blocking and no redirects are not a hardened defence for untrusted multi-tenant use. Only run workflows you trust. Use the Credentials page for secrets instead of typing them into a node.
-- **Run search, tags and compare are simple on purpose.** Search is a text scan of the newest 2,000 runs, not an index, so it is not meant for millions of runs. The tag bar and the "noted" tab filter the runs loaded in the page. Compare shortens outputs to 1,500 characters.
-- **Health badges and timings are calculated, not monitored.** They read stored runs when you open the page. Nothing is sent when a workflow starts failing, so you still need to look at the dashboard, or use an error workflow, to be told.
+- **Run search, tags and compare are simple on purpose.** Search is a text scan of the newest 2,000 runs, not an index, so it is not meant for millions of runs. The tag bar and the "noted" tab ask the server, which looks through the newest 5,000 runs. Compare shortens outputs to 1,500 characters.
+- **Health badges and timings are calculated, not monitored.** They read stored runs when you open the page. Nothing is sent when a workflow starts failing unless you switch on health alerts and set an error workflow, so otherwise you still need to look at the dashboard to be told.
 - **Run history can hold sensitive data.** Credentials are hidden from results, but data that passes through a workflow is stored. Use the retention settings, and the "keep only failed runs" workflow setting, to limit what is kept.
 
 ---

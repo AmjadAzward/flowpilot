@@ -1474,6 +1474,38 @@ await check('a custom connector is described in Settings and chosen in an App Ac
   if (gone !== 204) throw new Error('connector not deleted: ' + gone);
 });
 
+await check('a connector can be checked from Settings, and health alerts can be switched on and off', async () => {
+  // A host that can never resolve, so the failure path is shown without touching any real service
+  await page.evaluate(async () => {
+    await fetch('/api/connectors/unreachable', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manifest: { label: 'Unreachable demo', base_url: 'https://flowpilot-check.invalid/v1', auth: { type: 'none' }, operations: { ping: { label: 'Ping', method: 'GET', path: '/ping', required: [], example: {} }, send: { label: 'Send', method: 'POST', path: '/send', body: { a: '{a}' }, required: ['a'], example: { a: 1 } } } } }) });
+  });
+  await goOverview();
+  await page.getByRole('button', { name: /^Settings/ }).click();
+  await page.getByTestId('connectors-panel').waitFor();
+  const row = page.getByTestId('connector-row').filter({ hasText: 'unreachable' });
+  await row.waitFor();
+  await page.getByLabel('Check unreachable').click();
+  await page.getByTestId('connector-check').waitFor();
+  const options = await page.getByLabel('Check action').locator('option').allInnerTexts();
+  if (options.length !== 1 || options[0] !== 'Ping') throw new Error('only the read action should be offered, got ' + options.join(','));
+  await page.getByRole('button', { name: 'Run check' }).click();
+  await expectText(page.getByTestId('check-result'), /Failed after/);
+  await shot('48-connector-check');
+  await page.evaluate(async () => { await fetch('/api/connectors/unreachable', { method: 'DELETE' }); });
+  await page.getByTestId('health-alerts-card').waitFor();
+  const box = page.getByLabel("Alert when a workflow's health changes");
+  if (await box.isChecked()) throw new Error('health alerts should start off');
+  await box.click();
+  await expectText(toast(), /Health alerts on/);
+  const on = await page.evaluate(async () => (await (await fetch('/api/settings/health-alerts')).json()).enabled);
+  if (on !== true) throw new Error('health alerts not stored as on');
+  await shot('49-health-alerts');
+  await box.click();
+  await expectText(toast(), /Health alerts off/);
+  const off = await page.evaluate(async () => (await (await fetch('/api/settings/health-alerts')).json()).enabled);
+  if (off !== false) throw new Error('health alerts not stored as off');
+});
+
 await check('a credential can be limited to one project and changed back', async () => {
   const pid = await page.evaluate(async () => (await (await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Credential scope team' }) })).json()).id);
   await page.reload();

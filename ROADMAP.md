@@ -27,6 +27,14 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.55
+- **Health alerts.** An optional switch in Settings. When a workflow turns failing, worse or slower (the same judgement as the health badges), the shared or per-workflow error workflow runs once with `health.status`, `health.was` and `health.reason`, and not again while the state stays the same. Switching it on starts from today's state so old trouble does not alert. Off by default. `GET/PUT /api/settings/health-alerts`
+- Delivery is whatever the error workflow does. Tested with simulated handler workflows (a template and an output), not with a real Slack or email send
+- **Server-side run filters.** The tag bar and the noted tab now ask the server (`/api/executions?tag=...&noted=true`), which looks through the newest 5,000 runs instead of only the newest 100 loaded in the page. The tag list covers all runs
+- **Connector check.** A Check button on each saved connector, `POST /api/connectors/{name}/check`: one real read-only (GET) call with a chosen credential, reporting success, time and a short sample, with saved keys masked. Admins and owners only. Actions that change data are refused
+- Connector library grows from 36 to 48: npm, PyPI, Docker Hub, Agify, Genderize, Nationalize, cat facts, dog pictures, Crossref, open exchange rates, Random User and Official Joke API. Like the others, written from public documentation and never run against the live services. None of the twelve needs a sign-in or key
+- 1504 API tests and a 96-check browser suite
+
 ### v0.54
 - Connector library grows from 22 to 36 ready-made manifests: CoinGecko, Wikipedia, Free Dictionary, Open Library, SpaceX, public holidays (Nager.Date), Zippopotam postal codes, Stack Exchange, Cloudflare (read only), Postmark, Brevo, Lemon Squeezy, Hunter and Sunrise-Sunset. Nine need no sign-in at all; the other five need a key saved on the Credentials page
 - Like the others, these were written from public API documentation and have never been run against the live services. The tests check that every manifest is valid and builds its example requests, and run three of them end to end (Postmark, Hunter, Lemon Squeezy) against a fake HTTP layer, so the way keys are sent is checked but not whether the live API accepts them
@@ -34,7 +42,7 @@ This file describes planned functionality, **not current features**.
 
 ### v0.53
 - A needs-attention bell in the top bar: a count and a list of runs waiting for an approval and of workflows that are failing or slower than usual (the same judgement as the health badges), each with its reason; clicking one opens it. `GET /api/attention`. It is worked out from stored runs when asked, refreshed every minute while the page is open, and shows only workflows you can see
-- It is a bell you have to look at, not an alert: nothing is emailed or pushed, so a failure at night is still only noticed when someone opens the page. Real alerts still need a delivery channel to be chosen
+- It is a bell you have to look at, not an alert by itself (v0.55 adds optional health alerts through the error workflow): nothing is emailed or pushed by the bell, so a failure at night is still only noticed when someone opens the page. Real alerts still need a delivery channel to be chosen
 - 1447 API tests and a 95-check browser suite
 
 ### v0.52

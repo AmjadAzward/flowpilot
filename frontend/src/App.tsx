@@ -154,6 +154,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const [credUsage, setCredUsage] = useState<Record<string, { used_by: { id: string; name: string }[]; hidden: number }>>({});
   const [runQuery, setRunQuery] = useState('');
   const [runTag, setRunTag] = useState('');
+  const [serverRuns, setServerRuns] = useState<Run[] | null>(null);  // runs matching a tag or note filter, looked for across older history, not just the newest 100
+  const [runTagList, setRunTagList] = useState<string[]>([]);
   const [found, setFound] = useState<{ runs: Run[]; matches: number; scanned: number } | null>(null);
   useEffect(() => {  // is each workflow failing more or running slower than usual? Only worth showing when it is
     let stale = false;
@@ -161,6 +163,18 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
       .then(r => { if (!stale) setHealth(Object.fromEntries(r.workflows.map(w => [w.workflow_id, w]))); }).catch(() => { if (!stale) setHealth({}); });
     return () => { stale = true; };
   }, [runs]);
+  useEffect(() => {
+    let stale = false;
+    api<{ tags: { tag: string }[] }>('/api/executions/tags').then(r => { if (!stale) setRunTagList(r.tags.map(t => t.tag).sort()); }).catch(() => { if (!stale) setRunTagList([]); });
+    return () => { stale = true; };
+  }, [runs]);
+  useEffect(() => {
+    if (!runTag && runFilter !== 'noted') { setServerRuns(null); return; }
+    let stale = false;
+    const qs = new URLSearchParams(); if (runTag) qs.set('tag', runTag); if (runFilter === 'noted') qs.set('noted', 'true');
+    api<Run[]>(`/api/executions?${qs.toString()}`).then(r => { if (!stale) setServerRuns(r); }).catch(() => { if (!stale) setServerRuns(null); });
+    return () => { stale = true; };
+  }, [runTag, runFilter, runs]);
   useEffect(() => {  // search inside the data of past runs, after the person stops typing
     const q = runQuery.trim();
     if (q.length < 2) { setFound(null); return; }
@@ -584,8 +598,8 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
   const filtered = flows.filter(f => flowMatches(f, query) && (!tagFilter || (f.tags ?? []).includes(tagFilter)));
   const success = runs.filter(r => r.status === 'success').length;
   const rate = runs.length ? Math.round((100 * success) / runs.length) : 0;
-  const tagsInUse = [...new Set(runs.flatMap(r => r.tags ?? []))].sort();
-  const shownRuns = (found ? found.runs : runs).filter(r => !runTag || (r.tags ?? []).includes(runTag)).filter(r => runFilter === 'all' || (runFilter === 'noted' ? !!r.note : runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
+  const tagsInUse = [...new Set([...runTagList, ...runs.flatMap(r => r.tags ?? [])])].sort();
+  const shownRuns = (found ? found.runs : serverRuns ?? runs).filter(r => !runTag || (r.tags ?? []).includes(runTag)).filter(r => runFilter === 'all' || (runFilter === 'noted' ? !!r.note : runFilter === 'success' ? r.status === 'success' : r.status !== 'success'));
   const library = catalog.filter(c => `${c.label} ${c.desc} ${c.category}`.toLowerCase().includes(libQuery.toLowerCase()));
   const crumb = { dashboard: 'Overview', editor: 'Workflow Studio', executions: 'Execution History', credentials: 'Credentials', tables: 'Data Tables', users: 'Users', settings: 'Settings' }[page];
   useEffect(() => { document.title = `${crumb} - FlowPilot`; }, [crumb]);

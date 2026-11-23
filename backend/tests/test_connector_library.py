@@ -85,3 +85,24 @@ def test_lemon_squeezy_keeps_its_bracketed_query_name(client, fake_http):
     res = _use(client, "lemonsqueezy", "orders", {"page_size": 5})
     c = fake_http.calls[-1]
     assert res["output"] == [{"id": "1"}] and c["params"]["page[size]"] == 5 and c["headers"]["Authorization"] == "Bearer library-secret-value-1"
+
+
+def test_agify_calls_the_root_path_with_the_name_in_the_query(client, fake_http):
+    fake_http.reply["response"] = FakeResponse(200, {"name": "michael", "age": 62, "count": 100})
+    pick = next(e for e in client.get("/api/connector-library").json() if e["id"] == "agify")
+    client.put("/api/connectors/agify", json={"manifest": pick["manifest"]})
+    n = node("a", "app", service="connector", connector="agify", operation="guess", fields='{"name": "michael"}')
+    wid = make_flow(client, [node("t", "trigger"), n, node("o", "output")], [edge("t", "a"), edge("a", "o")])
+    res = client.post(f"/api/workflows/{wid}/run").json()
+    c = fake_http.calls[-1]
+    assert res["output"]["age"] == 62 and c["url"] == "https://api.agify.io/" and c["params"] == {"name": "michael"}
+
+
+def test_dockerhub_tags_return_the_results_list_and_fill_the_path(client, fake_http):
+    fake_http.reply["response"] = FakeResponse(200, {"count": 1, "results": [{"name": "latest"}]})
+    pick = next(e for e in client.get("/api/connector-library").json() if e["id"] == "dockerhub")
+    client.put("/api/connectors/dockerhub", json={"manifest": pick["manifest"]})
+    n = node("a", "app", service="connector", connector="dockerhub", operation="tags", fields='{"namespace": "library", "repo": "nginx", "page_size": 5}')
+    wid = make_flow(client, [node("t", "trigger"), n, node("o", "output")], [edge("t", "a"), edge("a", "o")])
+    res = client.post(f"/api/workflows/{wid}/run").json()
+    assert res["output"] == [{"name": "latest"}] and fake_http.calls[-1]["url"] == "https://hub.docker.com/v2/repositories/library/nginx/tags"

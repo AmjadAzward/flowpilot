@@ -160,4 +160,45 @@ LIBRARY = [
     _entry("sunrise_sunset", "Sunrise and sunset", "https://api.sunrise-sunset.org", NONE, {
         "times": _op("Sunrise and sunset for a place", "/json", query={"lat": "{lat}", "lng": "{lng}", "date": "{date}", "formatted": "0"}, required=["lat", "lng"], result="results", example={"lat": 51.5, "lng": -0.12, "date": "today"}),
     }, "Times are in UTC. No sign-in."),
+    _entry("npm", "npm registry", "https://registry.npmjs.org", NONE, {
+        "package": _op("Everything about a package", "/{package}", required=["package"], example={"package": "react"}),
+        "latest": _op("Latest version of a package", "/{package}/latest", required=["package"], example={"package": "react"}),
+    }, "Public package data. No sign-in. The full package reply can be large, so the latest version is usually what you want."),
+    _entry("pypi", "PyPI", "https://pypi.org/pypi", NONE, {
+        "project": _op("Details of a Python package", "/{project}/json", required=["project"], example={"project": "fastapi"}),
+    }, "Public package data. No sign-in."),
+    _entry("dockerhub", "Docker Hub", "https://hub.docker.com/v2", NONE, {
+        "repo": _op("Details of a public repository", "/repositories/{namespace}/{repo}", required=["namespace", "repo"], example={"namespace": "library", "repo": "nginx"}),
+        "tags": _op("Tags of a public repository", "/repositories/{namespace}/{repo}/tags", query={"page_size": "{page_size}"}, required=["namespace", "repo"], result="results", example={"namespace": "library", "repo": "nginx", "page_size": 10}),
+    }, "Public images only. No sign-in. Use library as the namespace for official images."),
+    _entry("agify", "Agify (age from a name)", "https://api.agify.io", NONE, {
+        "guess": _op("Likely age for a first name", "/", query={"name": "{name}", "country_id": "{country_id}"}, required=["name"], example={"name": "michael"}),
+    }, "A statistical guess from a first name. Free tier is rate limited. No sign-in."),
+    _entry("genderize", "Genderize (from a name)", "https://api.genderize.io", NONE, {
+        "guess": _op("Likely gender for a first name", "/", query={"name": "{name}", "country_id": "{country_id}"}, required=["name"], example={"name": "alex"}),
+    }, "A statistical guess from a first name, not a fact about a person. Free tier is rate limited. No sign-in."),
+    _entry("nationalize", "Nationalize (from a name)", "https://api.nationalize.io", NONE, {
+        "guess": _op("Likely countries for a last name", "/", query={"name": "{name}"}, required=["name"], example={"name": "nielsen"}),
+    }, "A statistical guess from a name, not a fact about a person. Free tier is rate limited. No sign-in."),
+    _entry("catfact", "Cat facts", "https://catfact.ninja", NONE, {
+        "fact": _op("One random cat fact", "/fact"),
+        "facts": _op("Several cat facts", "/facts", query={"limit": "{limit}"}, result="data", example={"limit": 3}),
+    }, "A small fun API, handy for testing a workflow end to end. No sign-in."),
+    _entry("dogceo", "Dog pictures", "https://dog.ceo/api", NONE, {
+        "random": _op("A random dog picture", "/breeds/image/random"),
+        "breed": _op("A random picture of one breed", "/breed/{breed}/images/random", required=["breed"], example={"breed": "beagle"}),
+    }, "Returns a picture address. No sign-in."),
+    _entry("crossref", "Crossref (research papers)", "https://api.crossref.org", NONE, {
+        "works": _op("Search published works", "/works", query={"query": "{query}", "rows": "{rows}"}, required=["query"], result="message", example={"query": "workflow automation", "rows": 5}),
+    }, "Scholarly metadata for papers and books. No sign-in. Add a contact address to the query in a workflow if you make many calls."),
+    _entry("er_api", "Exchange rates (open access)", "https://open.er-api.com/v6", NONE, {
+        "latest": _op("Rates for a base currency", "/latest/{base}", required=["base"], example={"base": "USD"}),
+    }, "Daily rates, free for light use. No sign-in."),
+    _entry("randomuser", "Random User (test people)", "https://randomuser.me", NONE, {
+        "users": _op("Made-up people for testing", "/api/", query={"results": "{results}", "nat": "{nat}"}, result="results", example={"results": 3}),
+    }, "Fake names and addresses for testing a workflow. No sign-in."),
+    _entry("officialjoke", "Official Joke API", "https://official-joke-api.appspot.com", NONE, {
+        "random": _op("A random joke", "/random_joke"),
+        "ten": _op("Ten random jokes", "/jokes/ten"),
+    }, "A small fun API, handy for testing a workflow end to end. No sign-in."),
 ]

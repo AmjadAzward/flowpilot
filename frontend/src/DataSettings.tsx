@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { DatabaseBackup, Download, Eraser, Siren, Upload } from 'lucide-react';
+import { DatabaseBackup, Download, Eraser, HeartPulse, Siren, Upload } from 'lucide-react';
 import { request } from './api';
 
 type Cfg = { retention_days: number; max_executions: number; executions_stored: number };
@@ -27,6 +27,23 @@ function ErrorWorkflowCard({ canTune, notify }: { canTune: boolean; notify: (msg
           {flows.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
         </select>
       </label>
+    </div>
+  );
+}
+
+/** Alert through the error workflow when a workflow turns failing, worse or slower, not only when one run fails. */
+function HealthAlertsCard({ canTune, notify }: { canTune: boolean; notify: (msg: string, kind?: 'ok' | 'error') => void }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => { request<{ enabled: boolean }>('/api/settings/health-alerts').then(r => setOn(r.enabled)).catch(() => setOn(false)); }, []);
+  const toggle = async (enabled: boolean) => {
+    try { await request('/api/settings/health-alerts', { method: 'PUT', body: JSON.stringify({ enabled }) }); setOn(enabled); notify(enabled ? 'Health alerts on' : 'Health alerts off'); }
+    catch (e) { notify((e as Error).message, 'error'); }
+  };
+  return (
+    <div className="panel settings-card wide" data-testid="health-alerts-card">
+      <HeartPulse size={22} /><h2>Health alerts</h2>
+      <p>When a workflow turns failing, fails much more than its usual week, or runs much slower, the error workflow runs once with {'{{health.status}}'}, {'{{health.was}}'} and {'{{health.reason}}'} as well as the usual details. It does not repeat while the state stays the same. Nothing is sent unless an error workflow is set above or on the workflow itself.</p>
+      <label className="check-row"><input style={{ width: 'auto' }} type="checkbox" aria-label="Alert when a workflow's health changes" checked={!!on} disabled={!canTune || on === null} onChange={e => void toggle(e.target.checked)} /> Alert when a workflow's health changes</label>
     </div>
   );
 }
@@ -92,6 +109,7 @@ export function DataSettings({ role, notify, onChanged }: Props) {
         {!canTune && <span>Only an owner or admin can change this.</span>}
       </div>
       <ErrorWorkflowCard canTune={canTune} notify={notify} />
+      <HealthAlertsCard canTune={canTune} notify={notify} />
       <div className="panel settings-card wide" data-testid="backup-card">
         <DatabaseBackup size={22} /><h2>Backup and restore</h2>
         <p>Download your workflows, or a full copy of the database.</p>

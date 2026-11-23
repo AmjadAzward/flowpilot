@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.54.0"
+VERSION = "0.55.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -4528,6 +4528,38 @@ def put_connector(name: str, body: ConnectorIn):
     return connector_summary(name, manifest)
 
 
+class ConnectorCheckIn(BaseModel):
+    operation: str = Field(min_length=1, max_length=60)
+    fields: dict = Field(default_factory=dict)
+    credential: str = Field(default="", max_length=100)
+
+
+@app.post("/api/connectors/{name}/check")
+def check_connector(name: str, body: ConnectorCheckIn):
+    """One real, read-only call to the service with the saved key, to see whether the connector works against the live service.
+    Only operations that read (GET) can be checked here. The reply says whether it worked, how long it took and a short sample of what came back."""
+    with conn() as db: row = db.execute("SELECT manifest FROM connectors WHERE name=?", (name,)).fetchone()
+    if not row: raise HTTPException(404, "Connector not found")
+    op = json.loads(row["manifest"])["operations"].get(body.operation)
+    if not op: raise HTTPException(400, f"Unknown operation: {body.operation}")
+    if op["method"] != "GET": raise HTTPException(400, "Only operations that read (GET) can be checked. This one changes data, so run it from a workflow on purpose.")
+    started = time.time()
+    secrets_ = load_secrets(ALL_PROJECTS)
+    token = _secrets_var.set(secrets_)
+    try:
+        res = connector_call({"connector": name, "operation": body.operation, "fields": json.dumps(body.fields), "credential": body.credential}, None)
+    except Exception as exc:
+        message = str(exc)
+        for value in secrets_.values():
+            if value and len(value) >= 4: message = message.replace(value, "***")
+        return {"ok": False, "seconds": round(time.time() - started, 3), "error": message[:300], "sample": None}
+    finally: _secrets_var.reset(token)
+    sample = json.dumps(res, default=str)
+    for value in secrets_.values():
+        if value and len(value) >= 4: sample = sample.replace(value, "***")
+    return {"ok": True, "seconds": round(time.time() - started, 3), "error": None, "sample": sample[:400] + ("..." if len(sample) > 400 else "")}
+
+
 @app.delete("/api/connectors/{name}", status_code=204)
 def delete_connector(name: str):
     with conn() as db: db.execute("DELETE FROM connectors WHERE name=?", (name,))
@@ -4612,6 +4644,7 @@ def execute_workflow(doc: dict, kind: str, initial: Any = None, exec_id: str | N
                     json.dumps(result["ai_usage"]) if result.get("ai_usage") else None))
         if result["status"] == "waiting" and not skip_save: add_wait(db, exec_id, doc["id"], result["wait"])
     if result["status"] == "failed" and kind not in ("error", "dry"): run_error_handler(doc, exec_id, kind, result)
+    if result["status"] in ("success", "failed") and kind not in ("error", "dry"): check_health_alert(doc, exec_id)
     return {"id": exec_id, "workflow_id": doc["id"], "trigger": kind, **result}
 
 
@@ -4960,7 +4993,7 @@ def cancel_waiting_run(execution_id: str):
     return {"id": execution_id, "cancelled": True}
 
 
-def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict) -> None:
+def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict, extra: dict | None = None) -> None:
     """If the trigger names an error workflow, run it with details of the failure. Handlers never trigger handlers."""
     node = start_node(doc)
     handler_id = str(((node or {}).get("data") or {}).get("error_workflow") or "").strip()
@@ -4970,7 +5003,7 @@ def run_error_handler(doc: dict, exec_id: str, kind: str, result: dict) -> None:
         handler = get_workflow(handler_id)
         failed = next((st for st in reversed(result["steps"]) if st.get("status") == "error"), {})
         payload = {"workflow": {"id": doc["id"], "name": doc.get("name")}, "execution_id": exec_id, "trigger": kind,
-                   "error": result["error"], "failed_node": failed.get("label")}
+                   "error": result["error"], "failed_node": failed.get("label"), **(extra or {})}
         execute_workflow(handler, "error", payload)
     except Exception:
         logging.getLogger("flowpilot").exception("error workflow failed")
@@ -5825,14 +5858,19 @@ def export_executions(request: Request, workflow_id: str | None = None, status: 
 
 
 @app.get("/api/executions")
-def executions(request: Request, workflow_id: str | None = None):
+def executions(request: Request, workflow_id: str | None = None, tag: str | None = None, noted: bool = False):
+    """The newest 100 runs. With tag or noted, only runs carrying that tag (or any note) are kept, looked for across the last 5000 runs instead of just the newest."""
     visible = visible_workflow_ids(getattr(request.state, "actor", None))
     if visible is not None and workflow_id and workflow_id not in visible: return []
+    wanted = (normalize_tags([tag]) or [""])[0] if tag else ""
+    filtering = bool(wanted or noted)
     with conn() as db:
         if workflow_id:
-            rows=db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT 100",(workflow_id,)).fetchall()
-        else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT 1000").fetchall()
+            rows=db.execute("SELECT * FROM executions WHERE workflow_id=? ORDER BY started_at DESC LIMIT ?",(workflow_id, 5000 if filtering else 100)).fetchall()
+        else: rows=db.execute("SELECT * FROM executions ORDER BY started_at DESC LIMIT ?", (5000 if filtering else 1000,)).fetchall()
         if visible is not None: rows = [r for r in rows if r["workflow_id"] in visible]
+        if wanted: rows = [r for r in rows if wanted in run_tags(r)]
+        if noted: rows = [r for r in rows if r["note"]]
         rows = rows[:100]
         waits = {w["execution_id"]: (w["resume_at"], w["kind"]) for w in db.execute("SELECT execution_id, resume_at, kind FROM waits WHERE status='pending'").fetchall()}
     return [run_json(r, waits) for r in rows]
@@ -6092,13 +6130,20 @@ def judge_health(recent: dict, baseline: dict) -> tuple[str, str]:
 @app.get("/api/stats/health")
 def workflow_health(request: Request):
     """For each workflow: is the last day failing more, or running slower, than its own previous week? Calculated from stored runs; nothing is sent."""
-    visible = visible_workflow_ids(getattr(request.state, "actor", None))
+    return compute_health(visible_workflow_ids(getattr(request.state, "actor", None)))
+
+
+def compute_health(visible: set | None, only: str | None = None) -> dict:
     now_ = datetime.now(timezone.utc)
     recent_from = (now_ - timedelta(hours=HEALTH_RECENT_HOURS)).isoformat()
     base_from = (now_ - timedelta(hours=HEALTH_RECENT_HOURS, days=HEALTH_BASELINE_DAYS)).isoformat()
     with conn() as db:
-        flows = db.execute("SELECT id, name FROM workflows ORDER BY name").fetchall()
-        rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE started_at >= ? AND status IN ('success','failed') AND trigger_kind != 'dry'", (base_from,)).fetchall()
+        if only:
+            flows = db.execute("SELECT id, name FROM workflows WHERE id=?", (only,)).fetchall()
+            rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE workflow_id=? AND started_at >= ? AND status IN ('success','failed') AND trigger_kind != 'dry'", (only, base_from)).fetchall()
+        else:
+            flows = db.execute("SELECT id, name FROM workflows ORDER BY name").fetchall()
+            rows = db.execute("SELECT workflow_id, status, started_at, finished_at FROM executions WHERE started_at >= ? AND status IN ('success','failed') AND trigger_kind != 'dry'", (base_from,)).fetchall()
     recent: dict[str, list] = {}
     base: dict[str, list] = {}
     for r in rows:
@@ -6111,6 +6156,53 @@ def workflow_health(request: Request):
         status, reason = judge_health(rec, bas)
         out.append({"workflow_id": f["id"], "name": f["name"], "status": status, "reason": reason, "recent": rec, "baseline": bas})
     return {"recent_hours": HEALTH_RECENT_HOURS, "baseline_days": HEALTH_BASELINE_DAYS, "min_runs": HEALTH_MIN_RUNS, "workflows": out}
+
+
+HEALTH_ALERT_STATUSES = ("failing", "worse", "slower")
+
+
+def health_alerts_enabled() -> bool:
+    with conn() as db: row = db.execute("SELECT value FROM settings WHERE key='health_alerts'").fetchone()
+    return bool(row and row["value"] == "1")
+
+
+class HealthAlertsIn(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/settings/health-alerts")
+def read_health_alerts():
+    return {"enabled": health_alerts_enabled()}
+
+
+@app.put("/api/settings/health-alerts")
+def write_health_alerts(body: HealthAlertsIn):
+    """Switch on alerts for a change of health. They use the same error workflow as failed runs, so nothing is sent unless one is set."""
+    with conn() as db:
+        db.execute("INSERT INTO settings (key,value) VALUES ('health_alerts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if body.enabled else "0",))
+        if body.enabled:  # start from today's picture so switching on does not alert about old trouble
+            db.execute("DELETE FROM settings WHERE key LIKE 'health_last:%'")
+    if body.enabled:
+        for h in compute_health(None)["workflows"]:
+            with conn() as db: db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (f"health_last:{h['workflow_id']}", h["status"]))
+    return {"enabled": body.enabled}
+
+
+def check_health_alert(doc: dict, exec_id: str) -> None:
+    """After a run, if the workflow just turned failing, worse or slower, start its error workflow once. Staying in the same state sends nothing more."""
+    try:
+        if not health_alerts_enabled(): return
+        h = next(iter(compute_health(None, only=doc["id"])["workflows"]), None)
+        if not h: return
+        key = f"health_last:{doc['id']}"
+        with conn() as db:
+            row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, h["status"]))
+        before = row["value"] if row else "healthy"
+        if h["status"] in HEALTH_ALERT_STATUSES and h["status"] != before:
+            run_error_handler(doc, exec_id, "health", {"error": f"Health changed to {h['status']}: {h['reason']}", "steps": []}, extra={"health": {"status": h["status"], "was": before, "reason": h["reason"]}})
+    except Exception:
+        logging.getLogger("flowpilot").exception("health alert failed")
 
 
 @app.get("/api/attention")
