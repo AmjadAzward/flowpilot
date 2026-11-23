@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-1438%20API%20%2B%2094%20browser-34D399?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-1447%20API%20%2B%2095%20browser-34D399?style=for-the-badge)
 ![Auth](https://img.shields.io/badge/login-built%20in-E9522A?style=for-the-badge)
 ![Triggers](https://img.shields.io/badge/triggers-schedule%20%2B%20webhook%20%2B%20cron-F43F5E?style=for-the-badge)
 ![Vault](https://img.shields.io/badge/credentials-encrypted-8B5CF6?style=for-the-badge)
@@ -60,6 +60,10 @@
   <tr>
     <td width="50%"><img src="docs/screenshots/20-health.png" alt="Workflow health badge"/><br/><sub><b>Health badge</b> on the dashboard when a workflow fails more than usual</sub></td>
     <td width="50%"><img src="docs/screenshots/21-timings.png" alt="Slowest steps"/><br/><sub><b>Slowest steps</b> of a workflow, from its latest finished runs</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/23-attention.png" alt="Needs-attention bell"/><br/><sub><b>Needs-attention bell</b>: failing workflows and runs waiting for an answer</sub></td>
+    <td width="50%"></td>
   </tr>
 </table>
 
@@ -133,6 +137,7 @@
 | **Connections panel** | Per workflow: which workflows it runs (Run Workflow nodes, AI Agent tools, error handlers), which run it, and which credentials it uses, flagging ones not saved yet. Deleting a workflow that others still use warns first and names them |
 | **Credential usage** | The Credentials page shows which workflows use each credential, or "unused", and warns before deleting one in use. Other projects' workflows are counted, not named |
 | **Workflow health badges** | The dashboard flags a workflow whose last day looks worse than its own previous week: failing, failing more than usual, or slower than usual, with the reason on hover. It needs at least 3 runs, ignores dry, waiting and running runs, and only shows a badge: nothing is sent |
+| **Needs-attention bell** | A bell in the top bar counts what needs a person: runs waiting for an approval, and workflows that are failing or slower than usual, each with its reason. Click one to open it. It is worked out from stored runs when you look, checked again every minute while the page is open, and only covers workflows you may see. Nothing is sent to you |
 | **Slowest steps** | Each run marks its slowest step, and a Timings button on a workflow lists its steps by typical time over its latest 50 finished runs, with the worst time and how often each step ran and failed |
 | **AI usage per run** | Runs that used AI record how many calls and tokens they used (reported by the service, or estimated), shown on the run and summed in the run stats |
 | **Replay a failed run** | One click on the Executions page runs the workflow again from the node that failed, with the data it received. It continues the part after that node, and it cannot replay a failure inside a loop |
@@ -322,7 +327,7 @@ A workflow is plain JSON (`nodes` and `edges`). The engine starts at the workflo
 
 ## <img src="https://img.shields.io/badge/-Testing-34D399?style=flat-square" alt="Testing"/>
 
-**API, engine, security and connector tests** (1438 tests, use a temporary database and key):
+**API, engine, security and connector tests** (1447 tests, use a temporary database and key):
 
 ```powershell
 cd backend
@@ -330,7 +335,7 @@ cd backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-**Browser end-to-end tests** (94 checks driving a real Chrome or Edge: account setup, sign in and out, activation, a webhook called from a separate session, schedules and cron, credentials, loops, pinning, undo and redo, copy and paste, and more). These create and delete workflows, so start the API on a throwaway database first:
+**Browser end-to-end tests** (95 checks driving a real Chrome or Edge: account setup, sign in and out, activation, a webhook called from a separate session, schedules and cron, credentials, loops, pinning, undo and redo, copy and paste, and more). These create and delete workflows, so start the API on a throwaway database first:
 
 ```powershell
 $env:FLOWPILOT_DB = "$env:TEMP\flowpilot-e2e.db"
@@ -378,6 +383,7 @@ flowpilot/
     src/catalog.ts           node definitions and starter templates
     src/RunCompare.tsx, RunNote.tsx, RunTags.tsx   compare, note and tag a run
     src/DependenciesPanel.tsx, StepTimingsPanel.tsx   workflow connections and slowest steps
+    src/AttentionBell.tsx    the needs-attention bell in the top bar
     src/styles.css           design tokens, light and dark themes
     e2e/e2e.mjs              browser end-to-end tests
   examples/hello-world.json  sample workflow to import

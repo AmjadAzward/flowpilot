@@ -85,7 +85,7 @@ async def lifespan(_app):
     stop.set()
 
 
-VERSION = "0.52.0"
+VERSION = "0.53.0"
 app = FastAPI(title="FlowPilot API", version=VERSION, description="Local visual automation engine", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
 
@@ -6111,6 +6111,26 @@ def workflow_health(request: Request):
         status, reason = judge_health(rec, bas)
         out.append({"workflow_id": f["id"], "name": f["name"], "status": status, "reason": reason, "recent": rec, "baseline": bas})
     return {"recent_hours": HEALTH_RECENT_HOURS, "baseline_days": HEALTH_BASELINE_DAYS, "min_runs": HEALTH_MIN_RUNS, "workflows": out}
+
+
+@app.get("/api/attention")
+def needs_attention(request: Request):
+    """What needs a person right now, for the bell in the top bar: runs waiting for an approval, and workflows that are failing or slower than usual.
+    Worked out from stored runs when asked; nothing is sent. Only workflows this person may see."""
+    actor = getattr(request.state, "actor", None)
+    visible = visible_workflow_ids(actor)
+    with conn() as db:
+        names = {r["id"]: r["name"] for r in db.execute("SELECT id, name FROM workflows").fetchall()}
+        waits = db.execute("SELECT execution_id, workflow_id, resume_at, created_at FROM waits WHERE kind='callback' AND status='pending' ORDER BY created_at").fetchall()
+    items = []
+    for w in waits:
+        if visible is not None and w["workflow_id"] not in visible: continue
+        items.append({"kind": "approval", "workflow_id": w["workflow_id"], "name": names.get(w["workflow_id"], "(deleted)"), "execution_id": w["execution_id"],
+                      "since": w["created_at"], "expires_at": w["resume_at"], "message": "Waiting for someone to approve or reject"})
+    order = {"failing": 0, "worse": 1, "slower": 2}
+    for h in sorted((h for h in workflow_health(request)["workflows"] if h["status"] in order), key=lambda h: (order[h["status"]], h["name"])):
+        items.append({"kind": "health", "workflow_id": h["workflow_id"], "name": h["name"], "status": h["status"], "message": h["reason"]})
+    return {"count": len(items), "items": items}
 
 
 @app.get("/api/metrics")

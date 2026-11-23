@@ -1126,7 +1126,22 @@ await check('the dashboard flags a workflow that keeps failing, with the reason 
   if (await healthy.getByTestId('health-chip').count() !== 0) throw new Error('a workflow with no failures should not be flagged');
 });
 
+await check('the bell lists what needs attention and opens the workflow that is failing', async () => {
+  await goOverview();
+  await page.getByTestId('attention-count').waitFor();
+  await page.getByTestId('attention-bell').click();
+  const item = page.getByTestId('attention-item').filter({ hasText: 'Keeps breaking' });
+  await expectText(item, /Failing/);
+  await expectText(item, /3 of 3 runs failed in the last day/);
+  await shot('47-attention');
+  await item.click();
+  await page.locator('.react-flow__node').first().waitFor();
+  await page.waitForFunction(() => document.querySelector('.workflow-title')?.value === 'Keeps breaking');
+  if ((await page.getByTestId('attention-menu').count()) !== 0) throw new Error('the list should close after choosing one');
+});
+
 await check('the timings panel lists a workflow\'s steps with how often each failed, and says so when there are no runs', async () => {
+  await goOverview();
   await page.locator('.flow-meta strong', { hasText: /^Keeps breaking$/ }).click();
   await page.locator('.react-flow__node').first().waitFor();
   await page.getByTestId('open-timings').click();

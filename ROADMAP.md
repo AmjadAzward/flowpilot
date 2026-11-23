@@ -27,6 +27,11 @@ This file describes planned functionality, **not current features**.
 - Three more templates, execution history shows what triggered each run
 - 126 API tests and a 27-check browser suite
 
+### v0.53
+- A needs-attention bell in the top bar: a count and a list of runs waiting for an approval and of workflows that are failing or slower than usual (the same judgement as the health badges), each with its reason; clicking one opens it. `GET /api/attention`. It is worked out from stored runs when asked, refreshed every minute while the page is open, and shows only workflows you can see
+- It is a bell you have to look at, not an alert: nothing is emailed or pushed, so a failure at night is still only noticed when someone opens the page. Real alerts still need a delivery channel to be chosen
+- 1447 API tests and a 95-check browser suite
+
 ### v0.52
 - Run tags: put short labels such as "billing" or "needs-review" on any run, from the run's row in Executions. Tags are lower-cased, spaces become dashes, up to 8 per run and 24 characters each. They show on the row, can be searched, and a tag bar filters the list. `PUT /api/executions/{id}/tags`, `GET /api/executions/tags` (tags in use, with counts, only for runs you can see). Viewers can read tags but not change them. Adds an `executions.tags` column, migrated on SQLite and Postgres
 - The tag bar and the filter work on the runs loaded in the page, like the other filters; the search box also finds runs by tag

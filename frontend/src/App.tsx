@@ -30,6 +30,7 @@ import { FailedRunTools } from './FailedRunTools';
 import { RunCompare } from './RunCompare';
 import { RunNote } from './RunNote';
 import { RunTags } from './RunTags';
+import { AttentionBell } from './AttentionBell';
 import { SsoPanel } from './SsoPanel';
 import { ImportReport, type ImportInfo } from './ImportReport';
 
@@ -630,6 +631,7 @@ function Workspace({ username, role, projects, onSignOut }: { username: string; 
           <button className="icon-button menu-btn" aria-label="Open menu" onClick={() => setNavOpen(true)}><Menu size={19} /></button>
           <div className="crumb"><span>Personal</span><ChevronRight size={14} /><strong>{crumb}</strong></div>
           <div className="top-actions">
+            <AttentionBell refreshKey={runs.length} onOpenWorkflow={id => void openFlow(id)} onOpenRuns={() => { void refresh(); setPage('executions'); }} />
             <button className="icon-button" aria-label="Toggle theme" title="Switch light or dark theme" onClick={() => setTheme(t => (t === 'dark' ? 'light' : 'dark'))}>
               {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
             </button>
